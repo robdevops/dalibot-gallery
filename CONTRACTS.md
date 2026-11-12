@@ -61,7 +61,7 @@ type Config struct {
 	CacheDir        string        // GALLERY_CACHE_DIR, else first entry of $CACHE_DIRECTORY, else ./cache; absolute
 	CacheMaxMB      int           // GALLERY_CACHE_MAX_MB; default 2048; >= 16
 	WebPQuality     int           // GALLERY_WEBP_QUALITY; default 76; 1..100
-	ImageWorkers    int           // GALLERY_IMAGE_WORKERS; default runtime.NumCPU(); 1..64
+	ImageWorkers    int           // GALLERY_IMAGE_WORKERS; default runtime.GOMAXPROCS(0), which follows a container's CPU limit; 1..64
 	Warm            int           // GALLERY_WARM; default 120; 0..10000
 	TrustedProxies  []netip.Prefix // GALLERY_TRUSTED_PROXIES: comma list of IPs or CIDRs; default 127.0.0.0/8 and ::1; "none" is empty
 }

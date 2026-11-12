@@ -76,6 +76,11 @@ func tooMany(w http.ResponseWriter, wait time.Duration) {
 	plain(w, http.StatusTooManyRequests, "too many attempts; try again later\n")
 }
 
+// crossOrigin refuses POSTs that a browser marks as coming from another
+// origin (Sec-Fetch-Site, or an Origin header whose host differs from Host).
+// Requests with neither header, such as curl, are allowed.
+var crossOrigin http.CrossOriginProtection
+
 // handleLogin serves GET and POST /login.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.AuthOff {
@@ -89,6 +94,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.loginPage(w, http.StatusOK, false)
+		return
+	}
+	// A sign-in posted by another site's page is refused before the body is
+	// read and without using up the client's allowance of attempts.
+	if err := crossOrigin.Check(r); err != nil {
+		plain(w, http.StatusForbidden, "cross-origin request refused\n")
 		return
 	}
 	// The body is read before the limiter is asked, and the limiter then

@@ -268,7 +268,7 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	}
 	c.CacheMaxMB = integer("GALLERY_CACHE_MAX_MB", DefaultCacheMaxMB, MinCacheMaxMB, 1<<30)
 	c.WebPQuality = integer("GALLERY_WEBP_QUALITY", DefaultWebPQuality, 1, 100)
-	c.ImageWorkers = integer("GALLERY_IMAGE_WORKERS", min(runtime.NumCPU(), MaxImageWorkers), 1, MaxImageWorkers)
+	c.ImageWorkers = integer("GALLERY_IMAGE_WORKERS", min(runtime.GOMAXPROCS(0), MaxImageWorkers), 1, MaxImageWorkers)
 	c.Warm = integer("GALLERY_WARM", DefaultWarm, 0, MaxWarm)
 
 	if len(errs) > 0 {

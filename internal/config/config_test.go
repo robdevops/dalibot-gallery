@@ -36,7 +36,7 @@ func TestDefaults(t *testing.T) {
 		Listen: "127.0.0.1:8080", Token: testToken, Table: "dalibot", Region: "us-east-2",
 		TelegramToken: testBotToken, TelegramAPIBase: "https://api.telegram.org", StoreDays: 90,
 		DefaultCommand: "dream", Refresh: 60 * time.Second, CacheDir: abs, CacheMaxMB: 2048,
-		WebPQuality: 76, ImageWorkers: runtime.NumCPU(), Warm: 120,
+		WebPQuality: 76, ImageWorkers: runtime.GOMAXPROCS(0), Warm: 120,
 		TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
 	}
 	if fmt.Sprintf("%#v|%q|%q", *c, c.Token, c.TelegramToken) != fmt.Sprintf("%#v|%q|%q", want, want.Token, want.TelegramToken) {

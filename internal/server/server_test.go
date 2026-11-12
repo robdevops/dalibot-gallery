@@ -398,6 +398,43 @@ func TestLoginCookie(t *testing.T) {
 	}
 }
 
+// A sign-in posted from another site's page is refused, with the right token
+// too, and does not count as a failed attempt.
+func TestLoginCrossOrigin(t *testing.T) {
+	e := newEnv(t, records(5), nil)
+	post := func(opts ...reqOpt) *http.Response {
+		resp, _ := e.do("POST", "/login", strings.NewReader(url.Values{"token": {testToken}}.Encode()), opts...)
+		return resp
+	}
+	header := func(k, v string) reqOpt { return func(r *http.Request) { r.Header.Set(k, v) } }
+
+	for i := range 20 { // far more than the limiter allows failures
+		for name, opt := range map[string]reqOpt{
+			"Sec-Fetch-Site: cross-site": header("Sec-Fetch-Site", "cross-site"),
+			"Sec-Fetch-Site: same-site":  header("Sec-Fetch-Site", "same-site"),
+			"foreign Origin":             header("Origin", "https://evil.example"),
+		} {
+			if resp := post(opt); resp.StatusCode != 403 || len(resp.Cookies()) != 0 {
+				t.Fatalf("round %d, %s: status %d, cookies %v; want 403 and none", i, name, resp.StatusCode, resp.Cookies())
+			}
+		}
+	}
+	// The browser's own form, and clients that send neither header, still sign in.
+	for name, opts := range map[string][]reqOpt{
+		"Sec-Fetch-Site: same-origin": {header("Sec-Fetch-Site", "same-origin")},
+		"Sec-Fetch-Site: none":        {header("Sec-Fetch-Site", "none")},
+		"no headers":                  nil,
+	} {
+		if resp := post(opts...); resp.StatusCode != 303 || len(resp.Cookies()) != 1 {
+			t.Errorf("%s: status %d; want 303 and the cookie", name, resp.StatusCode)
+		}
+	}
+	// Reading the page is never refused.
+	if resp, _ := e.get("/login", header("Sec-Fetch-Site", "cross-site")); resp.StatusCode != 200 {
+		t.Errorf("cross-site GET /login: %d", resp.StatusCode)
+	}
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := newEnv(t, records(1), nil)

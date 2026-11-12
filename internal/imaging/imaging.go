@@ -68,7 +68,7 @@ const reductionEffort = 4
 
 // Options configures Startup.
 type Options struct {
-	Workers int // concurrent pipelines; 0 means runtime.NumCPU()
+	Workers int // concurrent pipelines; 0 means runtime.GOMAXPROCS(0)
 	Quality int // WebP quality 1..100; 0 means DefaultQuality
 }
 
@@ -101,7 +101,7 @@ var (
 // installs the JPEG-only loader allowlist. Call once, before any other function.
 func Startup(opt Options) error {
 	if opt.Workers == 0 {
-		opt.Workers = runtime.NumCPU()
+		opt.Workers = runtime.GOMAXPROCS(0)
 	}
 	if opt.Quality == 0 {
 		opt.Quality = DefaultQuality

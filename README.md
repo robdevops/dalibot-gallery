@@ -148,7 +148,7 @@ variable at fault. Secrets are never printed. `.env.example` lists them all.
 | `GALLERY_CACHE_DIR` | `$CACHE_DIRECTORY` or `./cache` | `$CACHE_DIRECTORY` is what systemd's `CacheDirectory=` sets. The container image sets `/var/cache/dalibot-gallery`. |
 | `GALLERY_CACHE_MAX_MB` | `2048` | Size limit for originals plus thumbnails (minimum 16). Thumbnails are evicted above it; originals are not, so size it for your originals. See [Cache](#cache-and-pipeline_version). |
 | `GALLERY_WEBP_QUALITY` | `76` | 1–100. Changing it changes every thumbnail URL. |
-| `GALLERY_IMAGE_WORKERS` | number of CPUs | Thumbnail pipelines that may run at once, 1–64. |
+| `GALLERY_IMAGE_WORKERS` | CPUs available | Thumbnail pipelines that may run at once, 1–64. The default is the number of CPUs the process may use: the machine's, or fewer under a container CPU limit (for example `--cpus 2`) or `GOMAXPROCS`. |
 | `GALLERY_WARM` | `120` | After each refresh, thumbnails for this many of the newest tiles are made in the background. `0` turns it off. |
 | `GALLERY_DEBUG` | (unset) | `1` logs at debug level, including every image, asset and health request. Not validated. |
 
@@ -216,6 +216,11 @@ tests scan every response, headers and body, for the seeded file ids and both to
 - at `/login`, which sets a cookie (`HttpOnly`, `Secure`, `SameSite=Strict`,
   one year) holding an HMAC-SHA256 derived from the token, not the token itself; or
 - as the password of HTTP Basic auth (any user name), for scripts.
+
+A sign-in form posted from another site's page is refused with 403: the
+browser's `Sec-Fetch-Site` header is checked, or, when it is absent, the
+`Origin` header against `Host` (so the reverse proxy must pass `Host`
+through). Requests with neither header, such as curl, are not affected.
 
 Comparisons are constant-time. Everything needs authentication except
 `/healthz`, `/login` and the stylesheet `/app.css`, which the login page
