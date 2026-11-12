@@ -1,0 +1,33 @@
+#!/bin/sh
+# Runs the whole gallery locally, with no AWS account and no Telegram bot:
+# a moto DynamoDB server seeded with about 150 items in the bot's real shapes,
+# a fake Telegram Bot API that serves the sample JPEGs in testdata/telegram,
+# and the real gallery binary pointed at both.
+#
+# Usage (from anywhere):
+#
+#   scripts/dev-stack.sh                          gallery on http://127.0.0.1:8080
+#   scripts/dev-stack.sh -port 9000               another port (control server on 9001)
+#   scripts/dev-stack.sh -auth=false              no login (GALLERY_AUTH=off)
+#   scripts/dev-stack.sh -telegram-delay 300ms    imitate a slow Telegram
+#   scripts/dev-stack.sh -h                       every option
+#
+# When ready it prints one line of JSON on stdout (logs go to stderr), e.g.
+#   {"control":"http://127.0.0.1:8081","ready":true,"records":145,"tiles":193,
+#    "token":"dev-gallery-token-0123456789","url":"http://127.0.0.1:8080"}
+# Open the url and sign in with the token. Stop with Ctrl-C.
+#
+# For tests, the control server adds images and reports what Telegram saw:
+#   curl -X POST 'http://127.0.0.1:8081/add?n=3'   three new records; they show
+#                                                  after the next refresh (-refresh, default 5s)
+#   curl http://127.0.0.1:8081/state               counts, and "forbidden" Telegram calls (must be [])
+#
+# Needs: Go, libvips with headers, and moto's server at /opt/moto/bin/moto_server
+# or $MOTO_SERVER (pip install 'moto[server]'). Nothing here contacts AWS or Telegram.
+set -eu
+cd "$(dirname "$0")/.."
+# Build first and exec the result (not "go run"), so signals reach the stack itself.
+bin="${TMPDIR:-/tmp}/dalibot-gallery-devstack-$(id -u)"
+mkdir -p "$bin"
+GOTOOLCHAIN="${GOTOOLCHAIN:-local}" go build -o "$bin/devstack" ./scripts/devstack
+exec "$bin/devstack" "$@"

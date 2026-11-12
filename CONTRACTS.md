@@ -25,8 +25,8 @@ Module: `github.com/robdevops/dalibot-gallery`
   - Quiet govips' own logging with `vips.LoggingSettings(handler, vips.LogLevelError)` before `Startup`.
 - `github.com/aws/aws-sdk-go-v2` `config` v1.33.18, `credentials` v1.21.0, `service/dynamodb` v1.74.0, `feature/dynamodb/attributevalue` v1.21.21.
 - `golang.org/x/sync` **v0.19.0** (`singleflight`, `semaphore`, `errgroup`); newer releases need Go 1.25+.
-- `internal/deps/deps.go` blank-imports all of these to keep them pinned. The Server phase deletes that
-  directory once `cmd/gallery` imports everything (and may then run `go mod tidy`).
+- `internal/deps` (a blank-import file that pinned these while the packages were written) has been removed;
+  `go mod tidy` has been run. `golang.org/x/image` is a direct requirement, for tests only.
 - Everything else is the standard library.
 
 Ownership of directories:
@@ -378,7 +378,17 @@ func (s *Server) Handler() http.Handler
 // Warm generates missing thumbnails for the newest Config.Warm tiles of snap. It is what main registers
 // with Store.OnSwap (wrapped in a goroutine) together with Cache.Prune.
 func (s *Server) Warm(ctx context.Context, snap *source.Snapshot)
+
+// Added by the Server phase:
+func (s *Server) OnSwap(snap *source.Snapshot)   // the Store.OnSwap hook: Warm and Cache.Prune in the background; returns at once
+func (s *Server) Close()                         // stops and waits for background image work; call before imaging.Shutdown
+func RedactingHandler(h slog.Handler, secrets ...string) slog.Handler   // strips secrets from every log record
 ```
+
+`cmd/gallery` also accepts `-healthcheck` (GET /healthz on GALLERY_LISTEN; exit 0 when healthy) and `-version`,
+and logs image, asset and health requests only when `GALLERY_DEBUG=1`. JSON bodies under 256 bytes are not gzip-encoded.
+`internal/devstack` and `scripts/dev-stack.sh` run the whole stack locally (moto, a fake Telegram API, seeded data);
+sample JPEGs are in `testdata/telegram/` (not `testdata/images/`).
 
 `cmd/gallery/main.go` wires, in this order: `config.Load` → logger → `imaging.Startup` → `cache.Open` → `telegram.New` → `source.NewDynamo` → `source.NewStore` → `server.New` → `store.OnSwap(...)` → `go store.Run(ctx, cfg.Refresh)` → `http.Server{ReadHeaderTimeout: 5s, ReadTimeout: 10s, WriteTimeout: 60s, IdleTimeout: 120s, MaxHeaderBytes: 16 << 10}`; on SIGINT/SIGTERM: shut the server down, cancel ctx, `imaging.Shutdown`.
 

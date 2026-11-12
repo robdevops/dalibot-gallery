@@ -1,0 +1,1006 @@
+package server
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"image"
+	"image/png"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/robdevops/dalibot-gallery/internal/cache"
+	"github.com/robdevops/dalibot-gallery/internal/config"
+	"github.com/robdevops/dalibot-gallery/internal/imaging"
+	"github.com/robdevops/dalibot-gallery/internal/source"
+	"github.com/robdevops/dalibot-gallery/web"
+)
+
+const (
+	testToken    = "unit-test-gallery-token-xyz"
+	testBotToken = "123456:TEST-token_abc"
+	fileIDMark   = "AgACAgUAAxkBAAIUNITTEST"
+)
+
+var sampleJPEG []byte
+
+func TestMain(m *testing.M) {
+	var err error
+	if sampleJPEG, err = os.ReadFile("../../testdata/telegram/telegram-01.jpg"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := imaging.Startup(imaging.Options{Workers: 4, Quality: 76}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	imaging.Shutdown()
+	os.Exit(code)
+}
+
+// fakeFetcher stands in for Telegram.
+type fakeFetcher struct {
+	mu    sync.Mutex
+	calls map[string]int
+	fail  map[string]bool   // file ids that fail
+	data  map[string][]byte // file ids with special bytes
+	delay time.Duration
+}
+
+func (f *fakeFetcher) Fetch(ctx context.Context, fileID string) ([]byte, error) {
+	f.mu.Lock()
+	f.calls[fileID]++
+	fail, data, delay := f.fail[fileID], f.data[fileID], f.delay
+	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if fail {
+		return nil, errors.New("telegram says no")
+	}
+	if data != nil {
+		return data, nil
+	}
+	return sampleJPEG, nil
+}
+
+func (f *fakeFetcher) count(fileID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[fileID]
+}
+
+func (f *fakeFetcher) total() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		n += c
+	}
+	return n
+}
+
+func (f *fakeFetcher) setFail(fileID string, fail bool) {
+	f.mu.Lock()
+	f.fail[fileID] = fail
+	f.mu.Unlock()
+}
+
+type env struct {
+	t       *testing.T
+	srv     *Server
+	h       http.Handler
+	store   *source.Store
+	fetcher *fakeFetcher
+	cache   *cache.Cache
+	cfg     *config.Config
+	secrets []string // nothing in here may appear in any response
+	logs    *syncBuffer
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func fileID(i int, style string) string {
+	return fmt.Sprintf("%s-%04d-%s-fileid", fileIDMark, i, style)
+}
+
+// records makes n records one second apart, newest first by index; every third has a second style.
+func records(n int) []source.Record {
+	now := time.Now().Unix()
+	out := make([]source.Record, 0, n)
+	for i := 0; i < n; i++ {
+		r := source.Record{
+			ID: fmt.Sprintf("-100%d:%d", 1+i%3, 1000+i), Prompt: fmt.Sprintf("prompt %d <b>&</b>", i), Command: "dream", Current: "_",
+			TTL:    now - int64(i) + 90*86400,
+			Images: map[string]source.RawImage{"_": {FileID: fileID(i, "base"), Caption: fmt.Sprintf("caption %d \"q\"", i)}},
+		}
+		if i%3 == 0 {
+			r.Images["monet"] = source.RawImage{FileID: fileID(i, "monet"), Caption: ""}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func newEnv(t *testing.T, recs []source.Record, vars map[string]string) *env {
+	t.Helper()
+	m := map[string]string{
+		"GALLERY_TOKEN": testToken, "TELEGRAM_BOT_TOKEN": testBotToken,
+		"GALLERY_CACHE_DIR": t.TempDir(), "GALLERY_WARM": "10",
+	}
+	for k, v := range vars {
+		m[k] = v
+	}
+	cfg, err := config.FromEnv(func(k string) string { return m[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &syncBuffer{}
+	log := slog.New(RedactingHandler(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}), cfg.Secrets()...))
+	ca, err := cache.Open(cfg.CacheDir, cfg.CacheMaxBytes(), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := source.NewStore(source.Static(recs), source.Options{StoreDays: 90, DefaultCommand: "dream"}, log)
+	if recs != nil {
+		if err := store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ff := &fakeFetcher{calls: map[string]int{}, fail: map[string]bool{}, data: map[string][]byte{}}
+	srv, err := New(Deps{Config: cfg, Store: store, Fetcher: ff, Cache: ca, Web: web.Files, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Close)
+	e := &env{t: t, srv: srv, h: srv.Handler(), store: store, fetcher: ff, cache: ca, cfg: cfg, logs: logs,
+		secrets: []string{testToken, testBotToken, fileIDMark, "api.telegram.org", "file_path", "file_id"}}
+	return e
+}
+
+type reqOpt func(*http.Request)
+
+func basic(r *http.Request)   { r.SetBasicAuth("anyone", testToken) }
+func gzipped(r *http.Request) { r.Header.Set("Accept-Encoding", "gzip, br") }
+func header(k, v string) reqOpt {
+	return func(r *http.Request) { r.Header.Set(k, v) }
+}
+
+// do sends one request and checks what every response must satisfy: the
+// security headers, and no secret, file_id or Telegram detail anywhere.
+func (e *env) do(method, target string, body io.Reader, opts ...reqOpt) (*http.Response, []byte) {
+	e.t.Helper()
+	r := httptest.NewRequest(method, target, body)
+	if body != nil {
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for _, o := range opts {
+		o(r)
+	}
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	resp := w.Result()
+	raw, _ := io.ReadAll(resp.Body)
+	plain := raw
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			e.t.Fatalf("%s %s: bad gzip: %v", method, target, err)
+		}
+		if plain, err = io.ReadAll(zr); err != nil {
+			e.t.Fatalf("%s %s: bad gzip: %v", method, target, err)
+		}
+	}
+	for name, want := range map[string]string{
+		"Content-Security-Policy": CSP,
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"Permissions-Policy":      PermissionsPolicy,
+	} {
+		if got := resp.Header.Get(name); got != want {
+			e.t.Errorf("%s %s: header %s = %q, want %q", method, target, name, got, want)
+		}
+	}
+	var hdr bytes.Buffer
+	_ = resp.Header.Write(&hdr)
+	for _, secret := range e.secrets {
+		if bytes.Contains(plain, []byte(secret)) || bytes.Contains(raw, []byte(secret)) {
+			e.t.Errorf("%s %s: the body contains %q", method, target, secret)
+		}
+		if strings.Contains(hdr.String(), secret) {
+			e.t.Errorf("%s %s: a header contains %q", method, target, secret)
+		}
+	}
+	return resp, plain
+}
+
+func (e *env) get(target string, opts ...reqOpt) (*http.Response, []byte) {
+	e.t.Helper()
+	return e.do("GET", target, nil, opts...)
+}
+
+type page struct {
+	Tiles  []source.Tile `json:"tiles"`
+	Next   *string       `json:"next"`
+	Newest *string       `json:"newest"`
+	V      string        `json:"v"`
+	Count  *int          `json:"count"`
+	Error  string        `json:"error"`
+}
+
+func (e *env) page(target string, opts ...reqOpt) (*http.Response, page) {
+	e.t.Helper()
+	resp, body := e.get(target, append([]reqOpt{basic}, opts...)...)
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json; charset=utf-8" {
+		e.t.Fatalf("%s: Content-Type %q", target, ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		e.t.Errorf("%s: Cache-Control %q", target, cc)
+	}
+	if v := resp.Header.Get("Vary"); v != "Accept-Encoding" {
+		e.t.Errorf("%s: Vary %q", target, v)
+	}
+	var p page
+	if err := json.Unmarshal(body, &p); err != nil {
+		e.t.Fatalf("%s: %v in %s", target, err, body)
+	}
+	return resp, p
+}
+
+func TestAuthRequired(t *testing.T) {
+	e := newEnv(t, records(5), nil)
+	key := e.store.Snapshot().Keys()[0]
+
+	resp, _ := e.get("/")
+	if resp.StatusCode != 303 || resp.Header.Get("Location") != "/login" {
+		t.Errorf("GET / without auth: %d to %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp, _ = e.get("/no/such/page")
+	if resp.StatusCode != 303 {
+		t.Errorf("unknown page without auth: %d", resp.StatusCode)
+	}
+	for _, target := range []string{"/api/tiles", "/api/tiles/new", "/api/other"} {
+		resp, body := e.get(target)
+		if resp.StatusCode != 401 || strings.TrimSpace(string(body)) != `{"error":"unauthorized"}` {
+			t.Errorf("%s without auth: %d %s", target, resp.StatusCode, body)
+		}
+		if resp.Header.Get("WWW-Authenticate") != "" {
+			t.Errorf("%s: WWW-Authenticate must not be sent", target)
+		}
+	}
+	for _, target := range []string{"/img/" + key + "-240.webp?v=" + imaging.Tag(), "/img/" + key + ".jpg", "/img/x"} {
+		resp, body := e.get(target)
+		if resp.StatusCode != 401 || len(body) != 0 || resp.Header.Get("WWW-Authenticate") != "" {
+			t.Errorf("%s without auth: %d, %d bytes", target, resp.StatusCode, len(body))
+		}
+	}
+	if e.fetcher.total() != 0 {
+		t.Errorf("unauthenticated requests reached Telegram")
+	}
+
+	// Basic: the password is the token, any user name.
+	if resp, _ := e.get("/api/tiles", basic); resp.StatusCode != 200 {
+		t.Errorf("Basic auth: %d", resp.StatusCode)
+	}
+	for _, bad := range []string{"", "wrong", testToken + "x", testToken[:len(testToken)-1], sessionValue(testToken)} {
+		resp, _ := e.get("/api/tiles", func(r *http.Request) { r.SetBasicAuth(testToken, bad) })
+		if resp.StatusCode != 401 {
+			t.Errorf("Basic password %q accepted", bad)
+		}
+	}
+
+	// Open routes.
+	for _, target := range []string{"/healthz", "/app.js", "/app.css", "/login"} {
+		if resp, _ := e.get(target); resp.StatusCode != 200 {
+			t.Errorf("%s without auth: %d", target, resp.StatusCode)
+		}
+	}
+}
+
+func TestLoginCookie(t *testing.T) {
+	e := newEnv(t, records(5), nil)
+	post := func(token string, opts ...reqOpt) (*http.Response, []byte) {
+		return e.do("POST", "/login", strings.NewReader(url.Values{"token": {token}}.Encode()), opts...)
+	}
+
+	resp, body := post("not the token")
+	if resp.StatusCode != 401 || !strings.Contains(string(body), `role="alert"`) || len(resp.Cookies()) != 0 {
+		t.Fatalf("wrong token: %d, cookies %v", resp.StatusCode, resp.Cookies())
+	}
+	resp, body = e.get("/login")
+	if resp.StatusCode != 200 || strings.Contains(string(body), `role="alert"`) || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		t.Errorf("GET /login: %d", resp.StatusCode)
+	}
+
+	resp, _ = post(testToken)
+	if resp.StatusCode != 303 || resp.Header.Get("Location") != "/" {
+		t.Fatalf("right token: %d", resp.StatusCode)
+	}
+	want := CookieName + "=" + sessionValue(testToken) + "; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict"
+	if got := resp.Header.Get("Set-Cookie"); got != want {
+		t.Fatalf("Set-Cookie = %q, want %q", got, want)
+	}
+	cookie := resp.Cookies()[0]
+	if cookie.Value == testToken || len(cookie.Value) != 64 {
+		t.Fatalf("the cookie must hold an HMAC, not the token")
+	}
+	withCookie := func(v string) reqOpt {
+		return func(r *http.Request) { r.AddCookie(&http.Cookie{Name: CookieName, Value: v}) }
+	}
+	if resp, _ := e.get("/", withCookie(cookie.Value)); resp.StatusCode != 200 {
+		t.Errorf("GET / with the cookie: %d", resp.StatusCode)
+	}
+	if resp, _ := e.get("/api/tiles", withCookie(cookie.Value)); resp.StatusCode != 200 {
+		t.Errorf("API with the cookie: %d", resp.StatusCode)
+	}
+	if resp, _ := e.get("/login", withCookie(cookie.Value)); resp.StatusCode != 303 {
+		t.Errorf("GET /login when signed in: %d", resp.StatusCode)
+	}
+	for _, forged := range []string{"", testToken, strings.Repeat("0", 64), cookie.Value[:63], strings.ToUpper(cookie.Value)} {
+		if resp, _ := e.get("/api/tiles", withCookie(forged)); resp.StatusCode != 401 {
+			t.Errorf("forged cookie %q accepted", forged)
+		}
+	}
+
+	// An oversized body is refused.
+	big := strings.NewReader("token=" + strings.Repeat("a", 5000))
+	if resp, _ := e.do("POST", "/login", big); resp.StatusCode != 400 {
+		t.Errorf("oversized login body: %d", resp.StatusCode)
+	}
+	// Neither the cookie value nor the token is ever logged.
+	if logs := e.logs.String(); strings.Contains(logs, cookie.Value) || strings.Contains(logs, testToken) {
+		t.Errorf("the log contains the cookie value or the token:\n%s", logs)
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	e := newEnv(t, records(1), nil)
+	now := time.Now()
+	e.srv.limiter.now = func() time.Time { return now }
+	post := func(token, addr string) *http.Response {
+		resp, _ := e.do("POST", "/login", strings.NewReader("token="+token), func(r *http.Request) { r.RemoteAddr = addr })
+		return resp
+	}
+	for i := 0; i < loginPerClient; i++ {
+		if resp := post("wrong", "203.0.113.5:1000"); resp.StatusCode != 401 {
+			t.Fatalf("attempt %d: %d", i, resp.StatusCode)
+		}
+	}
+	// The sixth is refused even with the right token, and says when to come back.
+	resp := post(testToken, "203.0.113.5:2000")
+	if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" || len(resp.Cookies()) != 0 {
+		t.Fatalf("after %d failures: %d, Retry-After %q", loginPerClient, resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	// Another client is not affected.
+	if resp := post(testToken, "203.0.113.6:1000"); resp.StatusCode != 303 {
+		t.Fatalf("another client: %d", resp.StatusCode)
+	}
+	// After the window the first client may try again.
+	now = now.Add(loginWindow + time.Second)
+	if resp := post(testToken, "203.0.113.5:3000"); resp.StatusCode != 303 {
+		t.Fatalf("after the window: %d", resp.StatusCode)
+	}
+	// The overall limit: many clients, one failure each.
+	for i := 0; i < loginOverall; i++ {
+		if resp := post("wrong", fmt.Sprintf("198.51.100.%d:1", i)); resp.StatusCode != 401 {
+			t.Fatalf("overall attempt %d: %d", i, resp.StatusCode)
+		}
+	}
+	if resp := post(testToken, "192.0.2.1:1"); resp.StatusCode != 429 {
+		t.Fatalf("overall limit: %d", resp.StatusCode)
+	}
+}
+
+func TestClientAddr(t *testing.T) {
+	for _, c := range []struct{ remote, xff, want string }{
+		{"203.0.113.5:1", "", "203.0.113.5"},
+		{"203.0.113.5:1", "1.2.3.4", "203.0.113.5"}, // a public peer cannot choose its address
+		{"127.0.0.1:1", "", "127.0.0.1"},
+		{"127.0.0.1:1", "9.9.9.9, 1.2.3.4", "1.2.3.4"}, // the entry the proxy appended
+		{"10.0.0.2:1", "1.2.3.4", "1.2.3.4"},
+		{"[::1]:1", "junk", "::1"},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := clientAddr(r); got != c.want {
+			t.Errorf("clientAddr(%s, %q) = %q, want %q", c.remote, c.xff, got, c.want)
+		}
+	}
+}
+
+func TestAuthOff(t *testing.T) {
+	e := newEnv(t, records(4), map[string]string{"GALLERY_TOKEN": "", "GALLERY_AUTH": "off"})
+	key := e.store.Snapshot().Keys()[0]
+	for _, target := range []string{"/", "/api/tiles", "/api/tiles/new", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag()} {
+		if resp, _ := e.get(target); resp.StatusCode != 200 {
+			t.Errorf("%s with auth off: %d", target, resp.StatusCode)
+		}
+	}
+	if resp, _ := e.get("/login"); resp.StatusCode != 303 || resp.Header.Get("Location") != "/" {
+		t.Errorf("GET /login with auth off: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("POST", "/login", strings.NewReader("token=x")); resp.StatusCode != 303 || len(resp.Cookies()) != 0 {
+		t.Errorf("POST /login with auth off: %d", resp.StatusCode)
+	}
+}
+
+func TestMethodsAndNotFound(t *testing.T) {
+	e := newEnv(t, records(2), nil)
+	for _, c := range []struct{ method, target, allow string }{
+		{"POST", "/", "GET, HEAD"}, {"DELETE", "/api/tiles", "GET, HEAD"}, {"PUT", "/login", "GET, HEAD, POST"},
+		{"POST", "/img/x.jpg", "GET, HEAD"}, {"POST", "/healthz", "GET, HEAD"}, {"PATCH", "/app.js", "GET, HEAD"},
+	} {
+		resp, _ := e.do(c.method, c.target, nil, basic)
+		if resp.StatusCode != 405 || resp.Header.Get("Allow") != c.allow {
+			t.Errorf("%s %s: %d, Allow %q", c.method, c.target, resp.StatusCode, resp.Header.Get("Allow"))
+		}
+	}
+	for _, target := range []string{"/nope", "/api/nope", "/img/", "/img/short.jpg", "/app.js/", "/index.html", "/login.html", "/favicon.ico"} {
+		if resp, _ := e.get(target, basic); resp.StatusCode != 404 {
+			t.Errorf("%s: %d, want 404", target, resp.StatusCode)
+		}
+	}
+	// HEAD is GET without the body.
+	r := httptest.NewRequest("HEAD", "/api/tiles", nil)
+	basic(r)
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	if w.Code != 200 || w.Header().Get("Content-Length") == "" {
+		t.Errorf("HEAD /api/tiles: %d", w.Code)
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	e := newEnv(t, records(1), nil)
+	resp, body := e.get("/healthz")
+	if resp.StatusCode != 200 || string(body) != "ok\n" || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") {
+		t.Errorf("healthy: %d %q", resp.StatusCode, body)
+	}
+	stale := newEnv(t, nil, nil) // never refreshed
+	resp, body = stale.get("/healthz")
+	if resp.StatusCode != 503 || string(body) != "stale\n" {
+		t.Errorf("stale: %d %q", resp.StatusCode, body)
+	}
+	// An empty listing still answers properly.
+	_, p := stale.page("/api/tiles")
+	if p.Tiles == nil || len(p.Tiles) != 0 || p.Next != nil || p.Newest != nil {
+		t.Errorf("empty listing: %+v", p)
+	}
+	_, body = stale.get("/api/tiles", basic)
+	if !strings.Contains(string(body), `"tiles":[]`) || !strings.Contains(string(body), `"next":null`) {
+		t.Errorf("empty listing body: %s", body)
+	}
+}
+
+func TestStaticAssets(t *testing.T) {
+	e := newEnv(t, records(1), nil)
+	for target, ctype := range map[string]string{"/app.js": "text/javascript; charset=utf-8", "/app.css": "text/css; charset=utf-8"} {
+		resp, body := e.get(target, gzipped)
+		etag := resp.Header.Get("ETag")
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctype || resp.Header.Get("Cache-Control") != "no-cache" ||
+			!strings.HasPrefix(etag, `"`) || len(body) == 0 || resp.Header.Get("Content-Encoding") != "" {
+			t.Errorf("%s: %d %v", target, resp.StatusCode, resp.Header)
+		}
+		resp, body = e.get(target, header("If-None-Match", etag))
+		if resp.StatusCode != 304 || len(body) != 0 {
+			t.Errorf("%s with If-None-Match: %d", target, resp.StatusCode)
+		}
+		if resp, _ := e.get(target, header("If-None-Match", `"other"`)); resp.StatusCode != 200 {
+			t.Errorf("%s with another ETag: %d", target, resp.StatusCode)
+		}
+	}
+}
+
+func TestTilesPaging(t *testing.T) {
+	e := newEnv(t, records(150), nil) // 150 records, 200 tiles
+	snap := e.store.Snapshot()
+	if snap.Len() != 200 {
+		t.Fatalf("%d tiles", snap.Len())
+	}
+
+	_, first := e.page("/api/tiles")
+	if n := len(first.Tiles); n < 59 || n > 60 { // pages hold whole records
+		t.Errorf("default page: %d tiles", n)
+	}
+	if first.V != imaging.Tag() || first.Newest == nil || *first.Newest != snap.Newest(1)[0].Cursor() || first.Next == nil {
+		t.Errorf("first page: v %q newest %v next %v", first.V, first.Newest, first.Next)
+	}
+	// The cap: anything above 120 is 120.
+	for _, limit := range []string{"120", "121", "5000"} {
+		_, p := e.page("/api/tiles?limit=" + limit)
+		if n := len(p.Tiles); n < 119 || n > 120 {
+			t.Errorf("limit=%s: %d tiles", limit, n)
+		}
+	}
+	for _, bad := range []string{"limit=0", "limit=-1", "limit=abc", "limit=1.5", "cursor=%21%21", "cursor=AAAA"} {
+		resp, p := e.page("/api/tiles?" + bad)
+		if resp.StatusCode != 400 || p.Error == "" {
+			t.Errorf("%s: %d %+v", bad, resp.StatusCode, p)
+		}
+	}
+
+	// Page through everything at several sizes: no duplicates, no gaps, snapshot order.
+	want := snap.Keys()
+	for _, limit := range []int{1, 7, 60, 120} {
+		var got []string
+		seen := map[string]bool{}
+		target := fmt.Sprintf("/api/tiles?limit=%d", limit)
+		for pages := 0; ; pages++ {
+			_, p := e.page(target)
+			for _, tile := range p.Tiles {
+				if seen[tile.Key] {
+					t.Fatalf("limit %d: duplicate %s", limit, tile.Key)
+				}
+				seen[tile.Key] = true
+				got = append(got, tile.Key)
+				if len(tile.Styles) == 0 || tile.Label == "" || tile.Command != "dream" {
+					t.Fatalf("tile %+v", tile)
+				}
+			}
+			if p.Next == nil {
+				break
+			}
+			if pages > 300 {
+				t.Fatal("paging does not end")
+			}
+			target = fmt.Sprintf("/api/tiles?limit=%d&cursor=%s", limit, url.QueryEscape(*p.Next))
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("limit %d: %d tiles, not the snapshot's %d in order", limit, len(got), len(want))
+		}
+	}
+}
+
+func TestNewTiles(t *testing.T) {
+	recs := records(10)
+	e := newEnv(t, recs[3:], nil) // the three newest come later
+	_, first := e.page("/api/tiles")
+	since := url.QueryEscape(*first.Newest)
+
+	_, p := e.page("/api/tiles/new?since=" + since)
+	if p.Count == nil || *p.Count != 0 || p.Newest == nil || *p.Newest != *first.Newest || p.Tiles != nil {
+		t.Errorf("nothing new: %+v", p)
+	}
+	_, body := e.get("/api/tiles/new?since="+since, basic)
+	if strings.Contains(string(body), "tiles") {
+		t.Errorf("tiles sent without tiles=1: %s", body)
+	}
+
+	// The bot draws three more (records 0..2; record 0 has two images).
+	fresh := newEnv(t, recs, nil)
+	_, p = fresh.page("/api/tiles/new?since=" + since)
+	if *p.Count != 4 || *p.Newest == *first.Newest {
+		t.Errorf("after new records: count %d", *p.Count)
+	}
+	_, p = fresh.page("/api/tiles/new?tiles=1&since=" + since)
+	if *p.Count != 4 || len(p.Tiles) != 4 || p.V != imaging.Tag() || p.Tiles[0].Key != fresh.store.Snapshot().Keys()[0] {
+		t.Errorf("tiles=1: %+v", p)
+	}
+	// No since: everything counts; tiles are capped at 120.
+	big := newEnv(t, records(150), nil)
+	_, p = big.page("/api/tiles/new?tiles=1")
+	if *p.Count != 200 || len(p.Tiles) != 120 {
+		t.Errorf("no since: count %d, %d tiles", *p.Count, len(p.Tiles))
+	}
+	if resp, p := e.page("/api/tiles/new?since=%21"); resp.StatusCode != 400 || p.Error == "" {
+		t.Errorf("bad since: %d", resp.StatusCode)
+	}
+	_, body = e.get("/api/tiles/new?tiles=1&since="+since, basic)
+	if !strings.Contains(string(body), `"tiles":[]`) {
+		t.Errorf("tiles=1 with nothing new: %s", body)
+	}
+}
+
+func TestGzipOnlyForJSON(t *testing.T) {
+	e := newEnv(t, records(40), nil)
+	key := e.store.Snapshot().Keys()[0]
+	resp, _ := e.page("/api/tiles", gzipped)
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Errorf("JSON was not gzip-encoded on request")
+	}
+	resp, _ = e.page("/api/tiles")
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("JSON was encoded without being asked")
+	}
+	resp, _ = e.page("/api/tiles", header("Accept-Encoding", "gzip;q=0, identity"))
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("gzip;q=0 was ignored")
+	}
+	for _, target := range []string{"/", "/login", "/app.js", "/app.css", "/healthz", "/nope",
+		"/img/" + key + ".jpg", "/img/" + key + "-480.webp?v=" + imaging.Tag(), "/img/" + key + "-240.webp?v=" + imaging.Tag()} {
+		resp, _ := e.get(target, basic, gzipped)
+		if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+			t.Errorf("%s: Content-Encoding %q; only JSON may be compressed", target, enc)
+		}
+	}
+}
+
+func webpSize(t *testing.T, data []byte) {
+	t.Helper()
+	if len(data) < 16 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+		t.Fatalf("not a WebP file (%d bytes)", len(data))
+	}
+}
+
+func TestImages(t *testing.T) {
+	e := newEnv(t, records(6), nil)
+	snap := e.store.Snapshot()
+	tile := snap.Newest(1)[0]
+	key, tag := tile.Key, imaging.Tag()
+	fid, _ := snap.FileID(key)
+
+	// Thumbnails.
+	for _, size := range []string{"240", "480"} {
+		target := "/img/" + key + "-" + size + ".webp?v=" + tag
+		resp, body := e.get(target, basic)
+		etag := `"` + key + "-" + size + "-v" + tag + `"`
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/webp" ||
+			resp.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" || resp.Header.Get("ETag") != etag ||
+			resp.Header.Get("Content-Length") != fmt.Sprint(len(body)) || resp.Header.Get("X-Gallery-Placeholder") != "" {
+			t.Fatalf("%s: %d %v", target, resp.StatusCode, resp.Header)
+		}
+		webpSize(t, body)
+		if bytes.Equal(body, imaging.Placeholder()) {
+			t.Fatalf("%s is the placeholder", target)
+		}
+		// From the cache the bytes are the same.
+		if _, again := e.get(target, basic); !bytes.Equal(again, body) {
+			t.Errorf("%s: different bytes the second time", target)
+		}
+		resp, body = e.get(target, basic, header("If-None-Match", etag))
+		if resp.StatusCode != 304 || len(body) != 0 || resp.Header.Get("ETag") != etag {
+			t.Errorf("%s with If-None-Match: %d", target, resp.StatusCode)
+		}
+		if resp, _ := e.get(target, basic, header("If-None-Match", `W/"zzz", `+etag)); resp.StatusCode != 304 {
+			t.Errorf("%s with an If-None-Match list: %d", target, resp.StatusCode)
+		}
+	}
+	// The original, byte for byte.
+	resp, body := e.get("/img/"+key+".jpg", basic)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/jpeg" || !bytes.Equal(body, sampleJPEG) ||
+		resp.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" || resp.Header.Get("ETag") != `"`+key+`"` {
+		t.Fatalf("original: %d %v", resp.StatusCode, resp.Header)
+	}
+	if resp, _ := e.get("/img/"+key+".jpg", basic, header("If-None-Match", `"`+key+`"`)); resp.StatusCode != 304 {
+		t.Errorf("original with If-None-Match: %d", resp.StatusCode)
+	}
+	// All of that fetched the file from Telegram exactly once, and it is on disk.
+	if n := e.fetcher.count(fid); n != 1 {
+		t.Errorf("the original was fetched %d times", n)
+	}
+	if !e.cache.HasOriginal(key) || !e.cache.HasThumb(key, 240, tag) || !e.cache.HasThumb(key, 480, tag) {
+		t.Errorf("the cache does not hold the original and both thumbnails")
+	}
+
+	// The pipeline version must match; no version is no match.
+	for _, v := range []string{"", "?v=", "?v=0", "?v=" + tag + "x", "?V=" + tag} {
+		if resp, _ := e.get("/img/"+key+"-240.webp"+v, basic); resp.StatusCode != 404 {
+			t.Errorf("thumbnail with %q: %d, want 404", v, resp.StatusCode)
+		}
+	}
+	// Names that are not exactly a key plus a known size.
+	for _, name := range []string{
+		key + "-120.webp", key + "-480.jpg", key + ".webp", key + "-240.webp.jpg", key + ".jpeg", key, key + "x.jpg",
+		key[:21] + ".jpg", "../" + key + ".jpg", key + "-240.WEBP", "%2e%2e%2f" + key + ".jpg",
+	} {
+		if resp, _ := e.get("/img/"+name+"?v="+tag, basic); resp.StatusCode != 404 {
+			t.Errorf("/img/%s: %d, want 404", name, resp.StatusCode)
+		}
+	}
+}
+
+func TestOnlyKeysInSnapshot(t *testing.T) {
+	e := newEnv(t, records(3), nil)
+	tag := imaging.Tag()
+	// A well-formed key for a file that is not in the table, even one whose files are in the cache.
+	ghost := source.Key("some-other-file-id")
+	if err := e.cache.PutOriginal(ghost, sampleJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.cache.PutThumb(ghost, 240, tag, imaging.Placeholder()); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"/img/" + ghost + ".jpg", "/img/" + ghost + "-240.webp?v=" + tag, "/img/" + ghost + "-480.webp?v=" + tag} {
+		resp, _ := e.get(target, basic)
+		if resp.StatusCode != 404 {
+			t.Errorf("%s: %d, want 404", target, resp.StatusCode)
+		}
+		if resp, _ := e.get(target, basic, header("If-None-Match", "*")); resp.StatusCode != 404 {
+			t.Errorf("%s with If-None-Match: %d, want 404", target, resp.StatusCode)
+		}
+	}
+	// A raw file_id is not a key.
+	fid := fileID(0, "base")
+	if resp, _ := e.get("/img/"+fid+".jpg", basic); resp.StatusCode != 404 {
+		t.Errorf("a file_id was accepted as a key")
+	}
+	if e.fetcher.total() != 0 {
+		t.Errorf("a key outside the snapshot reached Telegram")
+	}
+}
+
+func TestPlaceholderOnFailure(t *testing.T) {
+	e := newEnv(t, records(4), nil)
+	snap := e.store.Snapshot()
+	key, tag := snap.Keys()[0], imaging.Tag()
+	fid, _ := snap.FileID(key)
+	e.fetcher.setFail(fid, true)
+
+	target := "/img/" + key + "-240.webp?v=" + tag
+	resp, body := e.get(target, basic)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/webp" || !bytes.Equal(body, imaging.Placeholder()) ||
+		resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("X-Gallery-Placeholder") != "1" || resp.Header.Get("ETag") != "" {
+		t.Fatalf("placeholder: %d %v", resp.StatusCode, resp.Header)
+	}
+	resp, body = e.get("/img/"+key+".jpg", basic)
+	if resp.StatusCode != 502 || string(body) != "image unavailable\n" || resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("ETag") != "" {
+		t.Fatalf("original unavailable: %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	if e.cache.HasThumb(key, 240, tag) || e.cache.HasOriginal(key) {
+		t.Fatalf("a failure was stored in the cache")
+	}
+	// The fetcher's own message goes to the log, never to the client (checked by do) .
+	if !strings.Contains(e.logs.String(), "fetching an original failed") {
+		t.Errorf("the failure was not logged")
+	}
+	// When Telegram answers again, the real image is served.
+	e.fetcher.setFail(fid, false)
+	resp, body = e.get(target, basic)
+	if resp.Header.Get("X-Gallery-Placeholder") != "" || bytes.Equal(body, imaging.Placeholder()) || resp.Header.Get("ETag") == "" {
+		t.Fatalf("no recovery after the failure: %v", resp.Header)
+	}
+
+	// Bytes that are not a JPEG: placeholder, nothing stored, and no second download.
+	key2 := snap.Keys()[1]
+	fid2, _ := snap.FileID(key2)
+	var pngBuf bytes.Buffer
+	_ = png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	e.fetcher.mu.Lock()
+	e.fetcher.data[fid2] = pngBuf.Bytes()
+	e.fetcher.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		resp, _ := e.get("/img/"+key2+"-480.webp?v="+tag, basic)
+		if resp.Header.Get("X-Gallery-Placeholder") != "1" {
+			t.Fatalf("a PNG was not refused")
+		}
+	}
+	if resp, _ := e.get("/img/"+key2+".jpg", basic); resp.StatusCode != 502 {
+		t.Errorf("a PNG was served as the original: %d", resp.StatusCode)
+	}
+	if n := e.fetcher.count(fid2); n != 1 {
+		t.Errorf("an unusable file was downloaded %d times", n)
+	}
+	if e.cache.HasOriginal(key2) {
+		t.Errorf("an unusable file was stored")
+	}
+}
+
+func TestConcurrentColdTile(t *testing.T) {
+	e := newEnv(t, records(2), nil)
+	snap := e.store.Snapshot()
+	key := snap.Keys()[0]
+	fid, _ := snap.FileID(key)
+	e.fetcher.mu.Lock()
+	e.fetcher.delay = 100 * time.Millisecond
+	e.fetcher.mu.Unlock()
+	var wg sync.WaitGroup
+	bodies := make([][]byte, 24)
+	for i := range bodies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			size := []string{"240", "480"}[i%2]
+			r := httptest.NewRequest("GET", "/img/"+key+"-"+size+".webp?v="+imaging.Tag(), nil)
+			basic(r)
+			w := httptest.NewRecorder()
+			e.h.ServeHTTP(w, r)
+			bodies[i] = w.Body.Bytes()
+		}()
+	}
+	wg.Wait()
+	for i, b := range bodies {
+		webpSize(t, b)
+		if !bytes.Equal(b, bodies[i%2]) {
+			t.Errorf("request %d got different bytes", i)
+		}
+	}
+	if n := e.fetcher.count(fid); n != 1 {
+		t.Errorf("24 concurrent requests fetched the original %d times", n)
+	}
+}
+
+func TestWarmAndPrune(t *testing.T) {
+	e := newEnv(t, records(30), map[string]string{"GALLERY_WARM": "8"})
+	snap := e.store.Snapshot()
+	tag := imaging.Tag()
+	dead := snap.Newest(8)[2].Key
+	fid, _ := snap.FileID(dead)
+	e.fetcher.setFail(fid, true)
+
+	e.srv.Warm(context.Background(), snap)
+	for i, tile := range snap.Newest(9) {
+		for _, size := range imaging.Sizes {
+			has := e.cache.HasThumb(tile.Key, size, tag)
+			if want := i < 8 && tile.Key != dead; has != want {
+				t.Errorf("tile %d size %d: warmed = %v, want %v", i, size, has, want)
+			}
+		}
+	}
+	// A second run has nothing left to do except the failed one.
+	before := e.fetcher.total()
+	e.srv.Warm(context.Background(), snap)
+	if got := e.fetcher.total() - before; got > 2 {
+		t.Errorf("the second warm-up made %d fetches", got)
+	}
+
+	// OnSwap: warms and prunes in the background. Files of keys not in the snapshot go.
+	ghost := source.Key("gone-from-the-table")
+	if err := e.cache.PutOriginal(ghost, sampleJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.cache.PutThumb(snap.Keys()[0], 240, "0old", imaging.Placeholder()); err != nil {
+		t.Fatal(err)
+	}
+	e.store.OnSwap(e.srv.OnSwap)
+	if err := e.store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for e.cache.HasOriginal(ghost) || e.cache.HasThumb(snap.Keys()[0], 240, "0old") {
+		if time.Now().After(deadline) {
+			t.Fatal("the cache was not pruned after a swap")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !e.cache.HasOriginal(snap.Keys()[0]) {
+		t.Errorf("pruning removed a live original")
+	}
+	// Close waits for the background work; afterwards requests still answer.
+	e.srv.Close()
+	cold := snap.Keys()[snap.Len()-1]
+	resp, _ := e.get("/img/"+cold+"-240.webp?v="+tag, basic)
+	if resp.StatusCode != 200 || resp.Header.Get("X-Gallery-Placeholder") != "1" {
+		t.Errorf("after Close: %d %v", resp.StatusCode, resp.Header)
+	}
+}
+
+func TestIndexNoscript(t *testing.T) {
+	e := newEnv(t, records(100), nil)
+	snap := e.store.Snapshot()
+	tag := imaging.Tag()
+	resp, body := e.get("/", basic)
+	html := string(body)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/html; charset=utf-8" || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("index: %d %v", resp.StatusCode, resp.Header)
+	}
+	tiles, next, _ := snap.Page("", DefaultLimit)
+	if n := strings.Count(html, `<li class="tile">`); n != len(tiles) {
+		t.Errorf("%d server-rendered tiles, want %d", n, len(tiles))
+	}
+	first := tiles[0]
+	for _, want := range []string{
+		`src="/img/` + first.Key + `-240.webp?v=` + tag + `"`,
+		`/img/` + first.Key + `-480.webp?v=` + tag + ` 480w`,
+		`href="/img/` + first.Key + `.jpg"`,
+		`href="/?cursor=` + next + `"`,
+		`alt="caption 0 &#34;q&#34;"`, // escaped
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html lacks %s", want)
+		}
+	}
+	if strings.Contains(html, "<b>") {
+		t.Errorf("a prompt reached the page unescaped")
+	}
+	// "Load more" leads to the following page, and so on to the end, each tile once.
+	seen := map[string]bool{}
+	cursor, pages := "", 0
+	for {
+		target := "/"
+		if cursor != "" {
+			target = "/?cursor=" + url.QueryEscape(cursor)
+		}
+		_, body := e.get(target, basic)
+		page, n, _ := snap.Page(cursor, DefaultLimit)
+		for _, tile := range page {
+			if !strings.Contains(string(body), `href="/img/`+tile.Key+`.jpg"`) || seen[tile.Key] {
+				t.Fatalf("page %d: tile %s missing or repeated", pages, tile.Key)
+			}
+			seen[tile.Key] = true
+		}
+		if n == "" {
+			if strings.Contains(string(body), "Load more") {
+				t.Errorf("the last page offers more")
+			}
+			break
+		}
+		cursor = n
+		pages++
+	}
+	if len(seen) != snap.Len() {
+		t.Errorf("the no-script pages show %d of %d tiles", len(seen), snap.Len())
+	}
+	if resp, _ := e.get("/?cursor=%21%21", basic); resp.StatusCode != 400 {
+		t.Errorf("bad cursor on /: %d", resp.StatusCode)
+	}
+}
+
+func TestRedactingHandler(t *testing.T) {
+	var buf bytes.Buffer
+	const secret, other = "s3cret-token-value/+x", "123456:BOT-token"
+	for name, inner := range map[string]slog.Handler{
+		"text": slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		"json": slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	} {
+		buf.Reset()
+		log := slog.New(RedactingHandler(inner, secret, "", other))
+		u := "https://api.example/bot" + other + "/getFile?x=" + url.QueryEscape(secret)
+		log.Info("message with "+secret, "plain", secret, "err", &url.Error{Op: "Post", URL: u, Err: errors.New("boom " + other)},
+			slog.Group("g", "inner", secret, slog.Group("deep", "x", other)), "any", struct{ A string }{secret}, "n", 5, secret, "key")
+		log.With("with", secret).WithGroup("grp").Warn("again", "url", u)
+		slog.NewLogLogger(log.Handler(), slog.LevelWarn).Print("http: error " + u)
+		out := buf.String()
+		for _, s := range []string{secret, other, url.QueryEscape(secret)} {
+			if strings.Contains(out, s) {
+				t.Errorf("%s handler: the log contains %q:\n%s", name, s, out)
+			}
+		}
+		if !strings.Contains(out, "[redacted]") || !strings.Contains(out, "boom") || !strings.Contains(out, "5") {
+			t.Errorf("%s handler: unexpected output:\n%s", name, out)
+		}
+	}
+}
+
+func TestAccessLog(t *testing.T) {
+	e := newEnv(t, records(2), nil)
+	e.get("/api/tiles?cursor=&secretquery=1", basic, func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: CookieName, Value: "cookie-value-123"})
+		r.Header.Set("X-Other", "header-value-456")
+	})
+	e.get("/"+testToken+"/x", basic)
+	logs := e.logs.String()
+	if !strings.Contains(logs, "path=/api/tiles") || !strings.Contains(logs, "status=200") {
+		t.Errorf("no access log line:\n%s", logs)
+	}
+	for _, s := range []string{"cookie-value-123", "header-value-456", "secretquery", testToken, "Basic", fileIDMark} {
+		if strings.Contains(logs, s) {
+			t.Errorf("the log contains %q:\n%s", s, logs)
+		}
+	}
+}
+
+func TestNewRejectsBadDeps(t *testing.T) {
+	if _, err := New(Deps{}); err == nil {
+		t.Error("New accepted empty Deps")
+	}
+}
