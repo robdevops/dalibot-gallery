@@ -1,6 +1,19 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# The disk cache and built binaries
 /cache/
 /gallery
 /dalibot-gallery
 *.test
 *.out
-.env
+
+# Node and Playwright (end-to-end tests)
+node_modules/
+test-results/
+playwright-report/
+
+# End-to-end test state
+.auth/

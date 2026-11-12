@@ -1,0 +1,16 @@
+# Caddy in front of dalibot-gallery. Caddy obtains and renews the certificate
+# for the host name by itself.
+#
+# The gallery sends its own Content-Security-Policy, X-Content-Type-Options,
+# Referrer-Policy, Permissions-Policy and X-Frame-Options. Nothing here removes
+# or replaces them. The one header added is HSTS, which the gallery does not send.
+#
+# reverse_proxy passes the Host header through and sets X-Forwarded-For to the
+# client's address; the gallery uses it to count failed logins per client.
+# There is no cache: /img/ responses are behind the login and must stay there.
+
+gallery.example.com {
+	header Strict-Transport-Security "max-age=31536000"
+
+	reverse_proxy 127.0.0.1:8080
+}

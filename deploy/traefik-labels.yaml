@@ -1,0 +1,39 @@
+# Traefik (Docker provider) in front of dalibot-gallery. A Compose override:
+#
+#   docker compose -f deploy/compose.yaml -f deploy/traefik-labels.yaml up -d --build
+#
+# Assumes a running Traefik v2 or v3 with:
+#   - an entry point named "websecure" on :443,
+#   - a certificate resolver named "letsencrypt",
+#   - an external Docker network named "proxy" that Traefik is attached to.
+# Change those three names and the host name to match your setup.
+#
+# Traefik reaches the container over the Docker network, so the host port is
+# removed. Traefik sets X-Forwarded-For itself, which the gallery uses to
+# count failed logins per client.
+#
+# No middleware touches the response headers: the gallery sends its own
+# Content-Security-Policy, X-Content-Type-Options, Referrer-Policy,
+# Permissions-Policy and X-Frame-Options, and they must reach the browser
+# unchanged. The one header added here is HSTS, which the gallery does not send.
+# Do not add a caching plugin for /img/: those responses are behind the login.
+
+services:
+  gallery:
+    ports: !reset []
+    networks:
+      - proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.routers.gallery.rule: Host(`gallery.example.com`)
+      traefik.http.routers.gallery.entrypoints: websecure
+      traefik.http.routers.gallery.tls: "true"
+      traefik.http.routers.gallery.tls.certresolver: letsencrypt
+      traefik.http.routers.gallery.middlewares: gallery-hsts
+      traefik.http.services.gallery.loadbalancer.server.port: "8080"
+      traefik.http.middlewares.gallery-hsts.headers.stsSeconds: "31536000"
+
+networks:
+  proxy:
+    external: true

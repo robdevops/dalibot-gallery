@@ -1,0 +1,75 @@
+# systemd unit for dalibot-gallery (the non-container install).
+#
+#   install -m 0755 dalibot-gallery /usr/local/bin/dalibot-gallery
+#   install -d -m 0700 /etc/dalibot-gallery
+#   install -m 0600 .env /etc/dalibot-gallery/env
+#   install -m 0644 deploy/dalibot-gallery.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now dalibot-gallery
+#
+# libvips must be installed (see the README). The gallery listens on
+# 127.0.0.1:8080 unless GALLERY_LISTEN says otherwise; put a TLS reverse proxy
+# in front of it.
+
+[Unit]
+Description=dalibot-gallery, a web gallery of dalibot's images
+Documentation=https://github.com/robdevops/dalibot-gallery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/dalibot-gallery
+# Read by systemd as root before privileges are dropped; keep it mode 0600.
+EnvironmentFile=/etc/dalibot-gallery/env
+Restart=on-failure
+RestartSec=5
+# A configuration error exits with status 2; restarting would not fix it.
+RestartPreventExitStatus=2
+TimeoutStopSec=20
+
+# A throw-away user with no home and no shell.
+DynamicUser=yes
+# /var/cache/dalibot-gallery, owned by the dynamic user; systemd passes it as
+# $CACHE_DIRECTORY, which the gallery uses when GALLERY_CACHE_DIR is unset.
+CacheDirectory=dalibot-gallery
+CacheDirectoryMode=0700
+UMask=0077
+
+# A hard cap: libvips' own cache limits do not bound the process.
+MemoryMax=512M
+TasksMax=256
+
+# File system: everything read-only except the cache directory.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Privileges.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+
+# Kernel.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Network and system calls.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

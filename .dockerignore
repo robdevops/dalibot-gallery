@@ -1,0 +1,19 @@
+# The image is built from go.mod, go.sum, cmd/, internal/ and web/ only.
+.git
+.gitignore
+.dockerignore
+.env
+.env.*
+cache
+deploy
+e2e
+scripts
+testdata
+node_modules
+test-results
+playwright-report
+*.md
+LICENSE
+*.test
+*.out
+**/*_test.go
