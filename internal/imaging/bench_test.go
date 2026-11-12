@@ -41,6 +41,18 @@ func benchSequential(b *testing.B, size int) {
 func BenchmarkThumbnail480(b *testing.B) { benchSequential(b, 480) }
 func BenchmarkThumbnail240(b *testing.B) { benchSequential(b, 240) }
 
+// Verify is the full decode that checks an original before it is stored.
+func BenchmarkVerify(b *testing.B) {
+	inputs := benchInputs(b)
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := Verify(ctx, inputs[i%len(inputs)]); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // Parallel: as many goroutines as worker slots (run with -cpu 4).
 func benchParallel(b *testing.B, size int) {
 	inputs := benchInputs(b)

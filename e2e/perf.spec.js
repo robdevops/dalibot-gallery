@@ -162,7 +162,7 @@ test('a tile from a warm cache is served in under 5 ms', async ({ request, baseU
       for (const r of rs) {
         expect(r.status).toBe(200)
         expect(r.type).toBe('image/webp')
-        expect(r.cc).toContain('immutable')
+        expect(r.cc).toBe('private, max-age=31536000, immutable')
       }
       bytes += rs[0].bytes
       all.push(...rs)

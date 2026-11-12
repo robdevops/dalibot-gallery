@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/robdevops/dalibot-gallery/internal/config"
 	"github.com/robdevops/dalibot-gallery/internal/imaging"
 	"github.com/robdevops/dalibot-gallery/internal/source"
+	"github.com/robdevops/dalibot-gallery/internal/telegram"
 	"github.com/robdevops/dalibot-gallery/web"
 )
 
@@ -54,6 +56,7 @@ func TestMain(m *testing.M) {
 type fakeFetcher struct {
 	mu    sync.Mutex
 	calls map[string]int
+	errs  map[string]error  // file ids that fail with this error
 	fail  map[string]bool   // file ids that fail
 	data  map[string][]byte // file ids with special bytes
 	delay time.Duration
@@ -62,10 +65,13 @@ type fakeFetcher struct {
 func (f *fakeFetcher) Fetch(ctx context.Context, fileID string) ([]byte, error) {
 	f.mu.Lock()
 	f.calls[fileID]++
-	fail, data, delay := f.fail[fileID], f.data[fileID], f.delay
+	fail, data, delay, failWith := f.fail[fileID], f.data[fileID], f.delay, f.errs[fileID]
 	f.mu.Unlock()
 	if delay > 0 {
 		time.Sleep(delay)
+	}
+	if failWith != nil {
+		return nil, failWith
 	}
 	if fail {
 		return nil, errors.New("telegram says no")
@@ -174,7 +180,7 @@ func newEnv(t *testing.T, recs []source.Record, vars map[string]string) *env {
 			t.Fatal(err)
 		}
 	}
-	ff := &fakeFetcher{calls: map[string]int{}, fail: map[string]bool{}, data: map[string][]byte{}}
+	ff := &fakeFetcher{calls: map[string]int{}, fail: map[string]bool{}, data: map[string][]byte{}, errs: map[string]error{}}
 	srv, err := New(Deps{Config: cfg, Store: store, Fetcher: ff, Cache: ca, Web: web.Files, Log: log})
 	if err != nil {
 		t.Fatal(err)
@@ -316,11 +322,23 @@ func TestAuthRequired(t *testing.T) {
 		}
 	}
 
-	// Open routes.
-	for _, target := range []string{"/healthz", "/app.js", "/app.css", "/login"} {
+	// Open routes: the health check, the login page and its stylesheet. Nothing else.
+	for _, target := range []string{"/healthz", "/app.css", "/login"} {
 		if resp, _ := e.get(target); resp.StatusCode != 200 {
 			t.Errorf("%s without auth: %d", target, resp.StatusCode)
 		}
+	}
+	// The gallery's script is behind the login like every other route.
+	resp, body := e.get("/app.js")
+	if resp.StatusCode != 401 || strings.Contains(string(body), "function") || resp.Header.Get("ETag") != "" {
+		t.Errorf("/app.js without auth: %d, %d bytes", resp.StatusCode, len(body))
+	}
+	if resp, _ := e.get("/app.js", header("If-None-Match", "*")); resp.StatusCode != 401 {
+		t.Errorf("/app.js with If-None-Match without auth: %d", resp.StatusCode)
+	}
+	cookie := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: CookieName, Value: sessionValue(testToken)}) }
+	if resp, body := e.get("/app.js", cookie); resp.StatusCode != 200 || len(body) == 0 {
+		t.Errorf("/app.js with the cookie: %d", resp.StatusCode)
 	}
 }
 
@@ -409,7 +427,7 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 	// The overall limit: many clients, one failure each.
 	for i := 0; i < loginOverall; i++ {
-		if resp := post("wrong", fmt.Sprintf("198.51.100.%d:1", i)); resp.StatusCode != 401 {
+		if resp := post("wrong", fmt.Sprintf("198.51.%d.%d:1", 100+i/250, i%250)); resp.StatusCode != 401 {
 			t.Fatalf("overall attempt %d: %d", i, resp.StatusCode)
 		}
 	}
@@ -418,23 +436,278 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
+// A few clients cannot lock everyone else out: the overall ceiling is far
+// above what the per-client limit lets them reach.
+func TestLoginLockoutNeedsManyClients(t *testing.T) {
+	e := newEnv(t, records(1), nil)
+	post := func(token, addr string) int {
+		resp, _ := e.do("POST", "/login", strings.NewReader("token="+token), func(r *http.Request) { r.RemoteAddr = addr })
+		return resp.StatusCode
+	}
+	refused := 0
+	for client := 0; client < 20; client++ { // 20 clients, 40 wrong tokens each
+		for i := 0; i < 40; i++ {
+			if post("wrong", fmt.Sprintf("198.51.100.%d:1", client)) == 401 {
+				refused++
+			}
+		}
+	}
+	if refused != 20*loginPerClient {
+		t.Fatalf("%d wrong tokens were evaluated, want %d", refused, 20*loginPerClient)
+	}
+	if code := post(testToken, "192.0.2.77:1"); code != 303 {
+		t.Fatalf("an uninvolved client with the right token got %d", code)
+	}
+}
+
+// Wrong Basic passwords count against the same limiter as failed logins, on
+// every protected route, so Basic is not a faster way to guess the token.
+func TestBasicAuthRateLimit(t *testing.T) {
+	e := newEnv(t, records(2), nil)
+	now := time.Now()
+	e.srv.limiter.now = func() time.Time { return now }
+	key := e.store.Snapshot().Keys()[0]
+	targets := []string{"/api/tiles", "/", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag(), "/app.js", "/nope"}
+	try := func(target, pass, addr string) *http.Response {
+		resp, _ := e.get(target, func(r *http.Request) { r.RemoteAddr = addr; r.SetBasicAuth("u", pass) })
+		return resp
+	}
+	for i := 0; i < loginPerClient; i++ {
+		target := targets[i%len(targets)]
+		if resp := try(target, fmt.Sprintf("guess-%d", i), "203.0.113.5:1000"); resp.StatusCode == 200 || resp.StatusCode == 429 {
+			t.Fatalf("wrong password %d on %s: %d", i, target, resp.StatusCode)
+		}
+	}
+	// From now on the client is refused on every route, right password or not.
+	for _, target := range targets {
+		for _, pass := range []string{"guess-again", testToken} {
+			resp := try(target, pass, "203.0.113.5:2000")
+			if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+				t.Fatalf("%s after %d wrong passwords: %d, Retry-After %q", target, loginPerClient, resp.StatusCode, resp.Header.Get("Retry-After"))
+			}
+		}
+	}
+	if e.fetcher.total() != 0 {
+		t.Error("a blocked client reached Telegram")
+	}
+	// The login form shares the count.
+	resp, _ := e.do("POST", "/login", strings.NewReader("token="+testToken), func(r *http.Request) { r.RemoteAddr = "203.0.113.5:3000" })
+	if resp.StatusCode != 429 {
+		t.Fatalf("login after wrong Basic passwords: %d", resp.StatusCode)
+	}
+	// Blocked attempts are not recorded, so the block does not extend itself.
+	if n := strings.Count(e.logs.String(), "basic auth failed"); n != loginPerClient {
+		t.Errorf("%d failures logged, want %d", n, loginPerClient)
+	}
+	// A session cookie is not a guess: it keeps working for the blocked address.
+	cookie := func(r *http.Request) {
+		r.RemoteAddr = "203.0.113.5:4000"
+		r.AddCookie(&http.Cookie{Name: CookieName, Value: sessionValue(testToken)})
+	}
+	if resp, _ := e.get("/api/tiles", cookie); resp.StatusCode != 200 {
+		t.Fatalf("cookie from a blocked address: %d", resp.StatusCode)
+	}
+	// Other clients are unaffected, and right passwords never count.
+	for i := 0; i < 3*loginPerClient; i++ {
+		if resp := try("/api/tiles", testToken, "203.0.113.6:1"); resp.StatusCode != 200 {
+			t.Fatalf("right password, request %d: %d", i, resp.StatusCode)
+		}
+	}
+	// Requests without credentials are not guesses either.
+	for i := 0; i < 3*loginPerClient; i++ {
+		e.get("/api/tiles", func(r *http.Request) { r.RemoteAddr = "203.0.113.7:1" })
+	}
+	if resp := try("/api/tiles", testToken, "203.0.113.7:1"); resp.StatusCode != 200 {
+		t.Fatalf("after anonymous requests: %d", resp.StatusCode)
+	}
+	// After the window the first client is back.
+	now = now.Add(loginWindow + time.Second)
+	if resp := try("/api/tiles", testToken, "203.0.113.5:5000"); resp.StatusCode != 200 {
+		t.Fatalf("after the window: %d", resp.StatusCode)
+	}
+	// IPv6: the limit is per /64, so a client cannot step through its own prefix.
+	for i := 0; i < loginPerClient; i++ {
+		try("/api/tiles", "wrong", fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1))
+	}
+	if resp := try("/api/tiles", testToken, "[2001:db8:1:2:ffff::9]:1"); resp.StatusCode != 429 {
+		t.Fatalf("another address in the same /64: %d", resp.StatusCode)
+	}
+	if resp := try("/api/tiles", testToken, "[2001:db8:1:3::1]:1"); resp.StatusCode != 200 {
+		t.Fatalf("another /64: %d", resp.StatusCode)
+	}
+}
+
+// The limiter checks and records in one step. Many logins from one client
+// that are all in flight at once (headers sent, bodies held back, then
+// completed together) must not all be evaluated.
+func TestLoginRateLimitConcurrent(t *testing.T) {
+	e := newEnv(t, records(1), nil)
+	ts := httptest.NewServer(e.h)
+	defer ts.Close()
+	const n = 60
+	type pending struct {
+		w    *io.PipeWriter
+		done chan int
+	}
+	var all []pending
+	for i := 0; i < n; i++ {
+		pr, pw := io.Pipe()
+		req, err := http.NewRequest("POST", ts.URL+"/login", pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		p := pending{w: pw, done: make(chan int, 1)}
+		go func() {
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				p.done <- 0
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			p.done <- resp.StatusCode
+		}()
+		// The first bytes of the body: the handler is now running and waiting for the rest.
+		if _, err := pw.Write([]byte("tok")); err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, p)
+	}
+	time.Sleep(200 * time.Millisecond) // every request is in its handler
+	for i, p := range all {
+		_, _ = p.w.Write([]byte(fmt.Sprintf("en=wrong-%d", i)))
+		p.w.Close()
+	}
+	codes := map[int]int{}
+	for _, p := range all {
+		codes[<-p.done]++
+	}
+	if codes[401] != loginPerClient || codes[429] != n-loginPerClient {
+		t.Fatalf("%d concurrent wrong logins from one client: %v, want %d x 401 and the rest 429", n, codes, loginPerClient)
+	}
+}
+
+func TestLimiterAttempt(t *testing.T) {
+	now := time.Now()
+	l := newLoginLimiter(func() time.Time { return now })
+	// Right tokens are never recorded.
+	for i := 0; i < 100; i++ {
+		if wait, ok := l.attempt("a", true); wait != 0 || !ok {
+			t.Fatalf("right token %d: %v %v", i, wait, ok)
+		}
+	}
+	if len(l.clients) != 0 || len(l.all) != 0 {
+		t.Fatalf("right tokens left state behind: %d clients, %d attempts", len(l.clients), len(l.all))
+	}
+	for i := 0; i < loginPerClient; i++ {
+		if wait, ok := l.attempt("a", false); wait != 0 || ok {
+			t.Fatalf("wrong token %d: %v %v", i, wait, ok)
+		}
+		now = now.Add(time.Second)
+	}
+	// Blocked: the wait runs to the end of the oldest failure's window, and nothing is recorded.
+	wait, ok := l.attempt("a", true)
+	if ok || wait != loginWindow-loginPerClient*time.Second {
+		t.Fatalf("blocked: wait %v, ok %v", wait, ok)
+	}
+	if len(l.all) != loginPerClient {
+		t.Fatalf("a blocked attempt was recorded: %d", len(l.all))
+	}
+	now = now.Add(wait)
+	if wait, ok := l.attempt("a", true); wait != 0 || !ok {
+		t.Fatalf("after the wait: %v %v", wait, ok)
+	}
+	// Old clients are forgotten.
+	now = now.Add(2 * loginWindow)
+	l.attempt("a", true)
+	if len(l.clients) != 0 {
+		t.Fatalf("%d clients remembered after their window", len(l.clients))
+	}
+}
+
 func TestClientAddr(t *testing.T) {
-	for _, c := range []struct{ remote, xff, want string }{
-		{"203.0.113.5:1", "", "203.0.113.5"},
-		{"203.0.113.5:1", "1.2.3.4", "203.0.113.5"}, // a public peer cannot choose its address
-		{"127.0.0.1:1", "", "127.0.0.1"},
-		{"127.0.0.1:1", "9.9.9.9, 1.2.3.4", "1.2.3.4"}, // the entry the proxy appended
-		{"10.0.0.2:1", "1.2.3.4", "1.2.3.4"},
-		{"[::1]:1", "junk", "::1"},
+	prefixes := func(list ...string) []netip.Prefix {
+		var out []netip.Prefix
+		for _, p := range list {
+			out = append(out, netip.MustParsePrefix(p))
+		}
+		return out
+	}
+	loopback := prefixes("127.0.0.0/8", "::1/128")
+	docker := prefixes("172.18.0.1/32", "198.51.100.0/24")
+	for _, c := range []struct {
+		trusted           []netip.Prefix
+		remote, xff, want string
+	}{
+		{loopback, "203.0.113.5:1", "", "203.0.113.5"},
+		{loopback, "203.0.113.5:1", "1.2.3.4", "203.0.113.5"}, // a public peer cannot choose its address
+		{loopback, "127.0.0.1:1", "", "127.0.0.1"},
+		{loopback, "127.0.0.1:1", "9.9.9.9, 1.2.3.4", "1.2.3.4"}, // the entry the proxy appended
+		{loopback, "[::1]:1", "junk", "::1"},
+		{loopback, "[::1]:1", "2001:db8::7", "2001:db8::7"},
+		{loopback, "[::ffff:127.0.0.1]:1", "1.2.3.4", "1.2.3.4"},
+		// A private peer that is not a configured proxy cannot choose its address either.
+		{loopback, "10.0.0.2:1", "1.2.3.4", "10.0.0.2"},
+		{loopback, "172.18.0.5:1", "1.2.3.4", "172.18.0.5"},
+		{loopback, "192.168.1.9:1", "1.2.3.4", "192.168.1.9"},
+		// No proxies trusted at all: always the peer.
+		{nil, "127.0.0.1:1", "1.2.3.4", "127.0.0.1"},
+		// A configured proxy, and a chain of two.
+		{docker, "172.18.0.1:1", "1.2.3.4", "1.2.3.4"},
+		{docker, "172.18.0.2:1", "1.2.3.4", "172.18.0.2"},
+		{docker, "127.0.0.1:1", "1.2.3.4", "127.0.0.1"},
+		{docker, "172.18.0.1:1", "6.6.6.6, 1.2.3.4, 198.51.100.9", "1.2.3.4"},
+		{docker, "172.18.0.1:1", "198.51.100.8, 198.51.100.9", "198.51.100.8"}, // all trusted: the farthest
+		{docker, "172.18.0.1:1", "junk, 198.51.100.9", "198.51.100.9"},
 	} {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.RemoteAddr = c.remote
 		if c.xff != "" {
 			r.Header.Set("X-Forwarded-For", c.xff)
 		}
-		if got := clientAddr(r); got != c.want {
-			t.Errorf("clientAddr(%s, %q) = %q, want %q", c.remote, c.xff, got, c.want)
+		if got := clientAddr(r, c.trusted); got != c.want {
+			t.Errorf("clientAddr(%s, %q, %v) = %q, want %q", c.remote, c.xff, c.trusted, got, c.want)
 		}
+	}
+	// Two header lines are read as one list.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Add("X-Forwarded-For", "1.2.3.4")
+	r.Header.Add("X-Forwarded-For", "127.0.0.1")
+	if got := clientAddr(r, loopback); got != "1.2.3.4" {
+		t.Errorf("two header lines: %q", got)
+	}
+}
+
+// A client on a private network that reaches the gallery directly cannot
+// dodge the per-client limit by sending a different X-Forwarded-For each time.
+func TestForwardedForCannotEvadeLimit(t *testing.T) {
+	e := newEnv(t, records(1), nil)
+	post := func(remote, xff string) int {
+		resp, _ := e.do("POST", "/login", strings.NewReader("token=wrong"), func(r *http.Request) {
+			r.RemoteAddr = remote
+			r.Header.Set("X-Forwarded-For", xff)
+		})
+		return resp.StatusCode
+	}
+	for i := 0; i < 12; i++ {
+		want := 401
+		if i >= loginPerClient {
+			want = 429
+		}
+		if got := post("10.9.9.9:1", fmt.Sprintf("203.0.113.%d", i)); got != want {
+			t.Fatalf("attempt %d from a private peer with a spoofed header: %d, want %d", i, got, want)
+		}
+	}
+	// Behind the trusted proxy (loopback by default) clients are told apart.
+	for i := 0; i < 12; i++ {
+		if got := post("127.0.0.1:1", fmt.Sprintf("203.0.113.%d", 100+i)); got != 401 {
+			t.Fatalf("client %d behind the proxy: %d", i, got)
+		}
+	}
+	if !strings.Contains(e.logs.String(), "remote=10.9.9.9") || strings.Contains(e.logs.String(), "remote=203.0.113.3 ") {
+		t.Errorf("the log shows a spoofed address")
 	}
 }
 
@@ -444,6 +717,23 @@ func TestAuthOff(t *testing.T) {
 	for _, target := range []string{"/", "/api/tiles", "/api/tiles/new", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag()} {
 		if resp, _ := e.get(target); resp.StatusCode != 200 {
 			t.Errorf("%s with auth off: %d", target, resp.StatusCode)
+		}
+	}
+	// With no login of its own the gallery sends the brief's "public"; with auth on, "private".
+	for _, target := range []string{"/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag()} {
+		resp, _ := e.get(target)
+		if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+			t.Errorf("%s with auth off: Cache-Control %q", target, cc)
+		}
+		resp, _ = e.get(target, header("If-None-Match", resp.Header.Get("ETag")))
+		if cc := resp.Header.Get("Cache-Control"); resp.StatusCode != 304 || cc != "public, max-age=31536000, immutable" {
+			t.Errorf("%s revalidated with auth off: %d, Cache-Control %q", target, resp.StatusCode, cc)
+		}
+	}
+	// A Basic header is ignored, never counted as a guess.
+	for i := 0; i < 3*loginPerClient; i++ {
+		if resp, _ := e.get("/api/tiles", func(r *http.Request) { r.SetBasicAuth("u", "whatever") }); resp.StatusCode != 200 {
+			t.Fatalf("auth off with a Basic header: %d", resp.StatusCode)
 		}
 	}
 	if resp, _ := e.get("/login"); resp.StatusCode != 303 || resp.Header.Get("Location") != "/" {
@@ -505,17 +795,17 @@ func TestHealthz(t *testing.T) {
 func TestStaticAssets(t *testing.T) {
 	e := newEnv(t, records(1), nil)
 	for target, ctype := range map[string]string{"/app.js": "text/javascript; charset=utf-8", "/app.css": "text/css; charset=utf-8"} {
-		resp, body := e.get(target, gzipped)
+		resp, body := e.get(target, basic, gzipped)
 		etag := resp.Header.Get("ETag")
 		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctype || resp.Header.Get("Cache-Control") != "no-cache" ||
 			!strings.HasPrefix(etag, `"`) || len(body) == 0 || resp.Header.Get("Content-Encoding") != "" {
 			t.Errorf("%s: %d %v", target, resp.StatusCode, resp.Header)
 		}
-		resp, body = e.get(target, header("If-None-Match", etag))
+		resp, body = e.get(target, basic, header("If-None-Match", etag))
 		if resp.StatusCode != 304 || len(body) != 0 {
 			t.Errorf("%s with If-None-Match: %d", target, resp.StatusCode)
 		}
-		if resp, _ := e.get(target, header("If-None-Match", `"other"`)); resp.StatusCode != 200 {
+		if resp, _ := e.get(target, basic, header("If-None-Match", `"other"`)); resp.StatusCode != 200 {
 			t.Errorf("%s with another ETag: %d", target, resp.StatusCode)
 		}
 	}
@@ -665,7 +955,7 @@ func TestImages(t *testing.T) {
 		resp, body := e.get(target, basic)
 		etag := `"` + key + "-" + size + "-v" + tag + `"`
 		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/webp" ||
-			resp.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" || resp.Header.Get("ETag") != etag ||
+			resp.Header.Get("Cache-Control") != "private, max-age=31536000, immutable" || resp.Header.Get("ETag") != etag ||
 			resp.Header.Get("Content-Length") != fmt.Sprint(len(body)) || resp.Header.Get("X-Gallery-Placeholder") != "" {
 			t.Fatalf("%s: %d %v", target, resp.StatusCode, resp.Header)
 		}
@@ -688,7 +978,7 @@ func TestImages(t *testing.T) {
 	// The original, byte for byte.
 	resp, body := e.get("/img/"+key+".jpg", basic)
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/jpeg" || !bytes.Equal(body, sampleJPEG) ||
-		resp.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" || resp.Header.Get("ETag") != `"`+key+`"` {
+		resp.Header.Get("Cache-Control") != "private, max-age=31536000, immutable" || resp.Header.Get("ETag") != `"`+key+`"` {
 		t.Fatalf("original: %d %v", resp.StatusCode, resp.Header)
 	}
 	if resp, _ := e.get("/img/"+key+".jpg", basic, header("If-None-Match", `"`+key+`"`)); resp.StatusCode != 304 {
@@ -802,6 +1092,101 @@ func TestPlaceholderOnFailure(t *testing.T) {
 	}
 	if e.cache.HasOriginal(key2) {
 		t.Errorf("an unusable file was stored")
+	}
+}
+
+// An original whose header is fine but whose body is cut short is found by
+// the full decode before anything is stored: no thumbnail of it is cached as
+// immutable, the damaged file is not served as the original, and it is not
+// downloaded again and again.
+func TestTruncatedOriginal(t *testing.T) {
+	e := newEnv(t, records(3), nil)
+	snap := e.store.Snapshot()
+	tag := imaging.Tag()
+	for i, percent := range []int{10, 50, 99} {
+		key := snap.Keys()[i]
+		fid, _ := snap.FileID(key)
+		cut := sampleJPEG[:len(sampleJPEG)*percent/100]
+		if err := imaging.Validate(cut); err != nil {
+			t.Fatalf("%d%%: the header check should pass: %v", percent, err)
+		}
+		e.fetcher.mu.Lock()
+		e.fetcher.data[fid] = cut
+		e.fetcher.mu.Unlock()
+		for _, size := range []string{"240", "480"} {
+			resp, body := e.get("/img/"+key+"-"+size+".webp?v="+tag, basic)
+			if resp.Header.Get("X-Gallery-Placeholder") != "1" || resp.Header.Get("Cache-Control") != "no-store" ||
+				resp.Header.Get("ETag") != "" || !bytes.Equal(body, imaging.Placeholder()) {
+				t.Errorf("%d%% at %s px: a thumbnail of a truncated image was served: %v", percent, size, resp.Header)
+			}
+		}
+		if resp, body := e.get("/img/"+key+".jpg", basic); resp.StatusCode != 502 || len(body) > 100 {
+			t.Errorf("%d%%: a truncated original was served: %d, %d bytes", percent, resp.StatusCode, len(body))
+		}
+		if e.cache.HasOriginal(key) || e.cache.HasThumb(key, 240, tag) || e.cache.HasThumb(key, 480, tag) {
+			t.Errorf("%d%%: a truncated image was stored", percent)
+		}
+		if n := e.fetcher.count(fid); n != 1 {
+			t.Errorf("%d%%: downloaded %d times", percent, n)
+		}
+	}
+	if n := strings.Count(e.logs.String(), "an original is not a usable JPEG"); n != 3 {
+		t.Errorf("%d log lines about unusable originals, want 3", n)
+	}
+}
+
+// A failure replayed from the Telegram client's failure cache is logged at
+// debug level, and a warm-up that makes nothing is too: a dead file among the
+// newest tiles must not write warnings on every refresh.
+func TestCachedFailuresAreQuiet(t *testing.T) {
+	e := newEnv(t, records(3), nil)
+	snap := e.store.Snapshot()
+	key := snap.Keys()[0]
+	fid, _ := snap.FileID(key)
+	target := "/img/" + key + "-240.webp?v=" + imaging.Tag()
+
+	level := func(msg string) (warn, debug int) {
+		for _, line := range strings.Split(e.logs.String(), "\n") {
+			if !strings.Contains(line, msg) {
+				continue
+			}
+			switch {
+			case strings.Contains(line, "level=WARN"), strings.Contains(line, "level=INFO"):
+				warn++
+			case strings.Contains(line, "level=DEBUG"):
+				debug++
+			}
+		}
+		return
+	}
+	// The first failure is news.
+	e.fetcher.mu.Lock()
+	e.fetcher.errs[fid] = &telegram.Error{Permanent: true, Status: 400}
+	e.fetcher.mu.Unlock()
+	if resp, _ := e.get(target, basic); resp.Header.Get("X-Gallery-Placeholder") != "1" {
+		t.Fatal("no placeholder")
+	}
+	if warn, _ := level("fetching an original failed"); warn != 1 {
+		t.Fatalf("the first failure was logged %d times at WARN, want 1", warn)
+	}
+	// Replays are not.
+	e.fetcher.mu.Lock()
+	e.fetcher.errs[fid] = &telegram.Error{Permanent: true, Status: 400, Cached: true}
+	e.fetcher.mu.Unlock()
+	for i := 0; i < 5; i++ {
+		if resp, _ := e.get(target, basic); resp.Header.Get("X-Gallery-Placeholder") != "1" {
+			t.Fatal("no placeholder")
+		}
+	}
+	e.srv.Warm(context.Background(), snap) // makes the other tiles
+	e.srv.Warm(context.Background(), snap) // makes nothing: only the dead tile is left
+	e.srv.Warm(context.Background(), snap)
+	warn, debug := level("fetching an original failed")
+	if warn != 1 || debug < 5 {
+		t.Errorf("cached failures: %d at WARN (want 1, the first), %d at DEBUG", warn, debug)
+	}
+	if info, debug := level("thumbnails warmed"); info != 1 || debug != 2 {
+		t.Errorf("warm-up summaries: %d at INFO (want 1), %d at DEBUG (want 2)", info, debug)
 	}
 }
 

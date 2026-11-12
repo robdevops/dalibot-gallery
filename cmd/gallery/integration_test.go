@@ -324,6 +324,33 @@ func TestIntegration(t *testing.T) {
 		t.Errorf("API without auth: %d", resp.StatusCode)
 	}
 
+	if resp, _ := s.get("/app.js", false); resp.StatusCode != 401 {
+		t.Errorf("/app.js without auth: %d", resp.StatusCode)
+	}
+	if resp, _ := s.get("/app.css", false); resp.StatusCode != 200 {
+		t.Errorf("/app.css without auth: %d", resp.StatusCode)
+	}
+	// Wrong Basic passwords are limited per client, on the real binary too. The
+	// client address is a made-up one (the test's loopback peer is a trusted
+	// proxy by default), so the rest of the test is not blocked.
+	var codes []int
+	for i := 0; i < 7; i++ {
+		req, _ := http.NewRequest("GET", s.base+"/api/tiles", nil)
+		req.SetBasicAuth("it", fmt.Sprintf("wrong-password-%d", i))
+		req.Header.Set("X-Forwarded-For", "203.0.113.200")
+		resp, _ := s.send(req)
+		codes = append(codes, resp.StatusCode)
+	}
+	if fmt.Sprint(codes) != "[401 401 401 401 401 429 429]" {
+		t.Errorf("wrong Basic passwords from one client: %v", codes)
+	}
+	if resp, _ := s.get("/api/tiles", true, "X-Forwarded-For", "203.0.113.200"); resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+		t.Errorf("the right password from a blocked client: %d", resp.StatusCode)
+	}
+	if resp, _ := s.get("/api/tiles", true); resp.StatusCode != 200 {
+		t.Errorf("another client while one is blocked: %d", resp.StatusCode)
+	}
+
 	// --- the listing: page through everything --------------------------------
 	tiles, first := s.all(60)
 	if len(tiles) != seeded.Tiles {
@@ -413,7 +440,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- images --------------------------------------------------------------
 	deadKey := source.Key(seeded.Dead[0])
-	const immutable = "public, max-age=31536000, immutable"
+	const immutable = "private, max-age=31536000, immutable"
 	for i, tile := range tiles {
 		sizes := []int{240}
 		if i < 60 {

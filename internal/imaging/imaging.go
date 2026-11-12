@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/davidbyttow/govips/v2/vips"
+	"golang.org/x/sync/semaphore"
 )
 
 // PipelineVersion changes whenever size, crop or encoder settings change.
@@ -30,6 +31,18 @@ const (
 	MaxPixels = 50_000_000
 	MaxSide   = 10_000
 )
+
+// pixelBudget is the total number of source pixels (width x height from the
+// JPEG header) that all running pipelines may hold together. A progressive
+// JPEG is decoded with all of its coefficients in memory, about 3 to 6 bytes a
+// pixel whatever the output size, so Workers pipelines on MaxPixels images
+// would need gigabytes. With the budget equal to MaxPixels the largest image
+// that Validate accepts runs alone, mid-sized ones run a few at a time, and
+// Telegram's 1024 x 1024 images are not held back at all.
+const pixelBudget = MaxPixels
+
+// verifySide is the box Verify decodes to: small, so the decode is as cheap as libjpeg allows.
+const verifySide = 16
 
 // Sizes are the only thumbnail sizes.
 var Sizes = [...]int{240, 480}
@@ -75,6 +88,7 @@ type state struct {
 	quality int
 	tag     string
 	slots   chan struct{}
+	pixels  *semaphore.Weighted // pixelBudget
 }
 
 var (
@@ -125,7 +139,7 @@ func Startup(opt Options) error {
 	if opt.Quality != DefaultQuality {
 		tag = fmt.Sprintf("%dq%d", PipelineVersion, opt.Quality)
 	}
-	current = &state{quality: opt.Quality, tag: tag, slots: make(chan struct{}, opt.Workers)}
+	current = &state{quality: opt.Quality, tag: tag, slots: make(chan struct{}, opt.Workers), pixels: semaphore.NewWeighted(pixelBudget)}
 	return nil
 }
 
@@ -186,24 +200,58 @@ func inspect(data []byte) (width, height int, err error) {
 
 // Thumbnail validates jpeg, then returns a square centre-cropped WebP of size x size pixels
 // (smaller, still square, if the source is smaller: never upscaled). size must satisfy ValidSize.
-// It waits for one of the Workers slots; ctx cancels the wait (returns ctx.Err()).
+// The JPEG is decoded with fail_on=error, so a truncated or corrupt body is an error, not a
+// partly grey thumbnail. It waits for one of the Workers slots and for room in the pixel
+// budget; ctx cancels the wait (returns ctx.Err()).
 func Thumbnail(ctx context.Context, jpeg []byte, size int) ([]byte, error) {
 	if !ValidSize(size) {
 		return nil, fmt.Errorf("imaging: unsupported thumbnail size %d", size)
 	}
+	var out []byte
+	err := pipeline(ctx, jpeg, func(w, h, quality int) (err error) {
+		// vips_thumbnail enlarges small images to the requested box. Shrinking the
+		// box to the shorter side keeps the output square without upscaling.
+		out, err = render(jpeg, min(size, w, h), quality)
+		return err
+	})
+	return out, err
+}
+
+// Verify validates jpeg and then decodes all of it with fail_on=error, without producing
+// anything. It returns an error for a body that is truncated or corrupt even though its header
+// is fine. Call it before an original is stored or served. It uses the same limits as Thumbnail.
+func Verify(ctx context.Context, jpeg []byte) error {
+	return pipeline(ctx, jpeg, func(w, h, _ int) error {
+		ref, err := load(jpeg, min(verifySide, w, h))
+		if err != nil {
+			return err
+		}
+		defer ref.Close()
+		// Reading the pixels runs the decoder over the whole file.
+		if _, err := ref.ToBytes(); err != nil {
+			return fmt.Errorf("imaging: decode: %w", err)
+		}
+		return nil
+	})
+}
+
+// pipeline runs fn on a validated JPEG while holding a worker slot and the
+// image's share of the pixel budget. fn gets the header's dimensions and the
+// WebP quality.
+func pipeline(ctx context.Context, jpeg []byte, fn func(w, h, quality int) error) error {
 	mu.RLock()
 	defer mu.RUnlock()
 	st := current
 	if st == nil {
-		return nil, ErrNotStarted
+		return ErrNotStarted
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	select {
 	case st.slots <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
 	defer func() { <-st.slots }()
 
@@ -211,28 +259,45 @@ func Thumbnail(ctx context.Context, jpeg []byte, size int) ([]byte, error) {
 	// run more than Workers header parses at once.
 	w, h, err := inspect(jpeg)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	// vips_thumbnail enlarges small images to the requested box. Shrinking the
-	// box to the shorter side keeps the output square without upscaling.
-	side := min(size, w, h)
-	return render(jpeg, side, st.quality)
+	// Validate has bounded w*h by MaxPixels, which is the whole budget, so this cannot wait for ever.
+	weight := int64(w) * int64(h)
+	if err := st.pixels.Acquire(ctx, weight); err != nil {
+		return err
+	}
+	defer st.pixels.Release(weight)
+	return fn(w, h, st.quality)
 }
 
-// render runs libvips: decode with shrink-on-load, resize, centre crop to
-// side x side, encode as WebP. The caller has validated data, holds a worker
-// slot and holds mu for reading.
-func render(data []byte, side, quality int) ([]byte, error) {
-	// A thumbnail image is a sequential pipeline that can be rendered once,
-	// so every output size starts again from the JPEG bytes.
-	ref, err := vips.NewThumbnailFromBuffer(data, side, side, vips.InterestingCentre)
+// load opens data as a sequential thumbnail pipeline: decode with
+// shrink-on-load, resize, centre crop to side x side. The loader gets
+// fail_on=error (govips spells it "fail"), so damage in the body is reported
+// when the pixels are read rather than papered over.
+func load(data []byte, side int) (*vips.ImageRef, error) {
+	params := vips.NewImportParams()
+	params.FailOnError.Set(true)
+	ref, err := vips.LoadThumbnailFromBuffer(data, side, side, vips.InterestingCentre, vips.SizeBoth, params)
 	if err != nil {
 		return nil, fmt.Errorf("imaging: thumbnail: %w", err)
 	}
-	defer ref.Close()
 	if ref.Width() != side || ref.Height() != side {
+		defer ref.Close()
 		return nil, fmt.Errorf("imaging: thumbnail is %dx%d, expected %dx%d", ref.Width(), ref.Height(), side, side)
 	}
+	return ref, nil
+}
+
+// render runs libvips: load (see load), then encode as WebP. The caller has
+// validated data, holds a worker slot and holds mu for reading.
+func render(data []byte, side, quality int) ([]byte, error) {
+	// A thumbnail image is a sequential pipeline that can be rendered once,
+	// so every output size starts again from the JPEG bytes.
+	ref, err := load(data, side)
+	if err != nil {
+		return nil, err
+	}
+	defer ref.Close()
 	out, _, err := ref.ExportWebp(&vips.WebpExportParams{
 		Quality:         quality,
 		StripMetadata:   true,

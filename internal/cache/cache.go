@@ -31,6 +31,9 @@ const (
 	// touchEvery limits how often a read updates a file's mtime (which is how
 	// recency survives a restart).
 	touchEvery = time.Minute
+	// reserveDivisor sets the share of the size limit that thumbnails may
+	// always use: limit/reserveDivisor. See evictLocked.
+	reserveDivisor = 8
 )
 
 // Errors returned by the Put methods for arguments that fail validation.
@@ -61,12 +64,15 @@ type Cache struct {
 
 	mu      sync.Mutex
 	entries map[string]*entry // by file name
-	total   int64
+	total   int64             // bytes of all files
+	thumbs  int64             // bytes of the thumbnails among them
 	seq     uint64
+	over    bool // the "over the limit" warning has been logged and still applies
 }
 
 // Open creates dir (0700) if needed, removes leftover temp files and indexes what is there.
-// maxBytes is the size limit for originals plus thumbnails. log may be nil.
+// maxBytes is the size limit for originals plus thumbnails (see evictLocked for the one
+// case in which the directory may be larger). log may be nil.
 func Open(dir string, maxBytes int64, log *slog.Logger) (*Cache, error) {
 	if dir == "" {
 		return nil, errors.New("cache: empty directory name")
@@ -133,7 +139,7 @@ func Open(dir string, maxBytes int64, log *slog.Logger) (*Cache, error) {
 		c.seq++
 		f.e.seq = c.seq
 		c.entries[f.name] = f.e
-		c.total += f.e.bytes
+		c.add(f.e)
 	}
 	c.mu.Lock()
 	c.evictLocked()
@@ -279,7 +285,7 @@ func (c *Cache) get(name string) ([]byte, bool) {
 			info, statErr := os.Stat(path)
 			if statErr != nil || info.Size() == 0 {
 				_ = os.Remove(path)
-				c.total -= e.bytes
+				c.sub(e)
 				delete(c.entries, name)
 			}
 		}
@@ -341,52 +347,88 @@ func (c *Cache) put(name string, e *entry, data []byte) error {
 		return fmt.Errorf("cache: write %s: %w", name, err)
 	}
 	if old, ok := c.entries[name]; ok {
-		c.total -= old.bytes
+		c.sub(old)
 	}
 	c.seq++
 	e.seq = c.seq
 	c.entries[name] = e
-	c.total += e.bytes
+	c.add(e)
 	c.evictLocked()
 	return nil
 }
 
+func (c *Cache) add(e *entry) {
+	c.total += e.bytes
+	if e.thumb {
+		c.thumbs += e.bytes
+	}
+}
+
+func (c *Cache) sub(e *entry) {
+	c.total -= e.bytes
+	if e.thumb {
+		c.thumbs -= e.bytes
+	}
+}
+
+// reserve is the space thumbnails may use even when the originals fill the limit.
+func (c *Cache) reserve() int64 { return c.max / reserveDivisor }
+
 // evictLocked removes thumbnails, least recently used first, until the total
-// fits the limit or no thumbnails are left. Originals are never removed here.
+// fits the limit. Originals are never removed here (only Prune removes them,
+// once their record is gone).
+//
+// Thumbnails are not evicted below the reserve, an eighth of the limit. So
+// when the originals alone come close to the limit or pass it, the most
+// recently used thumbnails stay, and the directory can grow to the originals
+// plus the reserve. Without the reserve every thumbnail would be evicted the
+// moment it was written and every tile request would decode its JPEG again.
 func (c *Cache) evictLocked() {
 	if c.total <= c.max {
+		c.over = false
 		return
 	}
-	type cand struct {
-		name string
-		e    *entry
-	}
-	var thumbs []cand
-	for name, e := range c.entries {
-		if e.thumb {
-			thumbs = append(thumbs, cand{name, e})
-		}
-	}
-	sort.Slice(thumbs, func(i, j int) bool {
-		a, b := thumbs[i].e, thumbs[j].e
-		if !a.used.Equal(b.used) {
-			return a.used.Before(b.used)
-		}
-		return a.seq < b.seq
-	})
+	reserve := c.reserve()
 	removed := 0
-	for _, t := range thumbs {
-		if c.total <= c.max {
-			break
+	if c.thumbs > reserve {
+		type cand struct {
+			name string
+			e    *entry
 		}
-		c.removeLocked(t.name, t.e)
-		removed++
+		var thumbs []cand
+		for name, e := range c.entries {
+			if e.thumb {
+				thumbs = append(thumbs, cand{name, e})
+			}
+		}
+		sort.Slice(thumbs, func(i, j int) bool {
+			a, b := thumbs[i].e, thumbs[j].e
+			if !a.used.Equal(b.used) {
+				return a.used.Before(b.used)
+			}
+			return a.seq < b.seq
+		})
+		for _, t := range thumbs {
+			if c.total <= c.max || c.thumbs <= reserve {
+				break
+			}
+			if c.removeLocked(t.name, t.e) == nil {
+				removed++
+			}
+		}
 	}
 	if removed > 0 {
 		c.log.Debug("cache: evicted thumbnails", "files", removed, "bytes", c.total, "limit", c.max)
 	}
-	if c.total > c.max {
-		c.log.Warn("cache: originals alone exceed the size limit", "bytes", c.total, "limit", c.max)
+	if c.total <= c.max {
+		c.over = false
+		return
+	}
+	if !c.over {
+		// Logged once, when the state begins, not on every write.
+		c.over = true
+		c.log.Warn("cache: the originals leave no room under the size limit; keeping only the reserve of thumbnails. Raise GALLERY_CACHE_MAX_MB",
+			"bytes", c.total, "originals", c.total-c.thumbs, "thumbnails", c.thumbs, "reserve", reserve, "limit", c.max)
 	}
 }
 
@@ -396,7 +438,7 @@ func (c *Cache) removeLocked(name string, e *entry) error {
 		c.log.Warn("cache: remove failed", "file", name, "error", err)
 		return err
 	}
-	c.total -= e.bytes
+	c.sub(e)
 	delete(c.entries, name)
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ const (
 	envCacheDirectory     = "CACHE_DIRECTORY" // set by systemd's CacheDirectory=
 	envRegionFallback     = "AWS_DEFAULT_REGION"
 	maxChats              = 1000
+	maxTrustedProxies     = 64
 	maxDefaultCommandSize = 32
 )
 
@@ -65,6 +67,9 @@ type Config struct {
 	WebPQuality     int           // GALLERY_WEBP_QUALITY
 	ImageWorkers    int           // GALLERY_IMAGE_WORKERS
 	Warm            int           // GALLERY_WARM
+	// TrustedProxies is GALLERY_TRUSTED_PROXIES: the peers whose
+	// X-Forwarded-For header is believed. Loopback when unset; empty for "none".
+	TrustedProxies []netip.Prefix
 }
 
 var (
@@ -121,6 +126,35 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		bad("GALLERY_LISTEN", "port must be between 1 and 65535, not %q", port)
 	} else if strings.ContainsAny(host, " /") {
 		bad("GALLERY_LISTEN", "host %q is not valid", host)
+	}
+
+	// Reverse proxies whose X-Forwarded-For is believed.
+	switch v := get("GALLERY_TRUSTED_PROXIES"); strings.ToLower(v) {
+	case "":
+		c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+	case "none":
+	default:
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			var p netip.Prefix
+			if addr, err := netip.ParseAddr(part); err == nil {
+				addr = addr.Unmap().WithZone("")
+				p = netip.PrefixFrom(addr, addr.BitLen())
+			} else if p, err = netip.ParsePrefix(part); err != nil {
+				bad("GALLERY_TRUSTED_PROXIES", "%q is not an IP address or a CIDR range (for example 172.18.0.1 or 10.0.0.0/8)", part)
+				continue
+			} else if p.Bits() == 0 {
+				bad("GALLERY_TRUSTED_PROXIES", "%q would trust every address; list the proxies' own addresses", part)
+				continue
+			}
+			c.TrustedProxies = append(c.TrustedProxies, p.Masked())
+		}
+		if len(c.TrustedProxies) > maxTrustedProxies {
+			bad("GALLERY_TRUSTED_PROXIES", "lists %d entries; the limit is %d", len(c.TrustedProxies), maxTrustedProxies)
+		}
 	}
 
 	// Auth. The token is a secret: messages must not echo it.
@@ -282,6 +316,14 @@ func (c *Config) LogValue() slog.Value {
 	if len(c.Chats) > 0 {
 		chats = strings.Join(c.Chats, ",")
 	}
+	proxies := "none"
+	if len(c.TrustedProxies) > 0 {
+		parts := make([]string, len(c.TrustedProxies))
+		for i, p := range c.TrustedProxies {
+			parts[i] = p.String()
+		}
+		proxies = strings.Join(parts, ",")
+	}
 	auth := "token"
 	if c.AuthOff {
 		auth = "off"
@@ -303,6 +345,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Int("webp_quality", c.WebPQuality),
 		slog.Int("image_workers", c.ImageWorkers),
 		slog.Int("warm", c.Warm),
+		slog.String("trusted_proxies", proxies),
 	)
 }
 

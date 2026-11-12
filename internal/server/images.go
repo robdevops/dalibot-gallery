@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,10 +15,16 @@ import (
 
 	"github.com/robdevops/dalibot-gallery/internal/imaging"
 	"github.com/robdevops/dalibot-gallery/internal/source"
+	"github.com/robdevops/dalibot-gallery/internal/telegram"
 )
 
 const (
-	immutable = "public, max-age=31536000, immutable"
+	// Images never change under their URL. With the gallery's own auth on they
+	// are "private": only the browser may keep them, never a shared cache,
+	// which could hand them to someone who is not signed in. With
+	// GALLERY_AUTH=off the gallery has no login of its own and sends "public".
+	immutablePrivate = "private, max-age=31536000, immutable"
+	immutablePublic  = "public, max-age=31536000, immutable"
 	// jobTimeout bounds one shared image job (Telegram fetch plus thumbnail); it is under WriteTimeout.
 	jobTimeout = 50 * time.Second
 	// invalidTTL is how long an original that is not a usable JPEG is remembered.
@@ -74,7 +81,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 			return
 		}
 		etag := `"` + key + "-" + m[2] + "-v" + s.tag + `"`
-		if notModified(w, r, etag) {
+		if s.notModified(w, r, etag) {
 			return
 		}
 		data, err := s.thumbnail(r.Context(), snap, key, size)
@@ -87,7 +94,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 			return
 		}
 		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", immutable)
+		w.Header().Set("Cache-Control", s.immutable())
 		writeImage(w, "image/webp", data)
 		return
 	}
@@ -98,7 +105,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 			return
 		}
 		etag := `"` + key + `"`
-		if notModified(w, r, etag) {
+		if s.notModified(w, r, etag) {
 			return
 		}
 		data, err := s.original(r.Context(), snap, key)
@@ -107,20 +114,28 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 			return
 		}
 		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", immutable)
+		w.Header().Set("Cache-Control", s.immutable())
 		writeImage(w, "image/jpeg", data)
 		return
 	}
 	plain(w, http.StatusNotFound, "not found\n")
 }
 
+// immutable is the Cache-Control of an image response.
+func (s *Server) immutable() string {
+	if s.cfg.AuthOff {
+		return immutablePublic
+	}
+	return immutablePrivate
+}
+
 // notModified answers 304 when If-None-Match names etag. Nothing is read or generated.
-func notModified(w http.ResponseWriter, r *http.Request, etag string) bool {
+func (s *Server) notModified(w http.ResponseWriter, r *http.Request, etag string) bool {
 	if !etagMatch(r.Header.Get("If-None-Match"), etag) {
 		return false
 	}
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", immutable)
+	w.Header().Set("Cache-Control", s.immutable())
 	w.WriteHeader(http.StatusNotModified)
 	return true
 }
@@ -158,8 +173,10 @@ func (s *Server) shared(ctx context.Context, g *singleflight.Group, name string,
 }
 
 // original returns the original JPEG of a key in snap: from the disk cache,
-// or else fetched from Telegram once, validated and stored. The stored copy
-// outlives a file_id that later stops working.
+// or else fetched from Telegram once, checked and stored. The check is the
+// header validation and then a full decode with fail_on=error, so a file
+// whose body is truncated or corrupt is never stored or served. The stored
+// copy outlives a file_id that later stops working.
 func (s *Server) original(ctx context.Context, snap *source.Snapshot, key string) ([]byte, error) {
 	if data, ok := s.cache.GetOriginal(key); ok {
 		return data, nil
@@ -178,10 +195,19 @@ func (s *Server) original(ctx context.Context, snap *source.Snapshot, key string
 		data, err := s.fetcher.Fetch(ctx, fileID)
 		if err != nil {
 			// The fetcher's errors are already free of the token, URLs and ids; log the key only.
-			s.log.Warn("fetching an original failed", "key", key, "error", safeError(err))
+			// A replay from the fetcher's failure cache is not news: the first failure was logged.
+			level := slog.LevelWarn
+			var te *telegram.Error
+			if errors.As(err, &te) && te.Cached {
+				level = slog.LevelDebug
+			}
+			s.log.Log(ctx, level, "fetching an original failed", "key", key, "error", safeError(err))
 			return nil, errUnavailable
 		}
-		if err := imaging.Validate(data); err != nil {
+		if err := imaging.Verify(ctx, data); err != nil {
+			if ctx.Err() != nil {
+				return nil, errUnavailable // interrupted, not judged
+			}
 			s.invalid.add(key)
 			s.log.Warn("an original is not a usable JPEG", "key", key, "bytes", len(data), "error", err)
 			return nil, errUnavailable
@@ -261,7 +287,12 @@ func (s *Server) Warm(ctx context.Context, snap *source.Snapshot) {
 	}
 	_ = g.Wait()
 	if made+failed > 0 {
-		s.log.Info("thumbnails warmed", "made", made, "failed", failed, "duration", time.Since(start).Round(time.Millisecond))
+		// A cycle that made nothing only repeats failures that were logged when they first happened.
+		level := slog.LevelInfo
+		if made == 0 {
+			level = slog.LevelDebug
+		}
+		s.log.Log(ctx, level, "thumbnails warmed", "made", made, "failed", failed, "duration", time.Since(start).Round(time.Millisecond))
 	}
 }
 

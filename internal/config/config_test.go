@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -36,6 +37,7 @@ func TestDefaults(t *testing.T) {
 		TelegramToken: testBotToken, TelegramAPIBase: "https://api.telegram.org", StoreDays: 90,
 		DefaultCommand: "dream", Refresh: 60 * time.Second, CacheDir: abs, CacheMaxMB: 2048,
 		WebPQuality: 76, ImageWorkers: runtime.NumCPU(), Warm: 120,
+		TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
 	}
 	if fmt.Sprintf("%#v|%q|%q", *c, c.Token, c.TelegramToken) != fmt.Sprintf("%#v|%q|%q", want, want.Token, want.TelegramToken) {
 		t.Errorf("defaults:\n got %#v\nwant %#v", *c, want)
@@ -163,6 +165,11 @@ func TestInvalidValues(t *testing.T) {
 		{"GALLERY_IMAGE_WORKERS", "0"},
 		{"GALLERY_IMAGE_WORKERS", "1000"},
 		{"GALLERY_WARM", "-1"},
+		{"GALLERY_TRUSTED_PROXIES", "proxy.example.com"},
+		{"GALLERY_TRUSTED_PROXIES", "10.0.0.0/33"},
+		{"GALLERY_TRUSTED_PROXIES", "0.0.0.0/0"},
+		{"GALLERY_TRUSTED_PROXIES", "::/0"},
+		{"GALLERY_TRUSTED_PROXIES", "172.18.0.1, yes"},
 	}
 	for _, tc := range cases {
 		c, err := FromEnv(env(tc.name, tc.value))
@@ -256,5 +263,39 @@ func TestPrintingNeverShowsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(off.String(), "auth=off") || !strings.Contains(off.String(), "token=(unset)") || len(off.Secrets()) != 1 {
 		t.Errorf("auth-off String() = %s", off.String())
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	for value, want := range map[string]string{
+		"":                               "127.0.0.0/8,::1/128", // loopback unless told otherwise
+		"none":                           "none",
+		"NONE":                           "none",
+		"172.18.0.1":                     "172.18.0.1/32",
+		" 172.18.0.1 , 10.1.2.3/8,, ":    "172.18.0.1/32,10.0.0.0/8",
+		"fd00::1,2001:db8::/32":          "fd00::1/128,2001:db8::/32",
+		"::ffff:10.0.0.1":                "10.0.0.1/32",
+		"127.0.0.1,::1,192.168.0.0/16":   "127.0.0.1/32,::1/128,192.168.0.0/16",
+		"172.16.0.0/12,172.16.0.0/12,,,": "172.16.0.0/12,172.16.0.0/12",
+	} {
+		c, err := FromEnv(env("GALLERY_TRUSTED_PROXIES", value))
+		if err != nil {
+			t.Errorf("%q: %v", value, err)
+			continue
+		}
+		var got []string
+		for _, p := range c.TrustedProxies {
+			got = append(got, p.String())
+		}
+		text := strings.Join(got, ",")
+		if text == "" {
+			text = "none"
+		}
+		if text != want {
+			t.Errorf("%q: trusted proxies %s, want %s", value, text, want)
+		}
+		if !strings.Contains(c.String(), "trusted_proxies="+want) {
+			t.Errorf("%q: String() does not show the proxies: %s", value, c.String())
+		}
 	}
 }

@@ -70,6 +70,7 @@ type asset struct {
 	data  []byte
 	ctype string
 	etag  string
+	open  bool // served without auth
 }
 
 // Server holds the handler and the background image work.
@@ -144,7 +145,7 @@ func New(d Deps) (*Server, error) {
 			return nil, fmt.Errorf("server: %s: %w", name, err)
 		}
 		sum := sha256.Sum256(data)
-		s.assets["/"+name] = asset{data: data, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:12]) + `"`}
+		s.assets["/"+name] = asset{data: data, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:12]) + `"`, open: name == "app.css"}
 	}
 	s.handler = s.middleware(http.HandlerFunc(s.route))
 	return s, nil
@@ -204,25 +205,37 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.handleLogin(w, r)
 		return
 	}
-	if a, ok := s.assets[p]; ok {
+	// The stylesheet is open because the login page needs it. It holds no data.
+	if a, ok := s.assets[p]; ok && a.open {
 		s.serveAsset(w, r, a)
 		return
 	}
 
 	// Everything else needs auth.
-	if !s.authenticated(r) {
+	if ok, wait := s.authorize(r); !ok {
 		switch {
+		case wait > 0 && api:
+			w.Header().Set("Retry-After", fmt.Sprint(int(wait/time.Second)+1))
+			s.jsonError(w, r, http.StatusTooManyRequests, "too many attempts")
+		case wait > 0:
+			tooMany(w, wait)
 		case api:
 			s.jsonError(w, r, http.StatusUnauthorized, "unauthorized")
 		case strings.HasPrefix(p, "/img/"):
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusUnauthorized)
+		case s.assets[p].data != nil:
+			plain(w, http.StatusUnauthorized, "unauthorized\n")
 		default:
 			redirect(w, "/login")
 		}
 		return
 	}
 
+	if a, ok := s.assets[p]; ok {
+		s.serveAsset(w, r, a)
+		return
+	}
 	switch {
 	case p == "/":
 		s.handleIndex(w, r)
@@ -350,7 +363,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				level = slog.LevelDebug
 			}
 			s.log.Log(r.Context(), level, "request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
-				"bytes", rec.bytes, "duration", time.Since(start).Round(time.Microsecond), "remote", clientAddr(r))
+				"bytes", rec.bytes, "duration", time.Since(start).Round(time.Microsecond), "remote", s.clientAddr(r))
 		}()
 		next.ServeHTTP(rec, r)
 	})

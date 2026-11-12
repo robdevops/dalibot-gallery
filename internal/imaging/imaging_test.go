@@ -191,14 +191,15 @@ func TestStartupTwice(t *testing.T) {
 	}
 }
 
-// Byte budgets for a 480 px thumbnail of a 1024x1024 Telegram image at quality 76.
-// The brief's target is 60 KB. One of the twelve real samples (telegram-10.jpg, the
-// most detailed one) comes out at about 64 KB, so the test holds the target for the
-// set (mean, and all but one image) and a hard ceiling for every single image.
+// The brief's target for a 480 px thumbnail of a 1024x1024 Telegram image at
+// quality 76 is 60 KB. Eleven of the twelve real samples meet it. The known
+// exception is telegram-10.jpg, the most detailed one, at 64,170 bytes with
+// libvips 8.15.1; quality and effort are fixed decisions, so it is named here
+// with its own ceiling instead of loosening the target for every sample.
 const (
-	target480  = 60 << 10
-	ceiling480 = 68 << 10
-	maxOver480 = 1
+	target480      = 60 << 10
+	exception480   = "telegram-10.jpg"
+	exceptionLimit = 65 << 10
 )
 
 func TestTelegramSamples(t *testing.T) {
@@ -207,7 +208,6 @@ func TestTelegramSamples(t *testing.T) {
 		t.Fatalf("have %d Telegram samples, want 12", len(samples))
 	}
 	total := map[int]int{}
-	var over []string
 	for _, name := range sortedNames(samples) {
 		data := samples[name]
 		if err := Validate(data); err != nil {
@@ -227,18 +227,15 @@ func TestTelegramSamples(t *testing.T) {
 			if size != 480 {
 				continue
 			}
-			if len(out) > ceiling480 {
-				t.Errorf("%s: 480 px thumbnail is %d bytes, over the %d byte ceiling", name, len(out), ceiling480)
-			}
-			if len(out) > target480 {
-				over = append(over, fmt.Sprintf("%s (%d bytes)", name, len(out)))
+			switch {
+			case name == exception480 && len(out) > exceptionLimit:
+				t.Errorf("%s: 480 px thumbnail is %d bytes, over its %d byte ceiling", name, len(out), exceptionLimit)
+			case name == exception480 && len(out) > target480:
+				t.Logf("%s: %d bytes, the one known sample over the 60 KB target", name, len(out))
+			case len(out) > target480:
+				t.Errorf("%s: 480 px thumbnail is %d bytes, over the %d byte target", name, len(out), target480)
 			}
 		}
-	}
-	if len(over) > maxOver480 {
-		t.Errorf("%d samples are over 60 KB at 480 px, at most %d expected: %v", len(over), maxOver480, over)
-	} else if len(over) > 0 {
-		t.Logf("over 60 KB at 480 px: %v", over)
 	}
 	mean480, mean240 := total[480]/len(samples), total[240]/len(samples)
 	t.Logf("mean bytes: 480 px %d, 240 px %d", mean480, mean240)
@@ -474,15 +471,117 @@ func TestCorruptBodies(t *testing.T) {
 		"dimensions lie":   lying,
 		"garbage after ff": append(bytes.Clone(good[:300]), bytes.Repeat([]byte{0x55}, 4000)...),
 	} {
-		out, err := Thumbnail(context.Background(), data, 240)
-		if err == nil {
-			// libvips may salvage a truncated image; then the result must still be a square WebP.
-			if w, h := dims(decodeWebP(t, out)); w != h {
-				t.Errorf("%s: got %dx%d", name, w, h)
+		if out, err := Thumbnail(context.Background(), data, 240); err == nil {
+			t.Errorf("%s: Thumbnail returned %d bytes; a damaged body must be an error", name, len(out))
+		}
+		if err := Verify(context.Background(), data); err == nil {
+			t.Errorf("%s: Verify accepted a damaged body", name)
+		}
+	}
+}
+
+// A Telegram image cut short at any point has a valid header, and libvips
+// would by default fill the missing part with grey. With fail_on=error it is
+// an error, for both sizes and for Verify; the intact file passes.
+func TestTruncatedTelegramSample(t *testing.T) {
+	samples := telegramSamples(t)
+	whole := samples[sortedNames(samples)[0]]
+	if err := Verify(context.Background(), whole); err != nil {
+		t.Fatalf("Verify rejected an intact sample: %v", err)
+	}
+	for _, percent := range []int{10, 30, 50, 90, 99} {
+		cut := whole[:len(whole)*percent/100]
+		if err := Validate(cut); err != nil {
+			t.Fatalf("%d%%: Validate = %v; the header should still be whole", percent, err)
+		}
+		if err := Verify(context.Background(), cut); err == nil {
+			t.Errorf("%d%%: Verify accepted a truncated image", percent)
+		}
+		for _, size := range Sizes {
+			if out, err := Thumbnail(context.Background(), cut, size); err == nil {
+				t.Errorf("%d%% at %d px: got a %d byte thumbnail of a truncated image", percent, size, len(out))
 			}
 		}
-		t.Logf("%s: err = %v", name, err)
 	}
+	// The last two bytes are the end-of-image marker.
+	if err := Verify(context.Background(), whole[:len(whole)-2]); err == nil {
+		t.Error("Verify accepted an image without its end marker")
+	}
+}
+
+func TestVerify(t *testing.T) {
+	ctx := context.Background()
+	for name, data := range map[string][]byte{
+		"square":     encodeJPEG(t, noise(300, 300)),
+		"wide":       encodeJPEG(t, noise(640, 100)),
+		"tiny":       encodeJPEG(t, noise(3, 5)),
+		"one pixel":  encodeJPEG(t, noise(1, 1)),
+		"grey scale": encodeJPEG(t, image.NewGray(image.Rect(0, 0, 120, 90))),
+	} {
+		if err := Verify(ctx, data); err != nil {
+			t.Errorf("%s: Verify = %v", name, err)
+		}
+	}
+	if err := Verify(ctx, []byte("not a jpeg")); !errors.Is(err, ErrNotJPEG) {
+		t.Errorf("Verify of junk = %v, want ErrNotJPEG", err)
+	}
+	done, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := Verify(done, encodeJPEG(t, noise(8, 8))); !errors.Is(err, context.Canceled) {
+		t.Errorf("Verify with a cancelled context = %v", err)
+	}
+}
+
+// Large images share a pixel budget, so that Workers of them are never
+// decoded at once: the memory a progressive JPEG needs grows with its pixel
+// count whatever the output size.
+func TestPixelBudget(t *testing.T) {
+	st := current
+	// 7000x7000 is 49 MP: two do not fit in the budget together, one fits alone.
+	big := withDimensions(t, encodeJPEG(t, noise(16, 16)), 7000, 7000)
+	if err := Validate(big); err != nil {
+		t.Fatal(err)
+	}
+	small := encodeJPEG(t, noise(64, 64))
+
+	// Another pipeline holds a 49 MP image.
+	if !st.pixels.TryAcquire(7000 * 7000) {
+		t.Fatal("the pixel budget is not free")
+	}
+	held := true
+	defer func() {
+		if held {
+			st.pixels.Release(7000 * 7000)
+		}
+	}()
+
+	// A second large image waits (and gives up with its context)...
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := Thumbnail(ctx, big, 240); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a second 49 MP image did not wait for the budget: err = %v", err)
+	}
+	// ...without keeping its worker slot.
+	if n := len(st.slots); n != 0 {
+		t.Fatalf("%d worker slots still held after the wait was cancelled", n)
+	}
+	// Ordinary images are not held back.
+	if _, err := Thumbnail(context.Background(), small, 240); err != nil {
+		t.Fatalf("a small image was held back by the budget: %v", err)
+	}
+	// Once the first is done, the large one runs (and fails in the decoder,
+	// because its header lies; what matters is that it got that far).
+	st.pixels.Release(7000 * 7000)
+	held = false
+	_, err := Thumbnail(context.Background(), big, 240)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTooLarge) {
+		t.Fatalf("after the budget was released: err = %v", err)
+	}
+	// Everything was given back.
+	if !st.pixels.TryAcquire(pixelBudget) {
+		t.Fatal("the pixel budget was not fully released")
+	}
+	st.pixels.Release(pixelBudget)
 }
 
 func TestInvalidSize(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -401,20 +402,92 @@ func TestOriginalsAreNeverEvictedForSize(t *testing.T) {
 	if c.Size() != 1200 {
 		t.Fatalf("Size = %d, want 1200 (originals only)", c.Size())
 	}
-	// With no room at all a new thumbnail cannot stay, but storing it is not an error.
+	// The originals alone are over the limit. A new thumbnail still stays, inside the
+	// reserve (an eighth of the limit, 125 bytes): it is not evicted as soon as it is written.
 	if err := c.PutThumb(key(1), 240, v1, blob(10, 't')); err != nil {
 		t.Fatal(err)
 	}
-	if c.HasThumb(key(1), 240, v1) || c.Size() != 1200 {
-		t.Fatalf("Size = %d", c.Size())
+	if !c.HasThumb(key(1), 240, v1) || c.Size() != 1210 {
+		t.Fatalf("a thumbnail inside the reserve was evicted: Size = %d", c.Size())
 	}
 	// Only Prune removes originals.
 	n, err := c.Prune(func(k string) bool { return k == key(2) }, v1)
-	if err != nil || n != 2 {
+	if err != nil || n != 3 {
 		t.Fatalf("Prune = %d, %v", n, err)
 	}
-	if c.HasOriginal(key(1)) || !c.HasOriginal(key(2)) || c.HasOriginal(key(3)) || c.Size() != 400 {
+	if c.HasThumb(key(1), 240, v1) || c.HasOriginal(key(1)) || !c.HasOriginal(key(2)) || c.HasOriginal(key(3)) || c.Size() != 400 {
 		t.Fatalf("after Prune: Size = %d", c.Size())
+	}
+}
+
+// When the originals fill the limit, thumbnails keep a reserve of limit/8:
+// the most recently used ones stay, and the warning is logged once, not on
+// every write.
+func TestThumbnailReserve(t *testing.T) {
+	dir := t.TempDir()
+	var logs bytes.Buffer
+	c, err := Open(dir, 8000, slog.New(slog.NewTextHandler(&logs, nil))) // reserve: 1000 bytes
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock(c)
+	for i := 1; i <= 9; i++ { // 9000 bytes of originals: over the limit on their own
+		if err := c.PutOriginal(key(i), blob(1000, 'o')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 1; i <= 9; i++ { // 9 x 300 bytes of thumbnails, oldest first
+		if err := c.PutThumb(key(i), 480, v1, blob(300, 't')); err != nil {
+			t.Fatal(err)
+		}
+		if !c.HasThumb(key(i), 480, v1) {
+			t.Fatalf("thumbnail %d was evicted as soon as it was written", i)
+		}
+	}
+	// The newest three (900 bytes) fit the reserve; a fourth would not.
+	for i := 1; i <= 9; i++ {
+		if got, want := c.HasThumb(key(i), 480, v1), i >= 7; got != want {
+			t.Errorf("thumbnail %d present = %v, want %v", i, got, want)
+		}
+		if !c.HasOriginal(key(i)) {
+			t.Errorf("original %d was evicted", i)
+		}
+	}
+	if c.Size() != 9900 || diskBytes(t, dir) != 9900 {
+		t.Fatalf("Size = %d, disk = %d, want 9900", c.Size(), diskBytes(t, dir))
+	}
+	// A recently used thumbnail outlives a newer unused one.
+	if _, ok := c.GetThumb(key(7), 480, v1); !ok {
+		t.Fatal("miss")
+	}
+	if err := c.PutThumb(key(1), 240, v1, blob(300, 't')); err != nil {
+		t.Fatal(err)
+	}
+	if !c.HasThumb(key(7), 480, v1) || c.HasThumb(key(8), 480, v1) || !c.HasThumb(key(1), 240, v1) {
+		t.Error("eviction inside the reserve is not least recently used first")
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
+		t.Errorf("%d warnings logged, want 1:\n%s", n, logs.String())
+	}
+	// Reopening gives the same state.
+	again := open(t, dir, 8000)
+	if again.Size() != 9900 || !again.HasThumb(key(7), 480, v1) {
+		t.Fatalf("reopened: Size = %d", again.Size())
+	}
+	// Back under the limit, and over it again: the warning is logged once more.
+	if _, err := c.Prune(func(k string) bool { return k == key(1) }, v1); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutThumb(key(1), 480, v1, blob(300, 't')); err != nil || c.Size() > 8000 {
+		t.Fatalf("after Prune: Size = %d, err = %v", c.Size(), err)
+	}
+	for i := 2; i <= 9; i++ {
+		if err := c.PutOriginal(key(i), blob(1000, 'o')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 2 {
+		t.Errorf("%d warnings logged after the second overflow, want 2", n)
 	}
 }
 
@@ -628,8 +701,9 @@ func TestConcurrentUse(t *testing.T) {
 			originals += 500
 		}
 	}
-	if c.Size() > 40_000 && c.Size() != originals {
-		t.Fatalf("Size = %d over the limit with thumbnails left (originals %d)", c.Size(), originals)
+	// Over the limit only when the originals leave less than the reserve (limit/8) for thumbnails.
+	if thumbs := c.Size() - originals; c.Size() > 40_000 && thumbs > 40_000/reserveDivisor {
+		t.Fatalf("Size = %d over the limit with %d bytes of thumbnails left (originals %d)", c.Size(), thumbs, originals)
 	}
 	// A fresh index of the directory agrees.
 	if again := open(t, dir, 1<<30); again.Size() != c.Size() {

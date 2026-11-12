@@ -18,8 +18,9 @@ test('an anonymous visitor is sent to /login and gets no data', async ({ page, r
     expect((await res.text()).length, path).toBeLessThan(200)
   }
   expect((await request.get('/healthz')).status()).toBe(200)
-  // The static files of the login page are public; the app script is harmless without a session.
+  // The login page's stylesheet is open; the gallery's script is behind the login.
   expect((await request.get('/app.css')).status()).toBe(200)
+  expect((await request.get('/app.js', { maxRedirects: 0 })).status()).toBe(401)
 })
 
 test('a wrong token is refused, the right one signs in and sets a safe cookie', async ({ page, context, watched }) => {
@@ -72,6 +73,24 @@ test('the token also works as the HTTP Basic password', async ({ request }) => {
   expect(ok.status()).toBe(200)
   const bad = await request.get('/api/tiles?limit=1', { headers: { Authorization: 'Basic ' + Buffer.from('e2e:wrong-token-wrong-token').toString('base64') } })
   expect(bad.status()).toBe(401)
+})
+
+test('wrong Basic passwords are rate-limited like failed logins', async ({ request }) => {
+  // Counted per client address; a made-up one keeps this test from blocking the others,
+  // which all come from 127.0.0.1 (the dev stack trusts X-Forwarded-For from loopback).
+  const from = { 'X-Forwarded-For': '203.0.113.250' }
+  const wrong = n => ({ ...from, Authorization: 'Basic ' + Buffer.from(`e2e:wrong-token-number-${n}`).toString('base64') })
+  const seen = []
+  for (let i = 0; i < 8; i++) seen.push((await request.get('/api/tiles?limit=1', { headers: wrong(i) })).status())
+  expect(seen).toEqual([401, 401, 401, 401, 401, 429, 429, 429])
+  // Now even the right token is refused from that address, with Retry-After...
+  const blocked = await request.get('/api/tiles?limit=1', { headers: { ...from, ...basic() } })
+  expect(blocked.status()).toBe(429)
+  expect(Number(blocked.headers()['retry-after'])).toBeGreaterThan(0)
+  const login = await request.post('/login', { headers: from, form: { token: TOKEN() }, maxRedirects: 0 })
+  expect(login.status()).toBe(429)
+  // ...while other addresses are unaffected.
+  expect((await request.get('/api/tiles?limit=1', { headers: basic() })).status()).toBe(200)
 })
 
 test('every page carries the security headers', async ({ page, request }) => {
