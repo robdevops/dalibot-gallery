@@ -6,7 +6,11 @@
 # or replaces them. The one header added is HSTS, which the gallery does not send.
 #
 # reverse_proxy passes the Host header through and sets X-Forwarded-For to the
-# client's address; the gallery uses it to count failed logins per client.
+# client's address; the gallery uses it to count wrong tokens per client. It
+# believes the header only from the addresses in GALLERY_TRUSTED_PROXIES:
+# loopback by default (Caddy on the same host as a gallery without a
+# container); deploy/compose.yaml sets it to the address the container sees
+# Caddy connect from.
 # There is no cache: /img/ responses are behind the login and must stay there.
 
 gallery.example.com {

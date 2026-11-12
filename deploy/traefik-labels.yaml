@@ -10,19 +10,34 @@
 #
 # Traefik reaches the container over the Docker network, so the host port is
 # removed. Traefik sets X-Forwarded-For itself, which the gallery uses to
-# count failed logins per client.
+# count wrong tokens per client. The gallery believes that header only from
+# the addresses in GALLERY_TRUSTED_PROXIES, so set it below to Traefik's own
+# address on the "proxy" network:
+#
+#   docker inspect -f '{{(index .NetworkSettings.Networks "proxy").IPAddress}}' traefik
+#
+# Give Traefik a fixed address on that network (ipv4_address in its own
+# Compose file) so that this stays true after a restart. Listing the whole
+# subnet of the network also works, but then every container on that network
+# can choose the client address the gallery counts and logs. With a wrong or
+# missing value nothing breaks, but all visitors count as one client and
+# share the limit of 5 wrong tokens per minute.
 #
 # No middleware touches the response headers: the gallery sends its own
 # Content-Security-Policy, X-Content-Type-Options, Referrer-Policy,
 # Permissions-Policy and X-Frame-Options, and they must reach the browser
 # unchanged. The one header added here is HSTS, which the gallery does not send.
-# Do not add a caching plugin for /img/: those responses are behind the login.
+# Do not add a caching plugin for /img/: those responses are behind the login
+# (the gallery marks them "private").
 
 services:
   gallery:
     ports: !reset []
     networks:
+      - default
       - proxy
+    environment:
+      GALLERY_TRUSTED_PROXIES: "172.20.0.2" # Traefik's address on "proxy": change this
     labels:
       traefik.enable: "true"
       traefik.docker.network: proxy

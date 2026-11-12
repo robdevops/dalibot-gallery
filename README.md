@@ -15,6 +15,14 @@ first, with infinite scroll and a full-size viewer.
   JavaScript and CSS, no framework, no build step). It links libvips through cgo,
   so libvips must be installed wherever it runs; the container image takes care of that.
 
+| Grid, 1440 px wide | Viewer |
+|---|---|
+| ![The grid on a desktop](docs/screenshots/desktop-1440-grid.jpg) | ![The viewer on a desktop](docs/screenshots/desktop-1440-lightbox.jpg) |
+
+Screenshots from the end-to-end tests, which run the real binary against a
+local stand-in for DynamoDB and Telegram that serves the 12 sample images in
+`testdata/telegram/`. Phone versions are in `docs/screenshots/`.
+
 Contents: [Quick start](#quick-start-container) ·
 [Configuration](#configuration) · [AWS access](#aws-access) ·
 [Security model](#security-model) · [Reverse proxy](#reverse-proxy) ·
@@ -84,6 +92,26 @@ Both base images can be replaced with the build arguments `GO_IMAGE` and
 distribution release and the package names in the Dockerfile are Ubuntu's.
 The image is about 330 MB, nearly all of it libvips' dependencies.
 
+**What has and has not been tested.** The image was built and run in the
+development sandbox only (Docker 29, x86-64):
+
+- Built from this Dockerfile, unchanged, but with
+  `--build-arg BASE_IMAGE=<ubuntu:24.04 plus the sandbox proxy's certificate
+  and apt settings>` and `GO_IMAGE=golang:1.24-trixie`, because the sandbox
+  has no direct internet access. The default build arguments (plain
+  `ubuntu:24.04` and `golang:1.24` from Docker Hub) have not been built end to end.
+- Run with the `docker run` flags above against the dev stack (a local
+  DynamoDB stand-in and a fake Telegram): healthy, uid 10001, read-only root,
+  no capabilities, thumbnails and originals served, 111 MiB of the 512 MiB
+  in use after warming 240 thumbnails, clean exit on `docker stop`.
+- `deploy/compose.yaml` was brought up and its client-address handling
+  checked through the published port. The nginx, Caddy and Traefik examples
+  were each run in front of the container before `GALLERY_TRUSTED_PROXIES`
+  existed; they have not been run again since, and the Traefik address in
+  `deploy/traefik-labels.yaml` is a placeholder you must change.
+- Not tested: real AWS, the real Telegram API, certificate issuance, any
+  other machine or architecture, the unit under a running systemd.
+
 `/healthz` answers 503 until the first read of the table has succeeded, so
 the container is "starting" or "unhealthy" while AWS is unreachable or the
 credentials are wrong; the log says why. Traefik does not route to a
@@ -108,9 +136,10 @@ variable at fault. Secrets are never printed. `.env.example` lists them all.
 | `GALLERY_DEFAULT_COMMAND` | `dream` | Shown for records that carry no command. Display only. |
 | `GALLERY_CHATS` | (empty) | Comma list of chat ids to show (negative for groups). Empty shows every chat. |
 | `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
+| `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [Reverse proxy](#reverse-proxy). |
 | `GALLERY_REFRESH` | `60s` | How often the table is re-read. A duration or a number of seconds, 5 s to 24 h. |
 | `GALLERY_CACHE_DIR` | `$CACHE_DIRECTORY` or `./cache` | `$CACHE_DIRECTORY` is what systemd's `CacheDirectory=` sets. The container image sets `/var/cache/dalibot-gallery`. |
-| `GALLERY_CACHE_MAX_MB` | `2048` | Thumbnails are evicted above this size (minimum 16). See [Cache](#cache-and-pipeline_version). |
+| `GALLERY_CACHE_MAX_MB` | `2048` | Size limit for originals plus thumbnails (minimum 16). Thumbnails are evicted above it; originals are not, so size it for your originals. See [Cache](#cache-and-pipeline_version). |
 | `GALLERY_WEBP_QUALITY` | `76` | 1–100. Changing it changes every thumbnail URL. |
 | `GALLERY_IMAGE_WORKERS` | number of CPUs | Thumbnail pipelines that may run at once, 1–64. |
 | `GALLERY_WARM` | `120` | After each refresh, thumbnails for this many of the newest tiles are made in the background. `0` turns it off. |
@@ -181,17 +210,38 @@ tests scan every response, headers and body, for the seeded file ids and both to
   one year) holding an HMAC-SHA256 derived from the token, not the token itself; or
 - as the password of HTTP Basic auth (any user name), for scripts.
 
-Comparisons are constant-time. `/login` allows 5 failed attempts per client
-address per minute and 30 per minute overall, then answers 429. Everything
-needs authentication except `/healthz`, `/login`, `/app.js` and `/app.css`.
-There are no accounts or roles: whoever has the token sees everything, and
-the only way to sign everyone out is to change the token.
+Comparisons are constant-time. Everything needs authentication except
+`/healthz`, `/login` and the stylesheet `/app.css`, which the login page
+uses. There are no accounts or roles: whoever has the token sees everything,
+and the only way to sign everyone out is to change the token.
+
+**Guessing the token is rate-limited.** A wrong token counts the same
+whether it is posted to `/login` or sent as a Basic password to any route:
+
+- One client may present 5 wrong tokens per minute. After that it gets 429
+  with `Retry-After` on `/login` and on every request that carries a Basic
+  password, right or wrong, until the minute has passed. A client is an IPv4
+  address or an IPv6 /64. Checking and counting are one step, so parallel
+  requests cannot slip past the limit.
+- All clients together may present 300 wrong tokens per minute. Above that,
+  every sign-in and every Basic request gets 429 for up to a minute. This
+  ceiling only matters against a guesser with many addresses. The price is
+  that such an attacker (at least 60 addresses, each failing at full rate)
+  can keep others from signing in for as long as the attack lasts.
+- A valid session cookie is never limited or blocked, and requests without
+  credentials do not count.
+- The limit is only as good as the client address. Behind a reverse proxy
+  that is not listed in `GALLERY_TRUSTED_PROXIES`, every visitor has the
+  proxy's address and shares one allowance of 5; see [Reverse proxy](#reverse-proxy).
+- The limiter slows guessing; it does not make a weak token safe. Use a long
+  random one (`openssl rand -base64 32`). The 16-character minimum checks
+  length, not randomness.
 
 With `GALLERY_AUTH=off` the gallery has no login at all and relies entirely
 on the proxy in front of it. It refuses to start with neither a token nor
 `GALLERY_AUTH=off`.
 
-**Headers** on every response:
+**Headers** on every response the gallery's handler writes (every route and status, including 401, 404, 405 and 429):
 
 ```
 Content-Security-Policy: default-src 'none'; img-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
@@ -205,6 +255,14 @@ Cross-Origin-Opener-Policy: same-origin
 
 There are no inline scripts or styles and no third-party resources. The
 gallery does not send `Strict-Transport-Security`; the proxy examples add it.
+
+One gap: a request that Go's HTTP server rejects before it reaches the
+handler gets Go's own short `text/plain` answer without these headers. That
+covers a malformed request line, a missing `Host` header (400), headers over
+16 KB (431) and `OPTIONS *`. Those answers are fixed strings that contain
+nothing from the request, and Go offers no hook to add headers to them.
+Behind a reverse proxy, clients normally never see them: the proxy rejects
+such requests itself.
 
 **Telegram allowlist.** The Telegram client can build exactly two requests:
 `POST /bot<token>/getFile` and `GET /file/bot<token>/<file_path>`. It never
@@ -220,7 +278,22 @@ Telegram rejects, 5 minutes otherwise) and the tile shows a plain placeholder.
 magic bytes and its header must declare at most 10,000 px per side and 50
 megapixels. libvips runs with `VIPS_BLOCK_UNTRUSTED=1` and with every loader
 except JPEG blocked, so PNG, TIFF, SVG and the rest are rejected even if
-Telegram were to serve them.
+Telegram were to serve them. The JPEG loader runs with `fail_on=error`, and
+every downloaded original is decoded in full once before it is stored: a
+file whose body is truncated or corrupt shows the placeholder and is neither
+cached nor served.
+
+**Memory.** Decoding a progressive JPEG takes memory in proportion to its
+pixel count, whatever the thumbnail size. So besides the
+`GALLERY_IMAGE_WORKERS` limit, the images being decoded at one moment may
+hold at most 50 megapixels between them: the largest image the header check
+accepts is decoded alone, while Telegram's usual 1024×1024 photos
+(1 megapixel) are not held back. In one measurement, four concurrent
+requests for a 49-megapixel progressive JPEG peaked at 202 MB of resident
+memory (651 MB before the budget existed). The gallery is still meant to run
+under a hard memory cap (512 MB in the Compose file and the systemd unit):
+that one file is the only large input measured, and a 50-megapixel image
+with full-resolution colour would need roughly twice as much (an estimate, not measured).
 
 **Logs.** Every log line passes through a filter that removes both tokens.
 File ids, file paths, Telegram URLs and cookie values are not logged.
@@ -245,17 +318,36 @@ Whatever proxy you use:
 
 - **Do not remove, replace or duplicate the gallery's security headers.** The
   examples add only `Strict-Transport-Security`.
-- **Do not cache at the proxy.** Images are sent with
-  `Cache-Control: public, max-age=31536000, immutable` so that browsers keep
-  them, but they are behind the login. A shared cache in the proxy or a CDN
-  would hand them to anyone who has the URL.
-- **Set `X-Forwarded-For`.** When the connection comes from a loopback or
-  private address, the login limiter counts by the last entry of
-  `X-Forwarded-For`, which is the one your proxy appended. nginx's
-  `$proxy_add_x_forwarded_for`, Caddy and Traefik all do this by default. A
-  consequence: if the gallery is reachable directly from a private network
-  without a proxy, a client there can vary that header to avoid the
-  per-client limit; the overall limit of 30 per minute still applies.
+- **Do not cache at the proxy.** With the gallery's login on, images are
+  sent with `Cache-Control: private, max-age=31536000, immutable`: the
+  browser keeps them for a year, and a shared cache that follows the
+  standard does not store them. (The plan specified `public`; `private` was
+  chosen because the images are behind the login. Browser caching is the
+  same.) With `GALLERY_AUTH=off` they are sent as `public`, and it is then up
+  to you not to put a shared cache between the authenticating proxy and the visitors.
+- **Set `X-Forwarded-For`, and tell the gallery which proxies to believe.**
+  The limiter on token guesses counts per client address. The gallery uses
+  the address of the TCP peer, unless that peer is listed in
+  `GALLERY_TRUSTED_PROXIES`; then it reads `X-Forwarded-For` from the right
+  and takes the first address that is not itself a trusted proxy. nginx's
+  `$proxy_add_x_forwarded_for`, Caddy and Traefik all append the client
+  address by default. Set the variable to the address your proxy connects
+  from, as the gallery sees it:
+  - Proxy and gallery on the same host, no container: nothing to do. The
+    default trusts loopback.
+  - `deploy/compose.yaml` with a proxy on the host: already set. The
+    container sees the proxy's connections as coming from the gateway of
+    the Compose network, which the file pins to `172.30.80.1`.
+  - `docker run` with a proxy on the host: the gateway of the Docker network
+    in use (`docker network inspect bridge`, usually `172.17.0.1`).
+  - Traefik in Docker: Traefik's address on the shared network; see the
+    comments in `deploy/traefik-labels.yaml`.
+
+  List only the proxies themselves. Anything that can connect to the gallery
+  from a trusted address can pick its own client address and so get around
+  the per-client limit (the overall limit still applies) and write false
+  addresses to the log. If the proxy is not listed, nothing breaks, but all
+  visitors count as one client and share 5 wrong tokens per minute.
 - Nothing else is needed: no WebSockets, no path rewriting, and the only
   request body is the login form.
 
@@ -342,8 +434,17 @@ refresh, files whose record is no longer in the listing (expired, deleted, or
 excluded by `GALLERY_CHATS`) are removed, as are thumbnails from another
 pipeline version. When the directory exceeds `GALLERY_CACHE_MAX_MB`,
 thumbnails are evicted, least recently used first. Originals are never
-evicted for size, so the directory can exceed the limit if the originals
-alone are larger; budget roughly 300 KB per image for originals.
+evicted for size: they go only when their record leaves the table.
+
+**Size the limit for your originals.** Budget roughly 300 KB per image for
+the original plus 55 KB for its two thumbnails; the default 2048 MB holds
+about 5,700 images in full. Beyond that, thumbnails of the least recently
+viewed images are regenerated when needed (about 60 ms of CPU each). If the
+originals alone reach the limit (about 6,800 images at the default),
+thumbnails are still kept in a reserve of one eighth of the limit (256 MB
+by default, about 4,600 images' worth), so
+the directory can grow to the originals plus that reserve. The gallery logs
+one warning when this starts; raise `GALLERY_CACHE_MAX_MB` then.
 
 `PipelineVersion` is a constant in `internal/imaging/imaging.go`, currently
 `1`. It is part of every thumbnail's file name, URL (`?v=`) and ETag. The tag
@@ -463,12 +564,47 @@ Caveats, from BENCH.md:
   3), and times vary: an earlier run gave 44.3 ms and 22.1 ms per thumbnail
   and 70.2 / 145.7 per second with 4 workers. Byte sizes do not vary.
 - One image misses the plan's 60 KB target at 480 px: `telegram-10.jpg` is
-  64,170 bytes; the other eleven are 24,810–59,550 bytes.
+  64,170 bytes; the other eleven are 24,810–59,550 bytes. Quality 76 and
+  effort 4 are fixed, so this is an accepted exception: the test names that
+  one file, gives it a 65 KB ceiling, and fails if any other sample exceeds 60 KB.
+- The table was recorded before the loader got `fail_on=error`. The bytes
+  are identical. A rerun of the Go benchmarks afterwards gave 46.1 ms and
+  23.3 ms per thumbnail and 74.6 / 145.8 per second, inside the spread above.
+- A cold tile also pays for one full check decode of the original (about
+  12–13 ms on the same machine) before the thumbnails are made.
 - Not measured there: the Telegram download, the disk cache, HTTP serving and memory.
 
 Separately, the integration test measures a 240 px tile served from a warm
 cache over loopback HTTP and fails above a 5 ms median; one recorded run of
 300 requests gave a median of 220 µs, p95 401 µs, maximum 1.2 ms.
+
+### In the browser
+
+From the end-to-end tests (`e2e/perf.spec.js`): headless Chromium against the
+dev stack on the same machine, empty browser cache, thumbnails already in the
+gallery's cache. The page, script, stylesheet and first JSON page are 43 kB
+together; every tile was fetched at 480 px, about 43 kB each.
+
+| Profile | Page + tiles in view | Whole first visit, throttled to 10 Mbit/s and 40 ms | Whole first visit, loopback |
+|---|---:|---:|---:|
+| 1440×900, 1x and 2x | 884 kB (20 tiles) | 1,767 kB (40 images) | 2,579 kB (59 images) |
+| 1920×1080 | 1,099 kB (24 tiles) | **2,131 kB (48 images)** | 2,579 kB (59 images) |
+| iPhone 15 profile | 422 kB (8 tiles) | 884 kB (20 images) | 1,687 kB (38 images) |
+
+- **The plan's "first screen transfers at most 2 MB" holds for the tiles in
+  view on every profile, but not for everything a first visit downloads at
+  1920×1080.** There Chromium's lazy-loading margin fetches 48 tiles, 2.13 MB
+  in all, 6% over. The test asserts the first column everywhere and the
+  second column at 1440×900 and on the phone profile; the 1920×1080 figure
+  is reported, not asserted.
+- With no network latency at all (loopback) Chromium fetches every lazy image
+  of the first batch at once, so those totals are larger; they are reported only.
+- A second visit transfers 33 kB and no image bytes.
+- A tile from a warm cache, 400 requests over 20 tiles on loopback: median
+  0.18–0.19 ms, p95 0.34–0.40 ms, maximum 0.9 ms for both sizes (the test
+  fails above 5 ms). A cold tile was not timed end to end.
+- Chromium only. The phone runs are Chromium with a device profile, not
+  Safari, and the network is simulated.
 
 ## Limitations and out of scope
 
@@ -476,7 +612,8 @@ cache over loopback HTTP and fails above a 5 ms median; one recorded run of
   (90 days after its last write by default), its tiles and cached files go too.
 - **Read-only.** No uploads, likes, comments, search, or writing to the table.
 - **One shared token.** No users or roles, and no per-session sign-out.
-  HTTP Basic attempts are not rate-limited; only `/login` is.
+  Many addresses failing together can block sign-ins for a while; see
+  [Security model](#security-model).
 - **DynamoDB only.** The bot's self-hosted SQLite mode is not supported (the
   listing sits behind an interface so a reader could be added).
 - **JPEG originals only**, which is what Telegram serves for photos. Anything
@@ -486,7 +623,9 @@ cache over loopback HTTP and fails above a 5 ms median; one recorded run of
 - "Newest" means most recently drawn: adding a style to an old message brings
   its tiles back to the top. The date is derived from the TTL, so it is only
   right if `GALLERY_STORE_DAYS` matches the bot.
-- Image responses are cacheable as `public`; see [Reverse proxy](#reverse-proxy).
+- With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](#reverse-proxy).
+- Responses that Go's HTTP server writes itself for malformed requests carry
+  no security headers; see [Security model](#security-model).
 - The container image takes libvips from Ubuntu's `universe` component, whose
   security updates are not guaranteed by Canonical without Ubuntu Pro. Rebuild
   often, or set `BASE_IMAGE` and adapt the package names for another distribution.

@@ -19,7 +19,10 @@ Module: `github.com/robdevops/dalibot-gallery`
   Facts about v2.17.0 that matter:
   - `vips.Startup(&vips.Config{ConcurrencyLevel: 1, MaxCacheSize: 0})`, `vips.Shutdown()`, `vips.Version` (a string constant).
   - `vips.NewThumbnailFromBuffer(buf []byte, width, height int, crop vips.Interesting) (*vips.ImageRef, error)`; use `vips.InterestingCentre`.
-    It takes no import parameters, so `fail_on` cannot be passed: accept the default.
+    It takes no import parameters. The pipeline therefore calls
+    `vips.LoadThumbnailFromBuffer(buf, w, h, vips.InterestingCentre, vips.SizeBoth, params)` (the same libvips operation;
+    `NewThumbnailFromBuffer` is that call with nil parameters) with `params.FailOnError.Set(true)`, which govips passes to the
+    loader as `fail=TRUE`, libvips' older spelling of `fail_on=error`. A truncated or corrupt JPEG body is then an error.
   - `(*vips.ImageRef).ExportWebp(*vips.WebpExportParams) ([]byte, *vips.ImageMetadata, error)` with fields
     `StripMetadata bool`, `Quality int`, `ReductionEffort int` (and `Lossless`, `NearLossless`, `IccProfile`, `MinSize`, `MinKeyFrames`, `MaxKeyFrames`).
   - Quiet govips' own logging with `vips.LoggingSettings(handler, vips.LogLevelError)` before `Startup`.
@@ -61,6 +64,7 @@ type Config struct {
 	WebPQuality     int           // GALLERY_WEBP_QUALITY; default 76; 1..100
 	ImageWorkers    int           // GALLERY_IMAGE_WORKERS; default runtime.NumCPU(); 1..64
 	Warm            int           // GALLERY_WARM; default 120; 0..10000
+	TrustedProxies  []netip.Prefix // GALLERY_TRUSTED_PROXIES: comma list of IPs or CIDRs; default 127.0.0.0/8 and ::1; "none" is empty
 }
 
 func Load() (*Config, error)                                   // from os.Getenv
@@ -297,9 +301,16 @@ func Validate(data []byte) error
 var ErrNotJPEG error     // wrapped by Validate errors for non-JPEG input
 var ErrTooLarge error    // wrapped by Validate errors for oversized dimensions
 
+// Verify validates jpeg and then decodes all of it with fail_on=error, producing nothing. It is an
+// error for a body that is truncated or corrupt behind a valid header. The server calls it on every
+// downloaded original before storing it. Same worker slots, pixel budget and ctx rules as Thumbnail.
+func Verify(ctx context.Context, jpeg []byte) error
+
 // Thumbnail validates jpeg, then returns a square centre-cropped WebP of size x size pixels
 // (smaller, still square, if the source is smaller: never upscaled). size must satisfy ValidSize.
-// It waits for one of the Workers slots; ctx cancels the wait (returns ctx.Err()).
+// The JPEG is decoded with fail_on=error. It waits for one of the Workers slots and for room in the
+// pixel budget (the source pixels of all running pipelines together are at most MaxPixels, so the
+// largest accepted image is decoded alone); ctx cancels the wait (returns ctx.Err()).
 func Thumbnail(ctx context.Context, jpeg []byte, size int) ([]byte, error)
 
 // Placeholder is a small solid WebP in Background colour, served when an image cannot be fetched.
@@ -347,7 +358,7 @@ func (c *Cache) Prune(live func(key string) bool, version string) (removed int, 
 func (c *Cache) Size() int64
 ```
 
-- Size limit: when originals + thumbnails exceed `maxBytes`, thumbnails are evicted least recently used first until the total fits or no thumbnails are left. **Originals are never evicted for size**; only `Prune` removes them. Recency survives a restart approximately (use file mtime at `Open`).
+- Size limit: when originals + thumbnails exceed `maxBytes`, thumbnails are evicted least recently used first until the total fits or the thumbnails are down to the reserve, `maxBytes/8`. The reserve keeps the most recently used thumbnails when the originals alone approach or pass the limit (otherwise each thumbnail would be evicted as it is written); the directory can then hold the originals plus the reserve, and one warning is logged when that state begins. **Originals are never evicted for size**; only `Prune` removes them. Recency survives a restart approximately (use file mtime at `Open`).
 - A `Get` miss, a read error and a zero-length file are all `ok=false`.
 - Files are written 0600.
 
@@ -392,16 +403,16 @@ sample JPEGs are in `testdata/telegram/` (not `testdata/images/`).
 
 `cmd/gallery/main.go` wires, in this order: `config.Load` → logger → `imaging.Startup` → `cache.Open` → `telegram.New` → `source.NewDynamo` → `source.NewStore` → `server.New` → `store.OnSwap(...)` → `go store.Run(ctx, cfg.Refresh)` → `http.Server{ReadHeaderTimeout: 5s, ReadTimeout: 10s, WriteTimeout: 60s, IdleTimeout: 120s, MaxHeaderBytes: 16 << 10}`; on SIGINT/SIGTERM: shut the server down, cancel ctx, `imaging.Shutdown`.
 
-How an image is produced (server): thumbnail request → `cache.GetThumb` → else original (`cache.GetOriginal` → else `snap.FileID` + `Fetcher.Fetch` + `imaging.Validate` + `cache.PutOriginal`) → `imaging.Thumbnail` → `cache.PutThumb`. Use singleflight per `key+size` so concurrent requests for one cold tile do the work once.
+How an image is produced (server): thumbnail request → `cache.GetThumb` → else original (`cache.GetOriginal` → else `snap.FileID` + `Fetcher.Fetch` + `imaging.Verify` (header check, then a full decode) + `cache.PutOriginal`) → `imaging.Thumbnail` → `cache.PutThumb`. Use singleflight per `key+size` so concurrent requests for one cold tile do the work once.
 
 ### 7.2 Routes
 
-Only `GET` and `HEAD` are allowed, except `POST /login`; anything else is `405` with an `Allow` header. Unknown paths are `404`. All routes except `/healthz`, `/login`, `/app.css` and `/app.js` need auth (7.4).
+Only `GET` and `HEAD` are allowed, except `POST /login`; anything else is `405` with an `Allow` header. Unknown paths are `404`. All routes except `/healthz`, `/login` and `/app.css` (the login page's stylesheet) need auth (7.4).
 
 | Route | Response |
 |---|---|
 | `GET /` , `GET /?cursor=<c>` | `200 text/html; charset=utf-8`: `index.html` rendered as in 7.5. `Cache-Control: no-store`. A malformed cursor is `400`. |
-| `GET /app.js`, `GET /app.css` | the embedded file, `Cache-Control: no-cache`, strong `ETag`, `304` on `If-None-Match`. |
+| `GET /app.js`, `GET /app.css` | the embedded file, `Cache-Control: no-cache`, strong `ETag`, `304` on `If-None-Match`. `/app.js` needs auth (`401 text/plain` without); `/app.css` does not. |
 | `GET /api/tiles?limit=<n>&cursor=<c>` | JSON, see 7.3. |
 | `GET /api/tiles/new?since=<c>[&tiles=1]` | JSON, see 7.3. |
 | `GET /img/<key>-<size>.webp?v=<tag>` | the WebP thumbnail, see below. |
@@ -413,7 +424,7 @@ Image routes:
 
 - The path after `/img/` must match `^[A-Za-z0-9_-]{22}-(240|480)\.webp$` or `^[A-Za-z0-9_-]{22}\.jpg$`. A key may itself contain `-` and `_`: it is always the first 22 characters. Anything else is `404`.
 - The key must be in the current snapshot (`snap.Has`), else `404`. For `.webp`, `v` must equal `imaging.Tag()`, else `404` (an old page asking for an old pipeline version must not be given new bytes under an immutable URL).
-- Success: `200`, `Content-Type: image/webp` or `image/jpeg`, `Cache-Control: public, max-age=31536000, immutable`, `ETag: "<key>-<size>-v<tag>"` (thumbnail) or `"<key>"` (original), `Content-Length`. `If-None-Match` with that ETag gives `304` without doing any work.
+- Success: `200`, `Content-Type: image/webp` or `image/jpeg`, `Cache-Control: private, max-age=31536000, immutable` (`public, …` when `cfg.AuthOff`; the brief's `public` would let shared caches store images that are behind the login), `ETag: "<key>-<size>-v<tag>"` (thumbnail) or `"<key>"` (original), `Content-Length`. `If-None-Match` with that ETag gives `304` without doing any work.
 - Failure to obtain the image (Telegram error, invalid bytes):
   - `.webp`: `200`, `Content-Type: image/webp`, body `imaging.Placeholder()`, `Cache-Control: no-store`, header `X-Gallery-Placeholder: 1`, no `ETag`.
   - `.jpg`: `502`, `text/plain`, `Cache-Control: no-store`, body `image unavailable\n`.
@@ -479,7 +490,7 @@ When `cfg.AuthOff`: every route is open; `GET /login` and `POST /login` answer `
 Otherwise a request is authenticated if either:
 
 - it has a valid session cookie: name `gallery_session`, value = lower-case hex of `HMAC-SHA256(key = GALLERY_TOKEN, message = "dalibot-gallery session v1")`, compared in constant time; or
-- it has `Authorization: Basic …` whose **password** equals `GALLERY_TOKEN` (any username), compared in constant time.
+- it has `Authorization: Basic …` whose **password** equals `GALLERY_TOKEN` (any username), compared in constant time. A Basic password is a token guess and goes through the limiter below: a wrong one is recorded, and a client over the limit gets `429` with `Retry-After` (JSON for `/api/`) whatever password it sends. The cookie is checked first and is never limited.
 
 Unauthenticated requests:
 
@@ -492,10 +503,11 @@ Login:
 - `POST /login`: body `application/x-www-form-urlencoded` (at most 4 KiB) with field `token`.
   - Correct: `303` to `/` with `Set-Cookie: gallery_session=<value>; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict`.
   - Wrong: `401 text/html`, `login.html` with `Error` true.
-  - Rate limit: at most 5 failed attempts per client address per minute, and 30 per minute overall; beyond that `429` with `Retry-After`, without checking the token.
+  - Rate limit, shared with Basic passwords: at most 5 wrong tokens per client per minute, and 300 per minute overall; beyond that `429` with `Retry-After`, whether or not the token is right. The body is read first; the limiter then checks and records in one locked step (`loginLimiter.attempt`), so requests in flight together cannot all pass the check.
+  - The client is the peer address, or, when the peer is in `cfg.TrustedProxies`, the right-most `X-Forwarded-For` entry that is not itself a trusted proxy. IPv6 clients are counted per /64.
 - The `Secure` attribute is always set: browsers accept it over plain HTTP on `localhost`/`127.0.0.1`, which is what tests use.
 
-Headers on **every** response:
+Headers on **every** response the handler writes (responses net/http writes itself before the handler runs, such as `400` for a missing Host header or `431`, cannot carry them):
 
 ```
 Content-Security-Policy: default-src 'none'; img-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'

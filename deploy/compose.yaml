@@ -18,10 +18,15 @@ services:
 
     env_file:
       - ../.env
-    # These two are fixed for the container and override .env.
+    # These are fixed for the container and override .env.
     environment:
       GALLERY_LISTEN: "0.0.0.0:8080"
       GALLERY_CACHE_DIR: /var/cache/dalibot-gallery
+      # The reverse proxy on the host connects through the published port, and
+      # the container sees those connections as coming from the gateway of
+      # its network (pinned below). Only from that address is X-Forwarded-For
+      # believed. If you change the subnet, change this to its gateway.
+      GALLERY_TRUSTED_PROXIES: "172.30.80.1"
 
     # Localhost only: the reverse proxy is the only way in.
     ports:
@@ -40,6 +45,15 @@ services:
     volumes:
       - cache:/var/cache/dalibot-gallery
     stop_grace_period: 20s
+
+networks:
+  # A fixed subnet, so that the gateway address above is known. Pick another
+  # private range if this one is in use on the host.
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.80.0/24
+          gateway: 172.30.80.1
 
 volumes:
   # Originals and thumbnails. Safe to delete: everything is fetched and made again.
