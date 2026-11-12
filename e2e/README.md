@@ -1,0 +1,69 @@
+# End-to-end tests
+
+Playwright drives Chromium against the real gallery binary. Nothing here
+contacts AWS or Telegram: `scripts/dev-stack.sh` runs a moto DynamoDB server
+seeded with about 150 records, a fake Telegram Bot API that serves the sample
+JPEGs in `testdata/telegram`, and the gallery built from this checkout.
+
+## Running
+
+Needs: Go, libvips with headers, moto's server (`/opt/moto/bin/moto_server` or
+`$MOTO_SERVER`), Node, and Playwright with its Chromium.
+
+```sh
+cd e2e
+npm install                       # only if Playwright is not already installed
+npx playwright install chromium   # likewise
+npx playwright test --trace off   # or: npm test
+```
+
+The run starts the dev stack on port 18480 (control server on 18481), signs in
+once through `/login`, runs every `*.spec.js` with one worker, and stops the
+stack. It takes about a minute and a half. Other options:
+
+| Setting | Effect |
+|---|---|
+| `E2E_PORT=19000` | use another port (and the next one) |
+| `E2E_URL=http://127.0.0.1:8080` | do not start a stack; test one that is already running (`scripts/dev-stack.sh -refresh 5s`). `E2E_TOKEN` and `E2E_CONTROL` default to the dev stack's token and port + 1 |
+| `E2E_SCREENSHOTS=1` | write the screenshots to `docs/screenshots/` instead of `e2e/artifacts/screenshots/` (`npm run screenshots` does only this) |
+
+`e2e/artifacts/` holds the dev stack's log, `perf.json` and the screenshots of
+the last run.
+
+`login.spec.js` submits one wrong token per run. `/login` allows five failures
+a minute per client, so more than five runs within a minute against the same
+stack will fail there.
+
+## What is covered
+
+| File | Checks |
+|---|---|
+| `grid.spec.js` | At 375, 390, 479, 480, 800, 1001, 1366, 1440 and 1920 px wide (1x, 2x and 3x): every tile is square, neighbours' bounding rects touch, no gap at either edge, `gap` is 0. Then, with white stand-in images, a screenshot of the first screen and of the seam between two batches must be entirely white, so no background shows between tiles once painted. Order equals the API's (newest first). Scrolling loads every page to the last tile with no duplicate keys and no page requested twice. |
+| `lightbox.spec.js` | Opens on the clicked tile with the 1024 px original; ArrowLeft, ArrowRight and the buttons move between tiles (and load the next page at the end); the style strip swaps the image; Esc, the close button and a click on the backdrop close it; focus returns to the tile; Back closes and Forward reopens; deep links `#/p/<key>`, also for a tile several pages down and for a key that does not exist; layout on a phone. |
+| `login.spec.js` | Anonymous visitors are sent to `/login` and get 401 from the API and images; a wrong token is refused; the right one sets an HttpOnly, Secure, SameSite=Strict cookie that does not contain the token; a forged cookie fails; HTTP Basic works; security headers on every kind of response. |
+| `noscript.spec.js` | With JavaScript off: the server-rendered first page is flush and in order, tiles link to the original, and "Load more" walks every page to the end with no duplicates or gaps. |
+| `perf.spec.js` | Bytes transferred on a first visit (empty browser cache, warm server cache) against the budget of 2 MB, on four device profiles; nothing but the page and JSON on a second visit; latency of a warm tile (median and p95 must be under 5 ms). |
+| `screenshots.spec.js` | The grid and the lightbox at 1440x900 with a device scale factor of 2, and on the iPhone 15 profile. |
+| `zz-new.spec.js` | Runs last because it adds records: the "N new" pill appears, counts, inserts nothing until clicked, then prepends the new tiles in order and scrolls to the top; no polling while the page is hidden; the fake Telegram saw only `getFile` and file downloads. |
+
+Every page in every test is also watched (`helpers.js`): a console error, an
+uncaught exception, a CSP violation or a failed request fails the test, and so
+does any response whose headers or body contain the gallery token, the bot
+token, a `file_id`, a `file_path` or a Telegram URL.
+
+## Notes on two of the measurements
+
+**"N new" without waiting a minute.** The page polls once a minute while it is
+visible and whenever it becomes visible again. The test dispatches the
+`visibilitychange` event the browser itself sends when a tab returns to the
+front. Neither the page nor the server has a test hook; the stack only runs
+with `GALLERY_REFRESH=5s`, the shortest interval the gallery accepts.
+
+**First-screen bytes.** The budget applies to the page plus the tiles in view,
+on every profile. Browsers also fetch `loading=lazy` images within a margin
+below the viewport (1250 px in Chromium), and that total is measured on a link
+of 10 Mbit/s with 40 ms latency. It is asserted at 1440x900 and on the phone,
+and only reported at 1920x1080, where it is slightly over 2 MB (48 tiles of
+about 43 kB). Straight over loopback, with no latency at all, Chromium fetches
+every lazy image of the first batch at once; that figure is reported too, but
+it is not what a visitor over a network gets.
