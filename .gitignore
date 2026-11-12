@@ -1,0 +1,6 @@
+/cache/
+/gallery
+/dalibot-gallery
+*.test
+*.out
+.env

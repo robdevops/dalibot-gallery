@@ -1,0 +1,669 @@
+{
+ "now": 1800000000,
+ "store_days": 90,
+ "items": [
+  {
+   "id": {
+    "S": "-1001234567890:101"
+   },
+   "prompt": {
+    "S": "a red fox in snow"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "monet"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIfox0-FIXTURE-fox0fox0fox0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "A red fox standing in deep snow, soft morning light"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     },
+     "monet": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIfox1-FIXTURE-fox1fox1fox1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "A red fox standing in deep snow, soft morning light, in the style of Claude Monet"
+       },
+       "base": {
+        "S": "A red fox standing in deep snow, soft morning light"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807775000"
+   }
+  },
+  {
+   "id": {
+    "S": "-1001234567890:102"
+   },
+   "prompt": {
+    "S": "a lighthouse at dusk"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {}
+   },
+   "ttl": {
+    "N": "1807775990"
+   }
+  },
+  {
+   "id": {
+    "S": "42:7"
+   },
+   "prompt": {
+    "S": "a teapot shaped like a whale"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "dali"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAItea0-FIXTURE-tea0tea0tea0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "a teapot shaped like a whale"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     },
+     "sketch": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAItea1-FIXTURE-tea1tea1tea1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "a teapot shaped like a whale, as a pencil sketch"
+       },
+       "base": {
+        "S": "a teapot shaped like a whale"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807774000"
+   }
+  },
+  {
+   "id": {
+    "S": "42:8"
+   },
+   "prompt": {
+    "S": "city of glass"
+   },
+   "command": {
+    "S": "flux"
+   },
+   "current": {
+    "S": "gone"
+   },
+   "images": {
+    "M": {
+     "anime": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIglass1-FIXTURE-glass1glass1glass1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "city of glass, as anime art"
+       }
+      }
+     },
+     "picasso": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIglass2-FIXTURE-glass2glass2glass2_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "city of glass, in the style of Pablo Picasso"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807773000"
+   }
+  },
+  {
+   "id": {
+    "S": "-1001234567890:103"
+   },
+   "prompt": {
+    "S": "sunset over a mall"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "vaporwave"
+   },
+   "images": {
+    "M": {
+     "neon_noir": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAImall2-FIXTURE-mall2mall2mall2_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "sunset over a mall, neon noir"
+       }
+      }
+     },
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAImall0-FIXTURE-mall0mall0mall0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "sunset over a mall"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     },
+     "vaporwave": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAImall1-FIXTURE-mall1mall1mall1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "sunset over a mall, vaporwave"
+       }
+      }
+     },
+     "bw": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAImall3-FIXTURE-mall3mall3mall3_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "sunset over a mall, in black & white"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807772000"
+   }
+  },
+  {
+   "id": {
+    "S": "-1001234567890:200"
+   },
+   "prompt": {
+    "S": "an owl reading a book"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "monet"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIowl0-FIXTURE-owl0owl0owl0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "An owl reading a book by candlelight"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     },
+     "monet": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIowl1-FIXTURE-owl1owl1owl1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "An owl reading a book by candlelight, in the style of Claude Monet"
+       },
+       "base": {
+        "S": "An owl reading a book by candlelight"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807770000"
+   }
+  },
+  {
+   "id": {
+    "S": "-1001234567890:201"
+   },
+   "prompt": {
+    "S": "an owl reading a book"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "dali"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIowl0-FIXTURE-owl0owl0owl0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "An owl reading a book by candlelight"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     },
+     "monet": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIowl1-FIXTURE-owl1owl1owl1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "An owl reading a book by candlelight, in the style of Claude Monet"
+       },
+       "base": {
+        "S": "An owl reading a book by candlelight"
+       }
+      }
+     },
+     "dali": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIowl2-FIXTURE-owl2owl2owl2_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "An owl reading a book by candlelight, in the style of Salvador Dalí"
+       },
+       "base": {
+        "S": "An owl reading a book by candlelight"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807771000"
+   }
+  },
+  {
+   "id": {
+    "S": "42:9"
+   },
+   "prompt": {
+    "S": "a bridge in fog"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIfog0-FIXTURE-fog0fog0fog0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "a bridge in fog"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     },
+     "bw": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIfog1-FIXTURE-fog1fog1fog1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "a bridge in fog, in black & white"
+       },
+       "base": {
+        "S": "a bridge in fog"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807768000"
+   }
+  },
+  {
+   "id": {
+    "S": "42:10"
+   },
+   "prompt": {
+    "S": "a bridge in fog"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIfog0-FIXTURE-fog0fog0fog0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "a bridge in fog"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807769000"
+   }
+  },
+  {
+   "id": {
+    "S": "42:1"
+   },
+   "prompt": {
+    "S": "an expired dream"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIold0-FIXTURE-old0old0old0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "an expired dream"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1799999999"
+   }
+  },
+  {
+   "id": {
+    "S": "check:check"
+   },
+   "prompt": {
+    "S": "probe"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIprobe-FIXTURE-probeprobeprobe_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "probe"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807775999"
+   }
+  },
+  {
+   "id": {
+    "S": "-200:5"
+   },
+   "prompt": {
+    "S": "a tram in the rain"
+   },
+   "command": {
+    "S": "flux"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAItram0-FIXTURE-tram0tram0tram0_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": ""
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807767000"
+   }
+  },
+  {
+   "id": {
+    "S": "42:2"
+   },
+   "prompt": {
+    "S": "no ttl at all"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAInottl-FIXTURE-nottlnottlnottl_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "no ttl at all"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": {
+    "S": "42:3"
+   },
+   "prompt": {
+    "S": "malformed"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "S": "not a map"
+   },
+   "ttl": {
+    "N": "1807776000"
+   }
+  },
+  {
+   "id": {
+    "S": "42:11"
+   },
+   "prompt": {
+    "S": "twin one"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAItwin1-FIXTURE-twin1twin1twin1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "twin one"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807766500"
+   }
+  },
+  {
+   "id": {
+    "S": "42:12"
+   },
+   "prompt": {
+    "S": "twin two"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAItwin2-FIXTURE-twin2twin2twin2_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "twin two"
+       },
+       "base": {
+        "NULL": true
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807766500"
+   }
+  },
+  {
+   "id": {
+    "S": "42:13"
+   },
+   "prompt": {
+    "S": "half written"
+   },
+   "command": {
+    "S": "dream"
+   },
+   "current": {
+    "S": "_"
+   },
+   "images": {
+    "M": {
+     "_": {
+      "M": {
+       "caption": {
+        "S": "no file id yet"
+       }
+      }
+     },
+     "ega": {
+      "M": {
+       "file_id": {
+        "S": "AgACAgUAAxkDAAIhalf1-FIXTURE-half1half1half1_AAnK6MRtYq2lV"
+       },
+       "caption": {
+        "S": "half written, as EGA 16-color pixel art"
+       }
+      }
+     }
+    }
+   },
+   "ttl": {
+    "N": "1807766400"
+   }
+  }
+ ]
+}
