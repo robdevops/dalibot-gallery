@@ -85,29 +85,32 @@ The image sets `GALLERY_LISTEN=0.0.0.0:8080` and
 when you use `docker run --env-file` (Compose overrides them for you). Write
 values in `.env` without quotes: `docker run --env-file` and systemd pass quotes through literally.
 
-The image is built on Ubuntu 24.04 (libvips 8.15.1, the version the tests ran
-against); the Go toolchain is copied from the official `golang:1.24` image.
-Both base images can be replaced with the build arguments `GO_IMAGE` and
+The image is built with Go 1.27 on `golang:1.27-trixie` and runs on
+`debian:trixie-slim` (Debian 13, libvips 8.16.1 from Debian's main archive).
+Both images can be replaced with the build arguments `GO_IMAGE` and
 `BASE_IMAGE`, but the build and runtime stages must stay on the same
-distribution release and the package names in the Dockerfile are Ubuntu's.
-The image is about 330 MB, nearly all of it libvips' dependencies.
+distribution release and the package names in the Dockerfile are Debian's.
+The image is about 310 MB, nearly all of it libvips' dependencies.
 
 **What has and has not been tested.** The image was built and run in the
 development sandbox only (Docker 29, x86-64):
 
-- Built from this Dockerfile, unchanged, but with
-  `--build-arg BASE_IMAGE=<ubuntu:24.04 plus the sandbox proxy's certificate
-  and apt settings>` and `GO_IMAGE=golang:1.24-trixie`, because the sandbox
-  has no direct internet access. The default build arguments (plain
-  `ubuntu:24.04` and `golang:1.24` from Docker Hub) have not been built end to end.
+- Built from this Dockerfile, unchanged, but with `GO_IMAGE` and `BASE_IMAGE`
+  set to copies of `golang:1.27-trixie` and `debian:trixie-slim` that add the
+  sandbox proxy's certificate and apt settings, because the sandbox has no
+  direct internet access. The default build arguments (the plain images from
+  Docker Hub) have not been built end to end.
+- The Go tests were run inside the build stage (Go 1.27.4, libvips 8.16.1),
+  except the integration test, which needs moto and ran on the host only.
 - Run with the `docker run` flags above against the dev stack (a local
   DynamoDB stand-in and a fake Telegram): healthy, uid 10001, read-only root,
-  no capabilities, thumbnails and originals served, 111 MiB of the 512 MiB
+  no capabilities, thumbnails and originals served, 119 MiB of the 512 MiB
   in use after warming 240 thumbnails, clean exit on `docker stop`.
 - `deploy/compose.yaml` was brought up and its client-address handling
-  checked through the published port. The nginx, Caddy and Traefik examples
-  were each run in front of the container before `GALLERY_TRUSTED_PROXIES`
-  existed; they have not been run again since, and the Traefik address in
+  checked through the published port, with the earlier Ubuntu-based image;
+  it has not been run again with the Debian image. The nginx, Caddy and
+  Traefik examples were each run in front of that earlier container before
+  `GALLERY_TRUSTED_PROXIES` existed; they have not been run again since, and the Traefik address in
   `deploy/traefik-labels.yaml` is a placeholder you must change.
 - Not tested: real AWS, the real Telegram API, certificate issuance, any
   other machine or architecture, the unit under a running systemd.
@@ -378,14 +381,14 @@ pkg-config --modversion vips   # e.g. 8.15.1 (needs the headers / -dev package)
 ```
 
 The gallery also logs the libvips version at start-up, and `gallery -version`
-prints it. Only Ubuntu 24.04 with libvips 8.15.1 has been tested; Ubuntu
-22.04 ships libvips 8.12, which is too old. A binary must be built on the
+prints it. Only Ubuntu 24.04 with libvips 8.15.1 and Debian 13 with libvips 8.16.1 have
+been tested; Ubuntu 22.04 ships libvips 8.12, which is too old. A binary must be built on the
 same distribution release it runs on (it is dynamically linked; on Alpine it
 links musl).
 
 ### Building from source
 
-Go 1.24.7 or later in the 1.24 series, libvips headers, gcc and pkg-config:
+Go 1.27 or later, libvips headers, gcc and pkg-config:
 
 ```sh
 go build -trimpath -o dalibot-gallery ./cmd/gallery
@@ -474,7 +477,7 @@ systemd install, rebuild the binary, install it over the old one and
 
 ## Development and tests
 
-Requirements: Go 1.24, libvips with headers, and for the integration tests
+Requirements: Go 1.27, libvips with headers, and for the integration tests
 the [moto](https://github.com/getmoto/moto) server
 (`pip install 'moto[server]'`; the tests look for `/opt/moto/bin/moto_server`
 or `$MOTO_SERVER` and skip if it is missing). Nothing in the tests or the dev
@@ -530,7 +533,9 @@ variables, the dev token and bot token, `AWS_ACCESS_KEY_ID=testing`,
 From [BENCH.md](BENCH.md), which has the per-image table, the caveats and the
 commands to reproduce. Measured on 2026-11-12 on **one machine** (a 4-vCPU
 virtual machine, Intel Xeon @ 2.30 GHz, Ubuntu 24.04, libvips 8.15.1, libwebp
-1.3.2, libjpeg-turbo 2.1.5, govips v2.17.0, Go 1.24.7) with the **12 real
+1.3.2, libjpeg-turbo 2.1.5, govips v2.17.0, Go 1.24.7; the project has since
+moved to Go 1.27 and govips v2.20.0, and the figures have not been measured
+again) with the **12 real
 Telegram images** in `testdata/telegram/`. These are not synthetic images,
 but they are a small sample on a shared machine: treat the numbers as an
 indication, not a guarantee.
@@ -626,9 +631,9 @@ together; every tile was fetched at 480 px, about 43 kB each.
 - With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](#reverse-proxy).
 - Responses that Go's HTTP server writes itself for malformed requests carry
   no security headers; see [Security model](#security-model).
-- The container image takes libvips from Ubuntu's `universe` component, whose
-  security updates are not guaranteed by Canonical without Ubuntu Pro. Rebuild
-  often, or set `BASE_IMAGE` and adapt the package names for another distribution.
+- Debian's libvips package pulls in loaders for many formats the gallery
+  never uses (it only allows JPEG in), which is most of the image's size.
+  Rebuild the image often to pick up security updates.
 - The whole table is scanned on every refresh and the listing is held in
   memory; this suits a table bounded by a TTL, not an unbounded one.
 

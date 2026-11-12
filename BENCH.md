@@ -12,6 +12,7 @@ images are used in these numbers.
 | govips | `github.com/davidbyttow/govips/v2` v2.17.0 |
 | Go | 1.24.7 |
 | Pipeline | `imaging.Thumbnail`: header check in Go, `vips_thumbnail_buffer` (centre crop), WebP quality 76, effort 4, metadata stripped; libvips concurrency 1, operation cache off |
+| Later change | The project has since moved to Go 1.27 and govips v2.20.0, and the container to Debian 13 (libvips 8.16.1). These figures have not been measured again on that stack; the thumbnail sizes in the container smoke test were unchanged. |
 | Note | The tables below were recorded before the JPEG loader was given `fail_on=error`. The output bytes are identical with it; see "After `fail_on=error`" for a rerun of the timings. |
 
 ## Summary

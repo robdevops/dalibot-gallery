@@ -7,27 +7,21 @@
 #   docker build -f deploy/Dockerfile -t dalibot-gallery .
 #
 # The binary links libvips through cgo, so the build stage and the runtime
-# stage must share one distribution release: both use BASE_IMAGE. The Go
-# toolchain is copied out of the official golang image.
-#
-# Ubuntu 24.04 ships libvips 8.15.1, the version the test suite and BENCH.md
-# were run against. Rebuild regularly (--pull --no-cache) to pick up security
-# updates to libvips, libwebp and libjpeg-turbo.
+# stage must share one distribution release: both are Debian 13 (trixie).
+# libvips comes from Debian's main archive. Rebuild regularly
+# (--pull --no-cache) to pick up security updates to libvips, libwebp and
+# libjpeg-turbo.
 
-ARG GO_IMAGE=golang:1.24
-ARG BASE_IMAGE=ubuntu:24.04
-
-FROM ${GO_IMAGE} AS go
+ARG GO_IMAGE=golang:1.27-trixie
+ARG BASE_IMAGE=debian:trixie-slim
 
 # ---- build: Go toolchain + libvips headers ----------------------------------
-FROM ${BASE_IMAGE} AS build
+FROM ${GO_IMAGE} AS build
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates gcc libc6-dev pkg-config libvips-dev \
+      pkg-config libvips-dev \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=go /usr/local/go /usr/local/go
-ENV PATH=/usr/local/go/bin:$PATH \
-    GOTOOLCHAIN=local \
+ENV GOTOOLCHAIN=local \
     CGO_ENABLED=1 \
     GOFLAGS=-mod=readonly
 WORKDIR /src

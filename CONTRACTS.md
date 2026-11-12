@@ -11,12 +11,11 @@ Module: `github.com/robdevops/dalibot-gallery`
 
 ## 0. Toolchain and dependencies (fixed; do not edit go.mod or go.sum)
 
-- Go **1.24.7** (`go 1.24.7` in go.mod). Do not use anything newer than Go 1.24.
-- `github.com/davidbyttow/govips/v2` **v2.17.0**. v2.18–v2.20 declare `go 1.25`
-  and do not build with the installed Go, so v2.17.0 is the newest usable
-  release. Checked against libvips 8.15.1 with a cgo program: start-up, the
-  JPEG-only loader allowlist, `NewThumbnailFromBuffer` and `ExportWebp` all work.
-  Facts about v2.17.0 that matter:
+- Go **1.27** (`go 1.27.0` in go.mod).
+- `github.com/davidbyttow/govips/v2` **v2.20.0**. Tested against libvips 8.15.1
+  and 8.16.1: start-up, the JPEG-only loader allowlist,
+  `NewThumbnailFromBuffer` and `ExportWebp` all work.
+  Facts about govips that matter (first checked against v2.17.0):
   - `vips.Startup(&vips.Config{ConcurrencyLevel: 1, MaxCacheSize: 0})`, `vips.Shutdown()`, `vips.Version` (a string constant).
   - `vips.NewThumbnailFromBuffer(buf []byte, width, height int, crop vips.Interesting) (*vips.ImageRef, error)`; use `vips.InterestingCentre`.
     It takes no import parameters. The pipeline therefore calls
