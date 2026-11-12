@@ -599,10 +599,8 @@ func TestAtomicReplace(t *testing.T) {
 	}
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	for w := 0; w < 3; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+	for w := range 3 {
+		wg.Go(func() {
 			for i := 0; ; i++ {
 				select {
 				case <-stop:
@@ -619,7 +617,7 @@ func TestAtomicReplace(t *testing.T) {
 					return
 				}
 			}
-		}(w)
+		})
 	}
 	check := func(data []byte, ok bool) {
 		if !ok {
@@ -634,18 +632,16 @@ func TestAtomicReplace(t *testing.T) {
 			t.Errorf("mixed file: %d of %d bytes equal the first", c, len(data))
 		}
 	}
-	for r := 0; r < 4; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 300; i++ {
+	for range 4 {
+		wg.Go(func() {
+			for range 300 {
 				check(c.GetOriginal(k))
 				check(c.GetThumb(k, 480, v1))
 				// What is on disk under the final name is always complete too.
 				data, err := os.ReadFile(filepath.Join(dir, k+".jpg"))
 				check(data, err == nil)
 			}
-		}()
+		})
 	}
 	time.Sleep(300 * time.Millisecond)
 	close(stop)
@@ -665,11 +661,9 @@ func TestConcurrentUse(t *testing.T) {
 	dir := t.TempDir()
 	c := open(t, dir, 40_000)
 	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
-			for i := 0; i < 200; i++ {
+	for g := range 8 {
+		wg.Go(func() {
+			for i := range 200 {
 				k := key((g*7 + i) % 40)
 				switch i % 5 {
 				case 0:
@@ -688,7 +682,7 @@ func TestConcurrentUse(t *testing.T) {
 					c.Size()
 				}
 			}
-		}(g)
+		})
 	}
 	wg.Wait()
 	if got := c.Size(); got != diskBytes(t, dir) {

@@ -152,7 +152,7 @@ var gzipPool = sync.Pool{New: func() any {
 // acceptsGzip reports whether the request's Accept-Encoding allows gzip.
 func acceptsGzip(r *http.Request) bool {
 	for _, line := range r.Header.Values("Accept-Encoding") {
-		for _, part := range strings.Split(line, ",") {
+		for part := range strings.SplitSeq(line, ",") {
 			name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
 			if name = strings.ToLower(strings.TrimSpace(name)); name != "gzip" && name != "*" {
 				continue

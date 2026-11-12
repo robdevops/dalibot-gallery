@@ -16,7 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -263,8 +263,7 @@ func TestIntegration(t *testing.T) {
 	bare := exec.Command(bin)
 	bare.Env = []string{"PATH=" + os.Getenv("PATH")}
 	out, err := bare.CombinedOutput()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(string(out), "GALLERY_TOKEN") {
+	if exit, ok := errors.AsType[*exec.ExitError](err); !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "GALLERY_TOKEN") {
 		t.Fatalf("no configuration: %v\n%s", err, out)
 	}
 
@@ -334,7 +333,7 @@ func TestIntegration(t *testing.T) {
 	// client address is a made-up one (the test's loopback peer is a trusted
 	// proxy by default), so the rest of the test is not blocked.
 	var codes []int
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		req, _ := http.NewRequest("GET", s.base+"/api/tiles", nil)
 		req.SetBasicAuth("it", fmt.Sprintf("wrong-password-%d", i))
 		req.Header.Set("X-Forwarded-For", "203.0.113.200")
@@ -370,7 +369,7 @@ func TestIntegration(t *testing.T) {
 		if i > 0 && tile.Updated > tiles[i-1].Updated {
 			t.Fatalf("tile %d is newer than the one before it", i)
 		}
-		chat := tile.ID[:strings.LastIndex(tile.ID, ":")]
+		chat, _, _ := strings.CutLast(tile.ID, ":")
 		if chat != devstack.Chats[0] && chat != devstack.Chats[1] && chat != devstack.Chats[2] {
 			t.Fatalf("tile %d is from chat %q", i, chat)
 		}
@@ -509,7 +508,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- warm-cache tile latency ---------------------------------------------
 	var lat []time.Duration
-	for round := 0; round < 5; round++ {
+	for range 5 {
 		for _, tile := range tiles[:60] {
 			target := fmt.Sprintf("/img/%s-240.webp?v=%s", tile.Key, first.V)
 			start := time.Now()
@@ -520,7 +519,7 @@ func TestIntegration(t *testing.T) {
 			}
 		}
 	}
-	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
+	slices.Sort(lat)
 	median, p95 := lat[len(lat)/2], lat[len(lat)*95/100]
 	t.Logf("warm-cache 240px tile over loopback HTTP, %d requests: median %v, p95 %v, max %v", len(lat), median, p95, lat[len(lat)-1])
 	if median > 5*time.Millisecond {

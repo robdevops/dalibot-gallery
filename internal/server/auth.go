@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -149,8 +150,8 @@ func clientAddr(r *http.Request, trusted []netip.Prefix) string {
 	for _, line := range r.Header.Values("X-Forwarded-For") {
 		entries = append(entries, strings.Split(line, ",")...)
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		addr, err := netip.ParseAddr(strings.TrimSpace(entries[i]))
+	for _, entry := range slices.Backward(entries) {
+		addr, err := netip.ParseAddr(strings.TrimSpace(entry))
 		if err != nil {
 			break // not an address: stop at the last hop that is known
 		}
@@ -187,14 +188,13 @@ func limiterKey(client string) string {
 
 // loginLimiter counts wrong tokens over a sliding minute, per client and overall.
 type loginLimiter struct {
-	now     func() time.Time
 	mu      sync.Mutex
 	clients map[string][]time.Time
 	all     []time.Time
 }
 
-func newLoginLimiter(now func() time.Time) *loginLimiter {
-	return &loginLimiter{now: now, clients: map[string][]time.Time{}}
+func newLoginLimiter() *loginLimiter {
+	return &loginLimiter{clients: map[string][]time.Time{}}
 }
 
 // recent drops the entries older than the window.
@@ -215,7 +215,7 @@ func recent(ts []time.Time, cutoff time.Time) []time.Time {
 func (l *loginLimiter) attempt(client string, correct bool) (wait time.Duration, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := l.now()
+	now := time.Now()
 	cutoff := now.Add(-loginWindow)
 	l.all = recent(l.all, cutoff)
 	if len(l.all) >= loginOverall {

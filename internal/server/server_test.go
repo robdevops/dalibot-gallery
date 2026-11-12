@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/robdevops/dalibot-gallery/internal/cache"
@@ -141,7 +143,7 @@ func fileID(i int, style string) string {
 func records(n int) []source.Record {
 	now := time.Now().Unix()
 	out := make([]source.Record, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		r := source.Record{
 			ID: fmt.Sprintf("-100%d:%d", 1+i%3, 1000+i), Prompt: fmt.Sprintf("prompt %d <b>&</b>", i), Command: "dream", Current: "_",
 			TTL:    now - int64(i) + 90*86400,
@@ -161,9 +163,7 @@ func newEnv(t *testing.T, recs []source.Record, vars map[string]string) *env {
 		"GALLERY_TOKEN": testToken, "TELEGRAM_BOT_TOKEN": testBotToken,
 		"GALLERY_CACHE_DIR": t.TempDir(), "GALLERY_WARM": "10",
 	}
-	for k, v := range vars {
-		m[k] = v
-	}
+	maps.Copy(m, vars)
 	cfg, err := config.FromEnv(func(k string) string { return m[k] })
 	if err != nil {
 		t.Fatal(err)
@@ -399,41 +399,41 @@ func TestLoginCookie(t *testing.T) {
 }
 
 func TestLoginRateLimit(t *testing.T) {
-	e := newEnv(t, records(1), nil)
-	now := time.Now()
-	e.srv.limiter.now = func() time.Time { return now }
-	post := func(token, addr string) *http.Response {
-		resp, _ := e.do("POST", "/login", strings.NewReader("token="+token), func(r *http.Request) { r.RemoteAddr = addr })
-		return resp
-	}
-	for i := 0; i < loginPerClient; i++ {
-		if resp := post("wrong", "203.0.113.5:1000"); resp.StatusCode != 401 {
-			t.Fatalf("attempt %d: %d", i, resp.StatusCode)
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, records(1), nil)
+		post := func(token, addr string) *http.Response {
+			resp, _ := e.do("POST", "/login", strings.NewReader("token="+token), func(r *http.Request) { r.RemoteAddr = addr })
+			return resp
 		}
-	}
-	// The sixth is refused even with the right token, and says when to come back.
-	resp := post(testToken, "203.0.113.5:2000")
-	if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" || len(resp.Cookies()) != 0 {
-		t.Fatalf("after %d failures: %d, Retry-After %q", loginPerClient, resp.StatusCode, resp.Header.Get("Retry-After"))
-	}
-	// Another client is not affected.
-	if resp := post(testToken, "203.0.113.6:1000"); resp.StatusCode != 303 {
-		t.Fatalf("another client: %d", resp.StatusCode)
-	}
-	// After the window the first client may try again.
-	now = now.Add(loginWindow + time.Second)
-	if resp := post(testToken, "203.0.113.5:3000"); resp.StatusCode != 303 {
-		t.Fatalf("after the window: %d", resp.StatusCode)
-	}
-	// The overall limit: many clients, one failure each.
-	for i := 0; i < loginOverall; i++ {
-		if resp := post("wrong", fmt.Sprintf("198.51.%d.%d:1", 100+i/250, i%250)); resp.StatusCode != 401 {
-			t.Fatalf("overall attempt %d: %d", i, resp.StatusCode)
+		for i := range loginPerClient {
+			if resp := post("wrong", "203.0.113.5:1000"); resp.StatusCode != 401 {
+				t.Fatalf("attempt %d: %d", i, resp.StatusCode)
+			}
 		}
-	}
-	if resp := post(testToken, "192.0.2.1:1"); resp.StatusCode != 429 {
-		t.Fatalf("overall limit: %d", resp.StatusCode)
-	}
+		// The sixth is refused even with the right token, and says when to come back.
+		resp := post(testToken, "203.0.113.5:2000")
+		if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" || len(resp.Cookies()) != 0 {
+			t.Fatalf("after %d failures: %d, Retry-After %q", loginPerClient, resp.StatusCode, resp.Header.Get("Retry-After"))
+		}
+		// Another client is not affected.
+		if resp := post(testToken, "203.0.113.6:1000"); resp.StatusCode != 303 {
+			t.Fatalf("another client: %d", resp.StatusCode)
+		}
+		// After the window the first client may try again.
+		time.Sleep(loginWindow + time.Second)
+		if resp := post(testToken, "203.0.113.5:3000"); resp.StatusCode != 303 {
+			t.Fatalf("after the window: %d", resp.StatusCode)
+		}
+		// The overall limit: many clients, one failure each.
+		for i := range loginOverall {
+			if resp := post("wrong", fmt.Sprintf("198.51.%d.%d:1", 100+i/250, i%250)); resp.StatusCode != 401 {
+				t.Fatalf("overall attempt %d: %d", i, resp.StatusCode)
+			}
+		}
+		if resp := post(testToken, "192.0.2.1:1"); resp.StatusCode != 429 {
+			t.Fatalf("overall limit: %d", resp.StatusCode)
+		}
+	})
 }
 
 // A few clients cannot lock everyone else out: the overall ceiling is far
@@ -445,8 +445,8 @@ func TestLoginLockoutNeedsManyClients(t *testing.T) {
 		return resp.StatusCode
 	}
 	refused := 0
-	for client := 0; client < 20; client++ { // 20 clients, 40 wrong tokens each
-		for i := 0; i < 40; i++ {
+	for client := range 20 { // 20 clients, 40 wrong tokens each
+		for range 40 {
 			if post("wrong", fmt.Sprintf("198.51.100.%d:1", client)) == 401 {
 				refused++
 			}
@@ -463,167 +463,170 @@ func TestLoginLockoutNeedsManyClients(t *testing.T) {
 // Wrong Basic passwords count against the same limiter as failed logins, on
 // every protected route, so Basic is not a faster way to guess the token.
 func TestBasicAuthRateLimit(t *testing.T) {
-	e := newEnv(t, records(2), nil)
-	now := time.Now()
-	e.srv.limiter.now = func() time.Time { return now }
-	key := e.store.Snapshot().Keys()[0]
-	targets := []string{"/api/tiles", "/", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag(), "/app.js", "/nope"}
-	try := func(target, pass, addr string) *http.Response {
-		resp, _ := e.get(target, func(r *http.Request) { r.RemoteAddr = addr; r.SetBasicAuth("u", pass) })
-		return resp
-	}
-	for i := 0; i < loginPerClient; i++ {
-		target := targets[i%len(targets)]
-		if resp := try(target, fmt.Sprintf("guess-%d", i), "203.0.113.5:1000"); resp.StatusCode == 200 || resp.StatusCode == 429 {
-			t.Fatalf("wrong password %d on %s: %d", i, target, resp.StatusCode)
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, records(2), nil)
+		key := e.store.Snapshot().Keys()[0]
+		targets := []string{"/api/tiles", "/", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag(), "/app.js", "/nope"}
+		try := func(target, pass, addr string) *http.Response {
+			resp, _ := e.get(target, func(r *http.Request) { r.RemoteAddr = addr; r.SetBasicAuth("u", pass) })
+			return resp
 		}
-	}
-	// From now on the client is refused on every route, right password or not.
-	for _, target := range targets {
-		for _, pass := range []string{"guess-again", testToken} {
-			resp := try(target, pass, "203.0.113.5:2000")
-			if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
-				t.Fatalf("%s after %d wrong passwords: %d, Retry-After %q", target, loginPerClient, resp.StatusCode, resp.Header.Get("Retry-After"))
+		for i := range loginPerClient {
+			target := targets[i%len(targets)]
+			if resp := try(target, fmt.Sprintf("guess-%d", i), "203.0.113.5:1000"); resp.StatusCode == 200 || resp.StatusCode == 429 {
+				t.Fatalf("wrong password %d on %s: %d", i, target, resp.StatusCode)
 			}
 		}
-	}
-	if e.fetcher.total() != 0 {
-		t.Error("a blocked client reached Telegram")
-	}
-	// The login form shares the count.
-	resp, _ := e.do("POST", "/login", strings.NewReader("token="+testToken), func(r *http.Request) { r.RemoteAddr = "203.0.113.5:3000" })
-	if resp.StatusCode != 429 {
-		t.Fatalf("login after wrong Basic passwords: %d", resp.StatusCode)
-	}
-	// Blocked attempts are not recorded, so the block does not extend itself.
-	if n := strings.Count(e.logs.String(), "basic auth failed"); n != loginPerClient {
-		t.Errorf("%d failures logged, want %d", n, loginPerClient)
-	}
-	// A session cookie is not a guess: it keeps working for the blocked address.
-	cookie := func(r *http.Request) {
-		r.RemoteAddr = "203.0.113.5:4000"
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: sessionValue(testToken)})
-	}
-	if resp, _ := e.get("/api/tiles", cookie); resp.StatusCode != 200 {
-		t.Fatalf("cookie from a blocked address: %d", resp.StatusCode)
-	}
-	// Other clients are unaffected, and right passwords never count.
-	for i := 0; i < 3*loginPerClient; i++ {
-		if resp := try("/api/tiles", testToken, "203.0.113.6:1"); resp.StatusCode != 200 {
-			t.Fatalf("right password, request %d: %d", i, resp.StatusCode)
+		// From now on the client is refused on every route, right password or not.
+		for _, target := range targets {
+			for _, pass := range []string{"guess-again", testToken} {
+				resp := try(target, pass, "203.0.113.5:2000")
+				if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+					t.Fatalf("%s after %d wrong passwords: %d, Retry-After %q", target, loginPerClient, resp.StatusCode, resp.Header.Get("Retry-After"))
+				}
+			}
 		}
-	}
-	// Requests without credentials are not guesses either.
-	for i := 0; i < 3*loginPerClient; i++ {
-		e.get("/api/tiles", func(r *http.Request) { r.RemoteAddr = "203.0.113.7:1" })
-	}
-	if resp := try("/api/tiles", testToken, "203.0.113.7:1"); resp.StatusCode != 200 {
-		t.Fatalf("after anonymous requests: %d", resp.StatusCode)
-	}
-	// After the window the first client is back.
-	now = now.Add(loginWindow + time.Second)
-	if resp := try("/api/tiles", testToken, "203.0.113.5:5000"); resp.StatusCode != 200 {
-		t.Fatalf("after the window: %d", resp.StatusCode)
-	}
-	// IPv6: the limit is per /64, so a client cannot step through its own prefix.
-	for i := 0; i < loginPerClient; i++ {
-		try("/api/tiles", "wrong", fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1))
-	}
-	if resp := try("/api/tiles", testToken, "[2001:db8:1:2:ffff::9]:1"); resp.StatusCode != 429 {
-		t.Fatalf("another address in the same /64: %d", resp.StatusCode)
-	}
-	if resp := try("/api/tiles", testToken, "[2001:db8:1:3::1]:1"); resp.StatusCode != 200 {
-		t.Fatalf("another /64: %d", resp.StatusCode)
-	}
+		if e.fetcher.total() != 0 {
+			t.Error("a blocked client reached Telegram")
+		}
+		// The login form shares the count.
+		resp, _ := e.do("POST", "/login", strings.NewReader("token="+testToken), func(r *http.Request) { r.RemoteAddr = "203.0.113.5:3000" })
+		if resp.StatusCode != 429 {
+			t.Fatalf("login after wrong Basic passwords: %d", resp.StatusCode)
+		}
+		// Blocked attempts are not recorded, so the block does not extend itself.
+		if n := strings.Count(e.logs.String(), "basic auth failed"); n != loginPerClient {
+			t.Errorf("%d failures logged, want %d", n, loginPerClient)
+		}
+		// A session cookie is not a guess: it keeps working for the blocked address.
+		cookie := func(r *http.Request) {
+			r.RemoteAddr = "203.0.113.5:4000"
+			r.AddCookie(&http.Cookie{Name: CookieName, Value: sessionValue(testToken)})
+		}
+		if resp, _ := e.get("/api/tiles", cookie); resp.StatusCode != 200 {
+			t.Fatalf("cookie from a blocked address: %d", resp.StatusCode)
+		}
+		// Other clients are unaffected, and right passwords never count.
+		for i := range 3 * loginPerClient {
+			if resp := try("/api/tiles", testToken, "203.0.113.6:1"); resp.StatusCode != 200 {
+				t.Fatalf("right password, request %d: %d", i, resp.StatusCode)
+			}
+		}
+		// Requests without credentials are not guesses either.
+		for range 3 * loginPerClient {
+			e.get("/api/tiles", func(r *http.Request) { r.RemoteAddr = "203.0.113.7:1" })
+		}
+		if resp := try("/api/tiles", testToken, "203.0.113.7:1"); resp.StatusCode != 200 {
+			t.Fatalf("after anonymous requests: %d", resp.StatusCode)
+		}
+		// After the window the first client is back.
+		time.Sleep(loginWindow + time.Second)
+		if resp := try("/api/tiles", testToken, "203.0.113.5:5000"); resp.StatusCode != 200 {
+			t.Fatalf("after the window: %d", resp.StatusCode)
+		}
+		// IPv6: the limit is per /64, so a client cannot step through its own prefix.
+		for i := range loginPerClient {
+			try("/api/tiles", "wrong", fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1))
+		}
+		if resp := try("/api/tiles", testToken, "[2001:db8:1:2:ffff::9]:1"); resp.StatusCode != 429 {
+			t.Fatalf("another address in the same /64: %d", resp.StatusCode)
+		}
+		if resp := try("/api/tiles", testToken, "[2001:db8:1:3::1]:1"); resp.StatusCode != 200 {
+			t.Fatalf("another /64: %d", resp.StatusCode)
+		}
+	})
 }
 
 // The limiter checks and records in one step. Many logins from one client
 // that are all in flight at once (headers sent, bodies held back, then
 // completed together) must not all be evaluated.
 func TestLoginRateLimitConcurrent(t *testing.T) {
-	e := newEnv(t, records(1), nil)
-	ts := httptest.NewServer(e.h)
-	defer ts.Close()
-	const n = 60
-	type pending struct {
-		w    *io.PipeWriter
-		done chan int
-	}
-	var all []pending
-	for i := 0; i < n; i++ {
-		pr, pw := io.Pipe()
-		req, err := http.NewRequest("POST", ts.URL+"/login", pr)
-		if err != nil {
-			t.Fatal(err)
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, records(1), nil)
+		ts := httptest.NewTestServer(t, e.h) // in-memory network, closed with the test
+		client := ts.Client()                // also sets ts.URL
+		const n = 60
+		type pending struct {
+			w    *io.PipeWriter
+			done chan int
 		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		p := pending{w: pw, done: make(chan int, 1)}
-		go func() {
-			resp, err := ts.Client().Do(req)
+		var all []pending
+		for range n {
+			pr, pw := io.Pipe()
+			req, err := http.NewRequest("POST", ts.URL+"/login", pr)
 			if err != nil {
-				p.done <- 0
-				return
+				t.Fatal(err)
 			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			p.done <- resp.StatusCode
-		}()
-		// The first bytes of the body: the handler is now running and waiting for the rest.
-		if _, err := pw.Write([]byte("tok")); err != nil {
-			t.Fatal(err)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			p := pending{w: pw, done: make(chan int, 1)}
+			go func() {
+				resp, err := client.Do(req)
+				if err != nil {
+					p.done <- 0
+					return
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				p.done <- resp.StatusCode
+			}()
+			// The first bytes of the body: the handler is now running and waiting for the rest.
+			if _, err := pw.Write([]byte("tok")); err != nil {
+				t.Fatal(err)
+			}
+			all = append(all, p)
 		}
-		all = append(all, p)
-	}
-	time.Sleep(200 * time.Millisecond) // every request is in its handler
-	for i, p := range all {
-		_, _ = p.w.Write([]byte(fmt.Sprintf("en=wrong-%d", i)))
-		p.w.Close()
-	}
-	codes := map[int]int{}
-	for _, p := range all {
-		codes[<-p.done]++
-	}
-	if codes[401] != loginPerClient || codes[429] != n-loginPerClient {
-		t.Fatalf("%d concurrent wrong logins from one client: %v, want %d x 401 and the rest 429", n, codes, loginPerClient)
-	}
+		synctest.Wait() // every request is in its handler, waiting for the rest of its body
+		for i, p := range all {
+			_, _ = p.w.Write([]byte(fmt.Sprintf("en=wrong-%d", i)))
+			p.w.Close()
+		}
+		codes := map[int]int{}
+		for _, p := range all {
+			codes[<-p.done]++
+		}
+		if codes[401] != loginPerClient || codes[429] != n-loginPerClient {
+			t.Fatalf("%d concurrent wrong logins from one client: %v, want %d x 401 and the rest 429", n, codes, loginPerClient)
+		}
+	})
 }
 
 func TestLimiterAttempt(t *testing.T) {
-	now := time.Now()
-	l := newLoginLimiter(func() time.Time { return now })
-	// Right tokens are never recorded.
-	for i := 0; i < 100; i++ {
+	synctest.Test(t, func(t *testing.T) {
+		l := newLoginLimiter()
+		// Right tokens are never recorded.
+		for i := range 100 {
+			if wait, ok := l.attempt("a", true); wait != 0 || !ok {
+				t.Fatalf("right token %d: %v %v", i, wait, ok)
+			}
+		}
+		if len(l.clients) != 0 || len(l.all) != 0 {
+			t.Fatalf("right tokens left state behind: %d clients, %d attempts", len(l.clients), len(l.all))
+		}
+		for i := range loginPerClient {
+			if wait, ok := l.attempt("a", false); wait != 0 || ok {
+				t.Fatalf("wrong token %d: %v %v", i, wait, ok)
+			}
+			time.Sleep(time.Second)
+		}
+		// Blocked: the wait runs to the end of the oldest failure's window, and nothing is recorded.
+		wait, ok := l.attempt("a", true)
+		if ok || wait != loginWindow-loginPerClient*time.Second {
+			t.Fatalf("blocked: wait %v, ok %v", wait, ok)
+		}
+		if len(l.all) != loginPerClient {
+			t.Fatalf("a blocked attempt was recorded: %d", len(l.all))
+		}
+		time.Sleep(wait)
 		if wait, ok := l.attempt("a", true); wait != 0 || !ok {
-			t.Fatalf("right token %d: %v %v", i, wait, ok)
+			t.Fatalf("after the wait: %v %v", wait, ok)
 		}
-	}
-	if len(l.clients) != 0 || len(l.all) != 0 {
-		t.Fatalf("right tokens left state behind: %d clients, %d attempts", len(l.clients), len(l.all))
-	}
-	for i := 0; i < loginPerClient; i++ {
-		if wait, ok := l.attempt("a", false); wait != 0 || ok {
-			t.Fatalf("wrong token %d: %v %v", i, wait, ok)
+		// Old clients are forgotten.
+		time.Sleep(2 * loginWindow)
+		l.attempt("a", true)
+		if len(l.clients) != 0 {
+			t.Fatalf("%d clients remembered after their window", len(l.clients))
 		}
-		now = now.Add(time.Second)
-	}
-	// Blocked: the wait runs to the end of the oldest failure's window, and nothing is recorded.
-	wait, ok := l.attempt("a", true)
-	if ok || wait != loginWindow-loginPerClient*time.Second {
-		t.Fatalf("blocked: wait %v, ok %v", wait, ok)
-	}
-	if len(l.all) != loginPerClient {
-		t.Fatalf("a blocked attempt was recorded: %d", len(l.all))
-	}
-	now = now.Add(wait)
-	if wait, ok := l.attempt("a", true); wait != 0 || !ok {
-		t.Fatalf("after the wait: %v %v", wait, ok)
-	}
-	// Old clients are forgotten.
-	now = now.Add(2 * loginWindow)
-	l.attempt("a", true)
-	if len(l.clients) != 0 {
-		t.Fatalf("%d clients remembered after their window", len(l.clients))
-	}
+	})
 }
 
 func TestClientAddr(t *testing.T) {
@@ -691,7 +694,7 @@ func TestForwardedForCannotEvadeLimit(t *testing.T) {
 		})
 		return resp.StatusCode
 	}
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		want := 401
 		if i >= loginPerClient {
 			want = 429
@@ -701,7 +704,7 @@ func TestForwardedForCannotEvadeLimit(t *testing.T) {
 		}
 	}
 	// Behind the trusted proxy (loopback by default) clients are told apart.
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		if got := post("127.0.0.1:1", fmt.Sprintf("203.0.113.%d", 100+i)); got != 401 {
 			t.Fatalf("client %d behind the proxy: %d", i, got)
 		}
@@ -731,7 +734,7 @@ func TestAuthOff(t *testing.T) {
 		}
 	}
 	// A Basic header is ignored, never counted as a guess.
-	for i := 0; i < 3*loginPerClient; i++ {
+	for range 3 * loginPerClient {
 		if resp, _ := e.get("/api/tiles", func(r *http.Request) { r.SetBasicAuth("u", "whatever") }); resp.StatusCode != 200 {
 			t.Fatalf("auth off with a Basic header: %d", resp.StatusCode)
 		}
@@ -1078,7 +1081,7 @@ func TestPlaceholderOnFailure(t *testing.T) {
 	e.fetcher.mu.Lock()
 	e.fetcher.data[fid2] = pngBuf.Bytes()
 	e.fetcher.mu.Unlock()
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		resp, _ := e.get("/img/"+key2+"-480.webp?v="+tag, basic)
 		if resp.Header.Get("X-Gallery-Placeholder") != "1" {
 			t.Fatalf("a PNG was not refused")
@@ -1146,7 +1149,7 @@ func TestCachedFailuresAreQuiet(t *testing.T) {
 	target := "/img/" + key + "-240.webp?v=" + imaging.Tag()
 
 	level := func(msg string) (warn, debug int) {
-		for _, line := range strings.Split(e.logs.String(), "\n") {
+		for line := range strings.SplitSeq(e.logs.String(), "\n") {
 			if !strings.Contains(line, msg) {
 				continue
 			}
@@ -1173,7 +1176,7 @@ func TestCachedFailuresAreQuiet(t *testing.T) {
 	e.fetcher.mu.Lock()
 	e.fetcher.errs[fid] = &telegram.Error{Permanent: true, Status: 400, Cached: true}
 	e.fetcher.mu.Unlock()
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if resp, _ := e.get(target, basic); resp.Header.Get("X-Gallery-Placeholder") != "1" {
 			t.Fatal("no placeholder")
 		}
@@ -1190,93 +1193,137 @@ func TestCachedFailuresAreQuiet(t *testing.T) {
 	}
 }
 
-func TestConcurrentColdTile(t *testing.T) {
-	e := newEnv(t, records(2), nil)
-	snap := e.store.Snapshot()
-	key := snap.Keys()[0]
-	fid, _ := snap.FileID(key)
-	e.fetcher.mu.Lock()
-	e.fetcher.delay = 100 * time.Millisecond
-	e.fetcher.mu.Unlock()
-	var wg sync.WaitGroup
-	bodies := make([][]byte, 24)
-	for i := range bodies {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			size := []string{"240", "480"}[i%2]
-			r := httptest.NewRequest("GET", "/img/"+key+"-"+size+".webp?v="+imaging.Tag(), nil)
-			basic(r)
-			w := httptest.NewRecorder()
-			e.h.ServeHTTP(w, r)
-			bodies[i] = w.Body.Bytes()
-		}()
-	}
-	wg.Wait()
-	for i, b := range bodies {
-		webpSize(t, b)
-		if !bytes.Equal(b, bodies[i%2]) {
-			t.Errorf("request %d got different bytes", i)
+// A file that is not a usable JPEG is remembered for invalidTTL, and then
+// may be downloaded and judged again.
+func TestInvalidOriginalExpires(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, records(2), nil)
+		snap := e.store.Snapshot()
+		key := snap.Keys()[0]
+		fid, _ := snap.FileID(key)
+		var pngBuf bytes.Buffer
+		_ = png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 8, 8)))
+		e.fetcher.mu.Lock()
+		e.fetcher.data[fid] = pngBuf.Bytes()
+		e.fetcher.mu.Unlock()
+		original := func() int {
+			resp, _ := e.get("/img/"+key+".jpg", basic)
+			return resp.StatusCode
 		}
-	}
-	if n := e.fetcher.count(fid); n != 1 {
-		t.Errorf("24 concurrent requests fetched the original %d times", n)
-	}
+		if code := original(); code != 502 || e.fetcher.count(fid) != 1 {
+			t.Fatalf("a PNG: %d after %d downloads", code, e.fetcher.count(fid))
+		}
+		// Just before the end of the TTL it is still remembered.
+		time.Sleep(invalidTTL - time.Second)
+		if code := original(); code != 502 || e.fetcher.count(fid) != 1 {
+			t.Fatalf("within the TTL: %d after %d downloads, want 502 after 1", code, e.fetcher.count(fid))
+		}
+		// After it the file is fetched again; by now Telegram serves a good one.
+		time.Sleep(2 * time.Second)
+		e.fetcher.mu.Lock()
+		delete(e.fetcher.data, fid)
+		e.fetcher.mu.Unlock()
+		if code := original(); code != 200 || e.fetcher.count(fid) != 2 {
+			t.Fatalf("after the TTL: %d after %d downloads, want 200 after 2", code, e.fetcher.count(fid))
+		}
+		if !e.cache.HasOriginal(key) {
+			t.Error("the good original was not stored")
+		}
+		e.srv.invalid.mu.Lock()
+		left := len(e.srv.invalid.until)
+		e.srv.invalid.mu.Unlock()
+		if left != 0 {
+			t.Errorf("%d expired entries were kept", left)
+		}
+	})
+}
+
+func TestConcurrentColdTile(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, records(2), nil)
+		snap := e.store.Snapshot()
+		key := snap.Keys()[0]
+		fid, _ := snap.FileID(key)
+		e.fetcher.mu.Lock()
+		e.fetcher.delay = 100 * time.Millisecond
+		e.fetcher.mu.Unlock()
+		var wg sync.WaitGroup
+		bodies := make([][]byte, 24)
+		for i := range bodies {
+			wg.Go(func() {
+				size := []string{"240", "480"}[i%2]
+				r := httptest.NewRequest("GET", "/img/"+key+"-"+size+".webp?v="+imaging.Tag(), nil)
+				basic(r)
+				w := httptest.NewRecorder()
+				e.h.ServeHTTP(w, r)
+				bodies[i] = w.Body.Bytes()
+			})
+		}
+		wg.Wait()
+		for i, b := range bodies {
+			webpSize(t, b)
+			if !bytes.Equal(b, bodies[i%2]) {
+				t.Errorf("request %d got different bytes", i)
+			}
+		}
+		if n := e.fetcher.count(fid); n != 1 {
+			t.Errorf("24 concurrent requests fetched the original %d times", n)
+		}
+	})
 }
 
 func TestWarmAndPrune(t *testing.T) {
-	e := newEnv(t, records(30), map[string]string{"GALLERY_WARM": "8"})
-	snap := e.store.Snapshot()
-	tag := imaging.Tag()
-	dead := snap.Newest(8)[2].Key
-	fid, _ := snap.FileID(dead)
-	e.fetcher.setFail(fid, true)
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, records(30), map[string]string{"GALLERY_WARM": "8"})
+		snap := e.store.Snapshot()
+		tag := imaging.Tag()
+		dead := snap.Newest(8)[2].Key
+		fid, _ := snap.FileID(dead)
+		e.fetcher.setFail(fid, true)
 
-	e.srv.Warm(context.Background(), snap)
-	for i, tile := range snap.Newest(9) {
-		for _, size := range imaging.Sizes {
-			has := e.cache.HasThumb(tile.Key, size, tag)
-			if want := i < 8 && tile.Key != dead; has != want {
-				t.Errorf("tile %d size %d: warmed = %v, want %v", i, size, has, want)
+		e.srv.Warm(context.Background(), snap)
+		for i, tile := range snap.Newest(9) {
+			for _, size := range imaging.Sizes {
+				has := e.cache.HasThumb(tile.Key, size, tag)
+				if want := i < 8 && tile.Key != dead; has != want {
+					t.Errorf("tile %d size %d: warmed = %v, want %v", i, size, has, want)
+				}
 			}
 		}
-	}
-	// A second run has nothing left to do except the failed one.
-	before := e.fetcher.total()
-	e.srv.Warm(context.Background(), snap)
-	if got := e.fetcher.total() - before; got > 2 {
-		t.Errorf("the second warm-up made %d fetches", got)
-	}
+		// A second run has nothing left to do except the failed one.
+		before := e.fetcher.total()
+		e.srv.Warm(context.Background(), snap)
+		if got := e.fetcher.total() - before; got > 2 {
+			t.Errorf("the second warm-up made %d fetches", got)
+		}
 
-	// OnSwap: warms and prunes in the background. Files of keys not in the snapshot go.
-	ghost := source.Key("gone-from-the-table")
-	if err := e.cache.PutOriginal(ghost, sampleJPEG); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.cache.PutThumb(snap.Keys()[0], 240, "0old", imaging.Placeholder()); err != nil {
-		t.Fatal(err)
-	}
-	e.store.OnSwap(e.srv.OnSwap)
-	if err := e.store.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for e.cache.HasOriginal(ghost) || e.cache.HasThumb(snap.Keys()[0], 240, "0old") {
-		if time.Now().After(deadline) {
+		// OnSwap: warms and prunes in the background. Files of keys not in the snapshot go.
+		ghost := source.Key("gone-from-the-table")
+		if err := e.cache.PutOriginal(ghost, sampleJPEG); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.cache.PutThumb(snap.Keys()[0], 240, "0old", imaging.Placeholder()); err != nil {
+			t.Fatal(err)
+		}
+		e.store.OnSwap(e.srv.OnSwap)
+		if err := e.store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the warm-up and the pruning started by the swap are done
+		if e.cache.HasOriginal(ghost) || e.cache.HasThumb(snap.Keys()[0], 240, "0old") {
 			t.Fatal("the cache was not pruned after a swap")
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !e.cache.HasOriginal(snap.Keys()[0]) {
-		t.Errorf("pruning removed a live original")
-	}
-	// Close waits for the background work; afterwards requests still answer.
-	e.srv.Close()
-	cold := snap.Keys()[snap.Len()-1]
-	resp, _ := e.get("/img/"+cold+"-240.webp?v="+tag, basic)
-	if resp.StatusCode != 200 || resp.Header.Get("X-Gallery-Placeholder") != "1" {
-		t.Errorf("after Close: %d %v", resp.StatusCode, resp.Header)
-	}
+		if !e.cache.HasOriginal(snap.Keys()[0]) {
+			t.Errorf("pruning removed a live original")
+		}
+		// Close waits for the background work; afterwards requests still answer.
+		e.srv.Close()
+		cold := snap.Keys()[snap.Len()-1]
+		resp, _ := e.get("/img/"+cold+"-240.webp?v="+tag, basic)
+		if resp.StatusCode != 200 || resp.Header.Get("X-Gallery-Placeholder") != "1" {
+			t.Errorf("after Close: %d %v", resp.StatusCode, resp.Header)
+		}
+	})
 }
 
 func TestIndexNoscript(t *testing.T) {

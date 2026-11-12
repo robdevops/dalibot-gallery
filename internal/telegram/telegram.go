@@ -163,13 +163,6 @@ type Client struct {
 	mu         sync.Mutex
 	failures   map[string]failure // by file_id
 	pauseUntil time.Time          // set by a 429: no request before this time
-
-	// Test hooks; New sets the real values.
-	now             func() time.Time
-	sleep           func(ctx context.Context, d time.Duration) error
-	getFileTimeout  time.Duration
-	downloadTimeout time.Duration
-	maxRetryWait    time.Duration
 }
 
 type failure struct {
@@ -183,20 +176,28 @@ type failure struct {
 // New makes no request. If apiBase or token is malformed (internal/config
 // rejects both at start-up), every Fetch fails without a request.
 func New(apiBase, token string, log *slog.Logger) *Client {
+	var rt http.RoundTripper = http.DefaultTransport
+	if t, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = t.Clone()
+		t.MaxIdleConnsPerHost = maxConcurrent
+		t.ResponseHeaderTimeout = downloadTimeout
+		rt = t
+	}
+	return newClient(apiBase, token, log, rt)
+}
+
+// newClient is New with the transport that carries the allowed requests. Tests
+// pass the transport of an in-memory server; nothing else differs from New.
+func newClient(apiBase, token string, log *slog.Logger, rt http.RoundTripper) *Client {
 	if log == nil {
-		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+		log = slog.New(slog.DiscardHandler)
 	}
 	c := &Client{
-		token:           token,
-		baseStr:         strings.TrimRight(apiBase, "/"),
-		log:             log,
-		sem:             make(chan struct{}, maxConcurrent),
-		failures:        make(map[string]failure),
-		now:             time.Now,
-		sleep:           sleepCtx,
-		getFileTimeout:  getFileTimeout,
-		downloadTimeout: downloadTimeout,
-		maxRetryWait:    maxRetryWait,
+		token:    token,
+		baseStr:  strings.TrimRight(apiBase, "/"),
+		log:      log,
+		sem:      make(chan struct{}, maxConcurrent),
+		failures: make(map[string]failure),
 	}
 	if u, err := url.Parse(c.baseStr); err == nil && tokenPattern.MatchString(token) &&
 		(u.Scheme == "http" || u.Scheme == "https") && u.Host != "" &&
@@ -204,14 +205,6 @@ func New(apiBase, token string, log *slog.Logger) *Client {
 		u.Path = strings.TrimRight(u.Path, "/")
 		u.RawPath = ""
 		c.base = u
-	}
-
-	var rt http.RoundTripper = http.DefaultTransport
-	if t, ok := http.DefaultTransport.(*http.Transport); ok {
-		t = t.Clone()
-		t.MaxIdleConnsPerHost = maxConcurrent
-		t.ResponseHeaderTimeout = downloadTimeout
-		rt = t
 	}
 	c.http = &http.Client{
 		Transport: &guard{c: c, next: rt},
@@ -278,7 +271,7 @@ func validFilePath(p string) bool {
 			return false
 		}
 	}
-	for _, seg := range strings.Split(p, "/") {
+	for seg := range strings.SplitSeq(p, "/") {
 		if seg == "" || seg == "." || seg == ".." {
 			return false
 		}
@@ -361,8 +354,8 @@ func (c *Client) Fetch(ctx context.Context, fileID string) ([]byte, error) {
 		return nil, ctxError(ctx.Err())
 	case r := <-ch:
 		if r.Err != nil {
-			var e *Error
-			if !errors.As(r.Err, &e) { // cannot happen: fetch returns only *Error
+			e, ok := errors.AsType[*Error](r.Err)
+			if !ok { // cannot happen: fetch returns only *Error
 				return nil, &Error{msg: "internal error"}
 			}
 			cp := *e // callers share the flight, not the value
@@ -387,7 +380,7 @@ func (c *Client) cachedFailure(fileID string) *Error {
 	if !ok {
 		return nil
 	}
-	if !c.now().Before(f.until) {
+	if !time.Now().Before(f.until) {
 		delete(c.failures, fileID)
 		return nil
 	}
@@ -405,7 +398,7 @@ func (c *Client) remember(fileID string, e *Error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
+	now := time.Now()
 	if len(c.failures) >= maxFailures {
 		for k, f := range c.failures {
 			if !now.Before(f.until) {
@@ -428,7 +421,7 @@ func (c *Client) fetch(ctx context.Context, fileID string) ([]byte, *Error) {
 	c.sem <- struct{}{}
 	defer func() { <-c.sem }()
 
-	start := c.now()
+	start := time.Now()
 	key := source.Key(fileID) // the public cache key: safe to log, unlike the file id
 	fl := &flight{c: c, secrets: c.secrets(fileID)}
 
@@ -438,7 +431,7 @@ func (c *Client) fetch(ctx context.Context, fileID string) ([]byte, *Error) {
 			"permanent", e.Permanent, "retry_after", e.RetryAfter.String(), "error", e.msg)
 		return nil, e
 	}
-	c.log.Debug("telegram fetch", "key", key, "bytes", len(data), "elapsed", c.now().Sub(start).String())
+	c.log.Debug("telegram fetch", "key", key, "bytes", len(data), "elapsed", time.Since(start).String())
 	return data, nil
 }
 
@@ -503,7 +496,7 @@ func (f *flight) attempt(ctx context.Context, do func() *Error) *Error {
 
 // pause records a 429: no request is sent for d.
 func (c *Client) pause(d time.Duration) {
-	until := c.now().Add(d)
+	until := time.Now().Add(d)
 	c.mu.Lock()
 	if until.After(c.pauseUntil) {
 		c.pauseUntil = until
@@ -515,28 +508,28 @@ func (c *Client) pause(d time.Duration) {
 // maxRetryWait is not waited for: the fetch fails with the time left.
 func (c *Client) waitPause(ctx context.Context) *Error {
 	c.mu.Lock()
-	d := c.pauseUntil.Sub(c.now())
+	d := time.Until(c.pauseUntil)
 	c.mu.Unlock()
 	if d <= 0 {
 		return nil
 	}
-	if d > c.maxRetryWait {
+	if d > maxRetryWait {
 		return &Error{Status: http.StatusTooManyRequests, RetryAfter: d,
 			msg: fmt.Sprintf("rate limited; retry after %s", d.Round(time.Second))}
 	}
-	if err := c.sleep(ctx, d); err != nil {
+	if err := sleepCtx(ctx, d); err != nil {
 		return ctxError(err)
 	}
 	return nil
 }
 
+// sleepCtx waits for d or until ctx ends. An unreferenced timer is collected
+// without a Stop (Go 1.23), so time.After leaves nothing behind when ctx wins.
 func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-t.C:
+	case <-time.After(d):
 		return nil
 	}
 }
@@ -556,7 +549,7 @@ type apiResponse struct {
 }
 
 func (f *flight) getFile(ctx context.Context, fileID string) (string, *Error) {
-	ctx, cancel := context.WithTimeout(ctx, f.c.getFileTimeout)
+	ctx, cancel := context.WithTimeout(ctx, getFileTimeout)
 	defer cancel()
 	req, err := f.c.newGetFile(ctx, fileID)
 	if err != nil {
@@ -595,7 +588,7 @@ func (f *flight) getFile(ctx context.Context, fileID string) (string, *Error) {
 }
 
 func (f *flight) download(ctx context.Context, filePath string) ([]byte, *Error) {
-	ctx, cancel := context.WithTimeout(ctx, f.c.downloadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 	req, err := f.c.newDownload(ctx, filePath)
 	if err != nil {

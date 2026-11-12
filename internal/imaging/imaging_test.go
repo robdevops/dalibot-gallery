@@ -69,8 +69,8 @@ func bands(tb testing.TB, w, h int) []byte {
 	tb.Helper()
 	cols := []color.RGBA{{220, 20, 20, 255}, {20, 200, 20, 255}, {20, 20, 220, 255}}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			i := x * 3 / w
 			if h > w {
 				i = y * 3 / h
@@ -92,8 +92,8 @@ func encodeJPEG(tb testing.TB, img image.Image) []byte {
 
 func noise(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.SetRGBA(x, y, color.RGBA{uint8(x * 255 / w), uint8(y * 255 / h), uint8((x ^ y) & 0xff), 255})
 		}
 	}
@@ -595,11 +595,11 @@ func TestInvalidSize(t *testing.T) {
 
 func TestContextCancelsWait(t *testing.T) {
 	st := current
-	for i := 0; i < testWorkers; i++ { // occupy every slot
+	for range testWorkers { // occupy every slot
 		st.slots <- struct{}{}
 	}
 	defer func() {
-		for i := 0; i < testWorkers; i++ {
+		for range testWorkers {
 			<-st.slots
 		}
 	}()
@@ -629,10 +629,8 @@ func TestWorkerLimitAndConcurrency(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	var peak, mu = 0, sync.Mutex{}
-	for i := 0; i < 24; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+	for i := range 24 {
+		wg.Go(func() {
 			n := names[i%3]
 			out, err := Thumbnail(context.Background(), samples[n], 240)
 			mu.Lock()
@@ -643,7 +641,7 @@ func TestWorkerLimitAndConcurrency(t *testing.T) {
 			} else if !bytes.Equal(out, want[n]) {
 				t.Errorf("goroutine %d: output differs from the sequential run", i)
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 	if peak > testWorkers {
@@ -668,8 +666,8 @@ func TestPlaceholder(t *testing.T) {
 	if _, err := fmt.Sscanf(Background, "#%02x%02x%02x", &want.R, &want.G, &want.B); err != nil {
 		t.Fatal(err)
 	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			r, g, b, a := img.At(x, y).RGBA()
 			if uint8(r>>8) != want.R || uint8(g>>8) != want.G || uint8(b>>8) != want.B || a != 0xffff {
 				t.Fatalf("pixel %d,%d = %v, want %s", x, y, img.At(x, y), Background)

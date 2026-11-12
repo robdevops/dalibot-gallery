@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -49,6 +50,12 @@ func (f *flakySource) Records(ctx context.Context) ([]Record, error) {
 		return nil, err
 	}
 	return append([]Record(nil), f.records...), nil
+}
+
+func (f *flakySource) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func (f *flakySource) set(records []Record, err error) {
@@ -131,69 +138,69 @@ func TestStoreRefreshAndFailure(t *testing.T) {
 }
 
 func TestStoreRun(t *testing.T) {
-	f, records := fixtureRecords(t)
-	src := &flakySource{records: records}
-	var logs lockedBuffer
-	st := NewStore(src, f.options(), slog.New(slog.NewTextHandler(&logs, nil)))
-	var swaps atomic.Int32
-	swapped := make(chan struct{}, 100)
-	st.OnSwap(func(*Snapshot) { swaps.Add(1); swapped <- struct{}{} })
+	// In a synctest bubble the ticker runs on virtual time: the test takes no
+	// real time, and Wait returns only once Run is idle again.
+	synctest.Test(t, func(t *testing.T) {
+		const interval = time.Minute
+		f, records := fixtureRecords(t)
+		src := &flakySource{records: records}
+		var logs lockedBuffer
+		st := NewStore(src, f.options(), slog.New(slog.NewTextHandler(&logs, nil)))
+		// The values Run's goroutine writes are still locked or atomic: Wait orders
+		// the test after Run, but the race detector wants every access ordered.
+		var swapCount atomic.Int32
+		st.OnSwap(func(*Snapshot) { swapCount.Add(1) })
+		swaps := func() int32 { return swapCount.Load() }
+		// synctest.Sleep lets virtual time pass and returns once the refreshes
+		// that fell due are over.
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { st.Run(ctx, 20*time.Millisecond); close(done) }()
-	wait := func(what string) {
-		t.Helper()
-		select {
-		case <-swapped:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for %s", what)
+		ctx, cancel := context.WithCancel(t.Context())
+		var run sync.WaitGroup
+		run.Go(func() { st.Run(ctx, interval) })
+		synctest.Wait()
+		if swaps() != 1 {
+			t.Fatalf("after the start-up refresh: %d swaps, want 1", swaps())
 		}
-	}
-	wait("the start-up refresh")
-	wait("a timed refresh")
-	if st.Snapshot().Len() != 19 {
-		t.Fatalf("len = %d", st.Snapshot().Len())
-	}
+		synctest.Sleep(interval)
+		if swaps() != 2 {
+			t.Fatalf("after a timed refresh: %d swaps, want 2", swaps())
+		}
+		if st.Snapshot().Len() != 19 {
+			t.Fatalf("len = %d", st.Snapshot().Len())
+		}
 
-	// The source starts failing: Run logs it and keeps serving the old snapshot.
-	src.set(nil, errors.New("ProvisionedThroughputExceededException"))
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(logs.String(), "keeping the previous snapshot") {
-		if time.Now().After(deadline) {
+		// The source starts failing: Run logs it and keeps serving the old snapshot.
+		src.set(nil, errors.New("ProvisionedThroughputExceededException"))
+		synctest.Sleep(interval)
+		if !strings.Contains(logs.String(), "keeping the previous snapshot") {
 			t.Fatal("failure was not logged")
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if st.Snapshot().Len() != 19 {
-		t.Error("snapshot lost after a failed refresh")
-	}
-	// Health goes stale while refreshes fail.
-	time.Sleep(80 * time.Millisecond)
-	if st.Healthy(60 * time.Millisecond) {
-		t.Error("store should be unhealthy after 3 missed refreshes")
-	}
-	// ...and recovers.
-	for len(swapped) > 0 {
-		<-swapped
-	}
-	src.set(records, nil)
-	wait("recovery")
-	if !st.Healthy(60 * time.Millisecond) {
-		t.Error("store should be healthy again")
-	}
+		if st.Snapshot().Len() != 19 || swaps() != 2 {
+			t.Error("snapshot lost after a failed refresh")
+		}
+		if !st.Healthy(3 * interval) {
+			t.Error("store should still be healthy after 1 missed refresh")
+		}
+		// Health goes stale while refreshes fail.
+		synctest.Sleep(2 * interval)
+		if st.Healthy(3 * interval) {
+			t.Error("store should be unhealthy after 3 missed refreshes")
+		}
+		// ...and recovers.
+		src.set(records, nil)
+		synctest.Sleep(interval)
+		if swaps() != 3 || !st.Healthy(3*interval) {
+			t.Errorf("store should be healthy again (%d swaps, want 3)", swaps())
+		}
 
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not stop")
-	}
-	n := swaps.Load()
-	time.Sleep(60 * time.Millisecond)
-	if swaps.Load() != n {
-		t.Error("refreshes continued after cancel")
-	}
+		cancel()
+		run.Wait() // the bubble reports a deadlock if Run does not stop
+		calls := src.callCount()
+		synctest.Sleep(10 * interval)
+		if swaps() != 3 || src.callCount() != calls {
+			t.Error("refreshes continued after cancel")
+		}
+	})
 }
 
 func TestStoreConcurrentReads(t *testing.T) {
@@ -201,10 +208,8 @@ func TestStoreConcurrentReads(t *testing.T) {
 	st := NewStore(Static(records), f.options(), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			for ctx.Err() == nil {
 				s := st.Snapshot()
 				tiles, _, err := s.Page("", 5)
@@ -219,9 +224,9 @@ func TestStoreConcurrentReads(t *testing.T) {
 					}
 				}
 			}
-		}()
+		})
 	}
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		if err := st.Refresh(ctx); err != nil {
 			t.Fatal(err)
 		}

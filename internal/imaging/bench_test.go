@@ -27,13 +27,14 @@ func benchSequential(b *testing.B, size int) {
 	inputs := benchInputs(b)
 	ctx := context.Background()
 	bytesOut := 0
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		out, err := Thumbnail(ctx, inputs[i%len(inputs)], size)
 		if err != nil {
 			b.Fatal(err)
 		}
 		bytesOut += len(out)
+		i++
 	}
 	b.ReportMetric(float64(bytesOut)/float64(b.N), "webp-bytes/op")
 }
@@ -45,11 +46,12 @@ func BenchmarkThumbnail240(b *testing.B) { benchSequential(b, 240) }
 func BenchmarkVerify(b *testing.B) {
 	inputs := benchInputs(b)
 	ctx := context.Background()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		if err := Verify(ctx, inputs[i%len(inputs)]); err != nil {
 			b.Fatal(err)
 		}
+		i++
 	}
 }
 
@@ -104,7 +106,7 @@ func TestBenchReport(t *testing.T) {
 		for _, size := range []int{480, 240} {
 			var ms []float64
 			var n int
-			for r := 0; r < rounds; r++ {
+			for range rounds {
 				start := time.Now()
 				out, err := Thumbnail(ctx, data, size)
 				d := float64(time.Since(start).Microseconds()) / 1000
@@ -149,10 +151,8 @@ func TestBenchReport(t *testing.T) {
 		var wg sync.WaitGroup
 		deadline := time.Now().Add(10 * time.Second)
 		start := time.Now()
-		for g := 0; g < testWorkers; g++ {
-			wg.Add(1)
-			go func(g int) {
-				defer wg.Done()
+		for g := range testWorkers {
+			wg.Go(func() {
 				for i := g; time.Now().Before(deadline); i++ {
 					for _, size := range sizes {
 						if _, err := Thumbnail(ctx, samples[names[i%len(names)]], size); err != nil {
@@ -162,7 +162,7 @@ func TestBenchReport(t *testing.T) {
 					}
 					done.Add(1)
 				}
-			}(g)
+			})
 		}
 		wg.Wait()
 		fmt.Fprintf(&sb, "| %s | %.1f |\n", label, float64(done.Load())/time.Since(start).Seconds())

@@ -120,7 +120,7 @@ func New(d Deps) (*Server, error) {
 		cfg: d.Config, store: d.Store, fetcher: d.Fetcher, cache: d.Cache, log: log,
 		assets:  map[string]asset{},
 		tag:     imaging.Tag(),
-		limiter: newLoginLimiter(time.Now),
+		limiter: newLoginLimiter(),
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if d.Config.AuthRequired() {
@@ -165,7 +165,9 @@ func (s *Server) Close() {
 	s.wg.Wait()
 }
 
-// begin registers one background job; it reports false once Close has been called.
+// begin registers one background job that runs on the caller's goroutine,
+// which must call s.wg.Done when the job ends; it reports false once Close
+// has been called.
 func (s *Server) begin() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,6 +175,18 @@ func (s *Server) begin() bool {
 		return false
 	}
 	s.wg.Add(1)
+	return true
+}
+
+// spawn runs fn as one background job on a goroutine of its own; it reports
+// false, without running fn, once Close has been called.
+func (s *Server) spawn(fn func()) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.wg.Go(fn)
 	return true
 }
 
@@ -296,7 +310,7 @@ func etagMatch(header, etag string) bool {
 	if header == "" {
 		return false
 	}
-	for _, part := range strings.Split(header, ",") {
+	for part := range strings.SplitSeq(header, ",") {
 		part = strings.TrimSpace(part)
 		if part == "*" || strings.TrimPrefix(part, "W/") == etag {
 			return true

@@ -107,7 +107,7 @@ func TestDynamoReaderAgainstMoto(t *testing.T) {
 	}
 	n := func(v int64) types.AttributeValue { return &types.AttributeValueMemberN{Value: fmt.Sprint(v)} }
 	s := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
-	for i := 0; i < extra; i++ {
+	for i := range extra {
 		chat := []string{"-1009000000001", "-1009000000002", "777"}[i%3]
 		item := map[string]types.AttributeValue{
 			"id": s(fmt.Sprintf("%s:%d", chat, 1000+i)), "prompt": s(string(long)), "command": s("dream"), "current": s("_"),

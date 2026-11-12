@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -218,7 +219,7 @@ func build(now time.Time, storeDays int) *seeder {
 
 	// 140 ordinary records, each a few seconds older than the one before.
 	var carried map[string]types.AttributeValue
-	for i := 0; i < 140; i++ {
+	for i := range 140 {
 		prompt := prompts[i%len(prompts)]
 		base := []string{"null", "missing", "null"}[i%3]
 		imgs := map[string]types.AttributeValue{
@@ -281,9 +282,7 @@ func build(now time.Time, storeDays int) *seeder {
 	}, 1, 2)
 	// carry_over: the images of record 5 copied to a new message, plus one new style.
 	over := map[string]types.AttributeValue{"tattoo": image(sd.fileID(""), "as a tattoo", "_")}
-	for k, v := range carried {
-		over[k] = v
-	}
+	maps.Copy(over, carried)
 	sd.add(map[string]types.AttributeValue{
 		"id": s(Chats[2] + ":5005"), "prompt": s(prompts[5]), "command": s("dream"), "current": s("tattoo"),
 		"images": images(over), "ttl": ttl(170),
@@ -378,7 +377,7 @@ func AddNew(ctx context.Context, endpoint, table string, now time.Time, storeDay
 		return nil, err
 	}
 	var ids []string
-	for i := 0; i < count; i++ {
+	for range count {
 		addMu.Lock()
 		addSeq++
 		seq := addSeq

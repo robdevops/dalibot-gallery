@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -41,44 +42,6 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// fakeClock is the injectable clock; Sleep advances it instead of waiting.
-type fakeClock struct {
-	mu     sync.Mutex
-	t      time.Time
-	sleeps []time.Duration
-}
-
-func newClock() *fakeClock { return &fakeClock{t: time.Unix(1_800_000_000, 0)} }
-
-func (f *fakeClock) Now() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.t
-}
-
-func (f *fakeClock) Advance(d time.Duration) {
-	f.mu.Lock()
-	f.t = f.t.Add(d)
-	f.mu.Unlock()
-}
-
-func (f *fakeClock) Sleep(ctx context.Context, d time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	f.mu.Lock()
-	f.sleeps = append(f.sleeps, d)
-	f.t = f.t.Add(d)
-	f.mu.Unlock()
-	return nil
-}
-
-func (f *fakeClock) Sleeps() []time.Duration {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]time.Duration(nil), f.sleeps...)
-}
-
 // fake is a stand-in for the Bot API. It serves only the two allowed
 // endpoints; any other request fails the test.
 type fake struct {
@@ -94,8 +57,7 @@ type fake struct {
 	download func(w http.ResponseWriter, r *http.Request, filePath string)
 	fileIDs  []string
 
-	log   *syncBuffer
-	clock *fakeClock
+	log *syncBuffer
 }
 
 func okGetFile(path string) func(http.ResponseWriter, *http.Request, string) {
@@ -123,29 +85,52 @@ func serveBytes(data []byte) func(http.ResponseWriter, *http.Request, string) {
 	return func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(data) }
 }
 
-// newFake starts the fake API and a client pointed at it, with a captured
-// debug-level logger and a fake clock.
+// newFake starts the fake API on loopback and a client pointed at it, with a
+// captured debug-level logger. The client is the one New makes, real transport
+// and real clock included.
 func newFake(t *testing.T) (*fake, *Client) {
 	t.Helper()
-	f := &fake{t: t, log: &syncBuffer{}, clock: newClock()}
+	f := newFakeAPI(t)
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.srv.Close)
+	return f, f.client(f.srv.URL)
+}
+
+// newBubbleFake is newFake for a synctest bubble: the fake API listens on an
+// in-memory network and the client's transport dials it, so nothing blocks on
+// real I/O and time is the bubble's. Every wait in the client (a 429's pause,
+// the request timeouts, the failure cache's TTLs) then runs at its real length
+// in no real time.
+func newBubbleFake(t *testing.T) (*fake, *Client) {
+	t.Helper()
+	f := newFakeAPI(t)
+	f.srv = httptest.NewTestServer(t, http.HandlerFunc(f.serve))
+	return f, newClient(f.srv.URL, testToken, f.logger(), f.srv.Client().Transport)
+}
+
+// bubble runs fn as a subtest in a synctest bubble; fn uses newBubbleFake.
+func bubble(t *testing.T, name string, fn func(t *testing.T)) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) { synctest.Test(t, fn) })
+}
+
+func newFakeAPI(t *testing.T) *fake {
+	f := &fake{t: t, log: &syncBuffer{}}
 	f.getFile = okGetFile(testPath)
 	f.download = serveBytes([]byte("\xff\xd8\xffjpeg"))
-	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
-	t.Cleanup(func() {
-		f.srv.Close()
+	t.Cleanup(func() { // runs after the server has closed
 		if n := f.others.Load(); n != 0 {
 			t.Errorf("%d request(s) to paths other than getFile and the file download", n)
 		}
 	})
-	return f, f.client(f.srv.URL)
+	return f
 }
 
-func (f *fake) client(base string) *Client {
-	c := New(base, testToken, slog.New(slog.NewTextHandler(f.log, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	c.now = f.clock.Now
-	c.sleep = f.clock.Sleep
-	return c
+func (f *fake) logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(f.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
+
+func (f *fake) client(base string) *Client { return New(base, testToken, f.logger()) }
 
 func (f *fake) set(getFile func(http.ResponseWriter, *http.Request, string), download func(http.ResponseWriter, *http.Request, string)) {
 	f.mu.Lock()
@@ -440,13 +425,6 @@ func TestNoSecretsInLogsOrErrors(t *testing.T) {
 				writeJSON(w, 200, map[string]any{"ok": false, "error_code": 400, "description": leakGetFile(f.srv.URL)})
 			}, nil)
 		},
-		"getFile 429 twice": func(f *fake, c *Client) {
-			f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 429, leakGetFile(f.srv.URL), 2) }, nil)
-		},
-		"getFile timeout": func(f *fake, c *Client) {
-			c.getFileTimeout = 50 * time.Millisecond
-			f.set(func(_ http.ResponseWriter, r *http.Request, _ string) { <-r.Context().Done() }, nil)
-		},
 		"getFile connection dropped": func(f *fake, c *Client) {
 			f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { hijackClose(w) }, nil)
 		},
@@ -458,14 +436,6 @@ func TestNoSecretsInLogsOrErrors(t *testing.T) {
 		"download 400": func(f *fake, c *Client) {
 			f.set(okGetFile(secretPath), func(w http.ResponseWriter, _ *http.Request, _ string) {
 				http.Error(w, leak(f.srv.URL), 400)
-			})
-		},
-		"download timeout": func(f *fake, c *Client) {
-			c.downloadTimeout = 50 * time.Millisecond
-			f.set(okGetFile(secretPath), func(w http.ResponseWriter, r *http.Request, _ string) {
-				_, _ = w.Write([]byte("partial"))
-				w.(http.Flusher).Flush()
-				<-r.Context().Done()
 			})
 		},
 		"download connection dropped": func(f *fake, c *Client) {
@@ -486,12 +456,29 @@ func TestNoSecretsInLogsOrErrors(t *testing.T) {
 			})
 		},
 	}
-	for name, prepare := range cases {
-		t.Run(name, func(t *testing.T) {
-			f, c := newFake(t)
+	// These wait: for a 429's pause, or for the 10 s and 30 s timeouts. They
+	// run on virtual time against the in-memory server.
+	waiting := map[string]setup{
+		"getFile 429 twice": func(f *fake, c *Client) {
+			f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 429, leakGetFile(f.srv.URL), 2) }, nil)
+		},
+		"getFile timeout": func(f *fake, c *Client) {
+			f.set(func(_ http.ResponseWriter, r *http.Request, _ string) { <-r.Context().Done() }, nil)
+		},
+		"download timeout": func(f *fake, c *Client) {
+			f.set(okGetFile(secretPath), func(w http.ResponseWriter, r *http.Request, _ string) {
+				_, _ = w.Write([]byte("partial"))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			})
+		},
+	}
+	check := func(name string, start func(*testing.T) (*fake, *Client), prepare setup) func(*testing.T) {
+		return func(t *testing.T) {
+			f, c := start(t)
 			prepare(f, c)
 			var errs []string
-			for i := 0; i < 2; i++ { // the second call replays the failure cache
+			for i := range 2 { // the second call replays the failure cache
 				_, err := c.Fetch(context.Background(), fileID)
 				if name == "success" {
 					if err != nil {
@@ -517,7 +504,13 @@ func TestNoSecretsInLogsOrErrors(t *testing.T) {
 			for _, s := range errs {
 				noSecrets(t, "error", s, secrets...)
 			}
-		})
+		}
+	}
+	for name, prepare := range cases {
+		t.Run(name, check(name, newFake, prepare))
+	}
+	for name, prepare := range waiting {
+		bubble(t, name, check(name, newBubbleFake, prepare))
 	}
 
 	t.Run("server down", func(t *testing.T) {
@@ -560,14 +553,14 @@ func TestTransportErrorIsRedacted(t *testing.T) {
 	e := fl.transportError("getFile", raw)
 	noSecrets(t, "error", e.Error(), "the-file-id", "api.telegram.org")
 	// Nothing reachable through the error chain may hold the raw error.
-	if errors.As(error(e), new(*url.Error)) {
+	if _, ok := errors.AsType[*url.Error](e); ok {
 		t.Error("*url.Error is reachable through the error chain")
 	}
 }
 
 func TestRetryAfter(t *testing.T) {
-	t.Run("getFile retried once after retry_after", func(t *testing.T) {
-		f, c := newFake(t)
+	bubble(t, "getFile retried once after retry_after", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		var n atomic.Int64
 		f.set(func(w http.ResponseWriter, r *http.Request, id string) {
 			if n.Add(1) == 1 {
@@ -576,7 +569,7 @@ func TestRetryAfter(t *testing.T) {
 			}
 			okGetFile(testPath)(w, r, id)
 		}, nil)
-		before := f.clock.Now()
+		start := time.Now()
 		data, err := c.Fetch(context.Background(), "id")
 		if err != nil {
 			t.Fatal(err)
@@ -584,10 +577,7 @@ func TestRetryAfter(t *testing.T) {
 		if len(data) == 0 {
 			t.Error("no data")
 		}
-		if s := f.clock.Sleeps(); len(s) != 1 || s[0] != 7*time.Second {
-			t.Errorf("sleeps = %v, want [7s]", s)
-		}
-		if got := f.clock.Now().Sub(before); got != 7*time.Second {
+		if got := time.Since(start); got != 7*time.Second {
 			t.Errorf("waited %v, want 7s", got)
 		}
 		if g := f.getFiles.Load(); g != 2 {
@@ -595,8 +585,8 @@ func TestRetryAfter(t *testing.T) {
 		}
 	})
 
-	t.Run("download retried once", func(t *testing.T) {
-		f, c := newFake(t)
+	bubble(t, "download retried once", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		var n atomic.Int64
 		f.set(nil, func(w http.ResponseWriter, _ *http.Request, _ string) {
 			if n.Add(1) == 1 {
@@ -606,20 +596,22 @@ func TestRetryAfter(t *testing.T) {
 			}
 			_, _ = w.Write([]byte("data"))
 		})
+		start := time.Now()
 		if _, err := c.Fetch(context.Background(), "id"); err != nil {
 			t.Fatal(err)
 		}
-		if s := f.clock.Sleeps(); len(s) != 1 || s[0] != 3*time.Second {
-			t.Errorf("sleeps = %v, want [3s]", s)
+		if got := time.Since(start); got != 3*time.Second {
+			t.Errorf("waited %v, want 3s", got)
 		}
 		if g, d := f.getFiles.Load(), f.downloads.Load(); g != 1 || d != 2 {
 			t.Errorf("getFile = %d, downloads = %d, want 1 and 2", g, d)
 		}
 	})
 
-	t.Run("only one retry per fetch", func(t *testing.T) {
-		f, c := newFake(t)
+	bubble(t, "only one retry per fetch", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 429, "Too Many Requests", 5) }, nil)
+		start := time.Now()
 		_, err := c.Fetch(context.Background(), "id")
 		e := asError(t, err)
 		if e.Status != 429 || e.RetryAfter != 5*time.Second || e.Permanent || !e.Temporary() {
@@ -628,21 +620,22 @@ func TestRetryAfter(t *testing.T) {
 		if g := f.getFiles.Load(); g != 2 {
 			t.Errorf("getFile calls = %d, want 2 (one retry)", g)
 		}
-		if s := f.clock.Sleeps(); len(s) != 1 || s[0] != 5*time.Second {
-			t.Errorf("sleeps = %v, want [5s]", s)
+		if got := time.Since(start); got != 5*time.Second {
+			t.Errorf("waited %v, want 5s", got)
 		}
 	})
 
-	t.Run("a long retry_after is not waited for", func(t *testing.T) {
-		f, c := newFake(t)
+	bubble(t, "a long retry_after is not waited for", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 429, "Too Many Requests", 3600) }, nil)
+		start := time.Now()
 		_, err := c.Fetch(context.Background(), "id-a")
 		e := asError(t, err)
 		if e.Status != 429 || e.RetryAfter != time.Hour || e.Permanent {
 			t.Errorf("%+v", e)
 		}
-		if s := f.clock.Sleeps(); len(s) != 0 {
-			t.Errorf("slept %v, want no sleep", s)
+		if got := time.Since(start); got != 0 {
+			t.Errorf("waited %v, want no wait", got)
 		}
 		if g := f.getFiles.Load(); g != 1 {
 			t.Errorf("getFile calls = %d, want 1", g)
@@ -652,7 +645,7 @@ func TestRetryAfter(t *testing.T) {
 		if e := asError(t, err); e.Status != 429 || e.Cached {
 			t.Errorf("%+v", e)
 		}
-		f.clock.Advance(59 * time.Minute)
+		time.Sleep(59 * time.Minute)
 		_, err = c.Fetch(context.Background(), "id-a")
 		if e := asError(t, err); !e.Cached {
 			t.Errorf("after 59 min: not from the failure cache: %+v", e)
@@ -661,15 +654,15 @@ func TestRetryAfter(t *testing.T) {
 			t.Errorf("getFile calls during the pause = %d, want 1", g)
 		}
 		// After it, requests resume.
-		f.clock.Advance(2 * time.Minute)
+		time.Sleep(2 * time.Minute)
 		f.set(okGetFile(testPath), nil)
 		if _, err := c.Fetch(context.Background(), "id-a"); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	t.Run("missing retry_after means one second", func(t *testing.T) {
-		f, c := newFake(t)
+	bubble(t, "missing retry_after means one second", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		var n atomic.Int64
 		f.set(func(w http.ResponseWriter, r *http.Request, id string) {
 			if n.Add(1) == 1 {
@@ -678,47 +671,58 @@ func TestRetryAfter(t *testing.T) {
 			}
 			okGetFile(testPath)(w, r, id)
 		}, nil)
+		start := time.Now()
 		if _, err := c.Fetch(context.Background(), "id"); err != nil {
 			t.Fatal(err)
 		}
-		if s := f.clock.Sleeps(); len(s) != 1 || s[0] != time.Second {
-			t.Errorf("sleeps = %v, want [1s]", s)
+		if got := time.Since(start); got != time.Second {
+			t.Errorf("waited %v, want 1s", got)
 		}
 	})
 
-	t.Run("the wait ends with the caller's context", func(t *testing.T) {
-		f, c := newFake(t)
-		c.sleep = sleepCtx // the real, context-aware sleep
-		c.now = time.Now
+	bubble(t, "the wait ends with the caller's context", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 429, "Too Many Requests", 20) }, nil)
 		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 		defer cancel()
 		start := time.Now()
 		_, err := c.Fetch(ctx, "id")
-		if d := time.Since(start); d > 5*time.Second {
-			t.Errorf("Fetch took %v after its context ended", d)
+		if d := time.Since(start); d != 150*time.Millisecond {
+			t.Errorf("Fetch returned after %v, want 150ms: when its context ended", d)
 		}
 		e := asError(t, err)
 		if e.Permanent || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrTemporary) {
 			t.Errorf("%+v", e)
 		}
+		// The flight is not the caller's: it sits out the pause and asks once
+		// more. Let it end before the bubble does.
+		synctest.Sleep(20 * time.Second)
+		if g := f.getFiles.Load(); g != 2 {
+			t.Errorf("getFile calls = %d, want 2 (the flight outlives its caller)", g)
+		}
 	})
 }
 
 func TestSleepCtx(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := sleepCtx(ctx, time.Hour); !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v", err)
-	}
-	if err := sleepCtx(context.Background(), time.Millisecond); err != nil {
-		t.Errorf("err = %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		if err := sleepCtx(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v", err)
+		}
+		if err := sleepCtx(context.Background(), time.Hour); err != nil {
+			t.Errorf("err = %v", err)
+		}
+		if d := time.Since(start); d != time.Hour {
+			t.Errorf("slept %v, want 1h", d)
+		}
+	})
 }
 
 func TestFailureCache(t *testing.T) {
-	t.Run("400 is cached for 24 h", func(t *testing.T) {
-		f, c := newFake(t)
+	bubble(t, "400 is cached for 24 h", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		f.set(func(w http.ResponseWriter, _ *http.Request, _ string) {
 			apiError(w, 400, "Bad Request: wrong file_id or the file is temporarily unavailable", 0)
 		}, nil)
@@ -734,7 +738,7 @@ func TestFailureCache(t *testing.T) {
 			t.Errorf("Telegram's description is missing: %v", err)
 		}
 
-		f.clock.Advance(24*time.Hour - time.Second)
+		time.Sleep(24*time.Hour - time.Second)
 		_, err = c.Fetch(context.Background(), "dead")
 		e = asError(t, err)
 		if !e.Cached || !e.Permanent || e.Status != 400 {
@@ -749,7 +753,7 @@ func TestFailureCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		// After 24 h the file is tried again, and a success clears nothing else.
-		f.clock.Advance(2 * time.Second)
+		time.Sleep(2 * time.Second)
 		if _, err := c.Fetch(context.Background(), "dead"); err != nil {
 			t.Fatalf("after expiry: %v", err)
 		}
@@ -758,16 +762,16 @@ func TestFailureCache(t *testing.T) {
 		}
 	})
 
-	t.Run("other errors are cached for 5 min", func(t *testing.T) {
+	bubble(t, "other errors are cached for 5 min", func(t *testing.T) {
 		for _, status := range []int{401, 403, 404, 500, 502} {
-			f, c := newFake(t)
+			f, c := newBubbleFake(t)
 			f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, status, "nope", 0) }, nil)
 			_, err := c.Fetch(context.Background(), "id")
 			e := asError(t, err)
 			if e.Permanent || e.Status != status || e.Cached || !errors.Is(err, ErrTemporary) || errors.Is(err, ErrPermanent) {
 				t.Errorf("%d first: %+v", status, e)
 			}
-			f.clock.Advance(5*time.Minute - time.Second)
+			time.Sleep(5*time.Minute - time.Second)
 			_, err = c.Fetch(context.Background(), "id")
 			if e := asError(t, err); !e.Cached || e.Status != status || e.Permanent {
 				t.Errorf("%d cached: %+v", status, e)
@@ -775,7 +779,7 @@ func TestFailureCache(t *testing.T) {
 			if g := f.getFiles.Load(); g != 1 {
 				t.Errorf("%d: getFile calls = %d, want 1", status, g)
 			}
-			f.clock.Advance(2 * time.Second)
+			time.Sleep(2 * time.Second)
 			_, err = c.Fetch(context.Background(), "id")
 			if e := asError(t, err); e.Cached {
 				t.Errorf("%d after expiry: still cached", status)
@@ -825,7 +829,7 @@ func TestFailureCache(t *testing.T) {
 
 	t.Run("the cache is bounded", func(t *testing.T) {
 		_, c := newFake(t)
-		for i := 0; i < maxFailures+50; i++ {
+		for i := range maxFailures + 50 {
 			c.remember(fmt.Sprint("id-", i), &Error{msg: "x"})
 		}
 		if n := len(c.failures); n > maxFailures {
@@ -871,8 +875,8 @@ func TestCap(t *testing.T) {
 		var sent atomic.Int64
 		f.set(nil, func(w http.ResponseWriter, _ *http.Request, _ string) {
 			chunk := big[:1<<20]
-			w.(http.Flusher).Flush()  // forces chunked encoding: no Content-Length
-			for i := 0; i < 64; i++ { // 64 MiB if the client kept reading
+			w.(http.Flusher).Flush() // forces chunked encoding: no Content-Length
+			for range 64 {           // 64 MiB if the client kept reading
 				n, err := w.Write(chunk)
 				sent.Add(int64(n))
 				if err != nil {
@@ -917,20 +921,15 @@ func TestCap(t *testing.T) {
 }
 
 func TestTimeouts(t *testing.T) {
-	c := New("https://api.telegram.org", testToken, nil)
-	if c.getFileTimeout != 10*time.Second || c.downloadTimeout != 30*time.Second {
-		t.Errorf("timeouts = %v and %v, want 10s and 30s", c.getFileTimeout, c.downloadTimeout)
-	}
-	if cap(c.sem) != 4 {
+	if c := New("https://api.telegram.org", testToken, nil); cap(c.sem) != 4 {
 		t.Errorf("concurrency limit = %d, want 4", cap(c.sem))
 	}
 	if MaxFileBytes != 20*1024*1024 {
 		t.Errorf("MaxFileBytes = %d", MaxFileBytes)
 	}
 
-	t.Run("getFile", func(t *testing.T) {
-		f, c := newFake(t)
-		c.getFileTimeout = 60 * time.Millisecond
+	bubble(t, "getFile", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		f.set(func(_ http.ResponseWriter, r *http.Request, _ string) { <-r.Context().Done() }, nil)
 		start := time.Now()
 		_, err := c.Fetch(context.Background(), "id")
@@ -938,29 +937,36 @@ func TestTimeouts(t *testing.T) {
 		if e.Permanent || e.Status != 0 || !strings.Contains(err.Error(), "timed out") {
 			t.Errorf("%+v %v", e, err)
 		}
-		if d := time.Since(start); d > 5*time.Second {
-			t.Errorf("took %v", d)
+		if d := time.Since(start); d != 10*time.Second {
+			t.Errorf("getFile gave up after %v, want 10s", d)
 		}
 	})
 
-	t.Run("download body", func(t *testing.T) {
-		f, c := newFake(t)
-		c.downloadTimeout = 60 * time.Millisecond
+	bubble(t, "download body", func(t *testing.T) {
+		f, c := newBubbleFake(t)
 		f.set(nil, func(w http.ResponseWriter, r *http.Request, _ string) {
 			_, _ = w.Write([]byte("first part"))
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
 		})
+		start := time.Now()
 		_, err := c.Fetch(context.Background(), "id")
 		e := asError(t, err)
 		if e.Permanent || !strings.Contains(err.Error(), "timed out") {
 			t.Errorf("%+v %v", e, err)
 		}
+		if d := time.Since(start); d != 30*time.Second {
+			t.Errorf("the download gave up after %v, want 30s", d)
+		}
 	})
 }
 
 func TestSingleflight(t *testing.T) {
-	f, c := newFake(t)
+	synctest.Test(t, testSingleflight)
+}
+
+func testSingleflight(t *testing.T) {
+	f, c := newBubbleFake(t)
 	release := make(chan struct{})
 	f.set(func(w http.ResponseWriter, r *http.Request, id string) {
 		<-release
@@ -970,18 +976,16 @@ func TestSingleflight(t *testing.T) {
 	const callers = 25
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
-	for i := 0; i < callers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range callers {
+		wg.Go(func() {
 			data, err := c.Fetch(context.Background(), "same-id")
 			if err == nil && string(data) != "payload" {
 				err = fmt.Errorf("got %q", data)
 			}
 			errs <- err
-		}()
+		})
 	}
-	time.Sleep(200 * time.Millisecond) // let every caller join the flight
+	synctest.Wait() // every caller has joined the flight
 	close(release)
 	wg.Wait()
 	close(errs)
@@ -997,7 +1001,11 @@ func TestSingleflight(t *testing.T) {
 
 // Concurrent callers of a failing file id each get their own *Error value.
 func TestSingleflightFailure(t *testing.T) {
-	f, c := newFake(t)
+	synctest.Test(t, testSingleflightFailure)
+}
+
+func testSingleflightFailure(t *testing.T) {
+	f, c := newBubbleFake(t)
 	release := make(chan struct{})
 	f.set(func(w http.ResponseWriter, _ *http.Request, _ string) {
 		<-release
@@ -1006,15 +1014,13 @@ func TestSingleflightFailure(t *testing.T) {
 	const callers = 10
 	got := make([]*Error, callers)
 	var wg sync.WaitGroup
-	for i := 0; i < callers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range callers {
+		wg.Go(func() {
 			_, err := c.Fetch(context.Background(), "dead")
 			got[i], _ = err.(*Error)
-		}()
+		})
 	}
-	time.Sleep(150 * time.Millisecond)
+	synctest.Wait() // every caller has joined the flight
 	close(release)
 	wg.Wait()
 	seen := map[*Error]bool{}
@@ -1033,7 +1039,11 @@ func TestSingleflightFailure(t *testing.T) {
 }
 
 func TestGlobalLimit(t *testing.T) {
-	f, c := newFake(t)
+	synctest.Test(t, testGlobalLimit)
+}
+
+func testGlobalLimit(t *testing.T) {
+	f, c := newBubbleFake(t)
 	var cur, peak atomic.Int64
 	enter := func() {
 		n := cur.Add(1)
@@ -1056,20 +1066,17 @@ func TestGlobalLimit(t *testing.T) {
 		_, _ = w.Write([]byte("x"))
 	})
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range 16 {
+		wg.Go(func() {
 			if _, err := c.Fetch(context.Background(), fmt.Sprint("id-", i)); err != nil {
 				t.Error(err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
-	if p := peak.Load(); p > 4 {
-		t.Errorf("%d Telegram requests ran at once, limit is 4", p)
-	} else if p < 2 {
-		t.Errorf("peak concurrency %d: fetches did not run in parallel", p)
+	// On virtual time the peak is exact: the limit is reached and never passed.
+	if p := peak.Load(); p != 4 {
+		t.Errorf("%d Telegram requests ran at once, want exactly the limit of 4", p)
 	}
 	if g, d := f.getFiles.Load(), f.downloads.Load(); g != 16 || d != 16 {
 		t.Errorf("getFile = %d, downloads = %d, want 16 and 16", g, d)
@@ -1079,7 +1086,11 @@ func TestGlobalLimit(t *testing.T) {
 // A caller that gives up neither fails the other callers nor poisons the
 // failure cache.
 func TestCallerCancel(t *testing.T) {
-	f, c := newFake(t)
+	synctest.Test(t, testCallerCancel)
+}
+
+func testCallerCancel(t *testing.T) {
+	f, c := newBubbleFake(t)
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)
 	f.set(func(w http.ResponseWriter, r *http.Request, id string) {
@@ -1100,7 +1111,7 @@ func TestCallerCancel(t *testing.T) {
 		}
 		patient <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	synctest.Wait() // the patient caller has joined the flight
 	cancel()
 	err := <-impatient
 	e := asError(t, err)
@@ -1210,8 +1221,7 @@ func TestErrorType(t *testing.T) {
 		t.Errorf("Error() = %q", got)
 	}
 	wrapped := fmt.Errorf("thumbnail: %w", perm)
-	var e *Error
-	if !errors.As(wrapped, &e) || !errors.Is(wrapped, ErrPermanent) {
+	if _, ok := errors.AsType[*Error](wrapped); !ok || !errors.Is(wrapped, ErrPermanent) {
 		t.Error("wrapping loses the type")
 	}
 	var _ error = (*Error)(nil)

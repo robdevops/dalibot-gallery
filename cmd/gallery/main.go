@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -118,11 +119,8 @@ func run() int {
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 
-	refresherDone := make(chan struct{})
-	go func() {
-		defer close(refresherDone)
-		store.Run(ctx, cfg.Refresh)
-	}()
+	var refresher sync.WaitGroup
+	refresher.Go(func() { store.Run(ctx, cfg.Refresh) })
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(ln) }()
@@ -147,7 +145,7 @@ func run() int {
 		_ = httpSrv.Close()
 	}
 	// Stop the refresher and all image work before libvips goes away (the deferred imaging.Shutdown).
-	<-refresherDone
+	refresher.Wait()
 	srv.Close()
 	log.Info("stopped")
 	return code

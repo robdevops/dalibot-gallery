@@ -197,8 +197,7 @@ func (s *Server) original(ctx context.Context, snap *source.Snapshot, key string
 			// The fetcher's errors are already free of the token, URLs and ids; log the key only.
 			// A replay from the fetcher's failure cache is not news: the first failure was logged.
 			level := slog.LevelWarn
-			var te *telegram.Error
-			if errors.As(err, &te) && te.Cached {
+			if te, ok := errors.AsType[*telegram.Error](err); ok && te.Cached {
 				level = slog.LevelDebug
 			}
 			s.log.Log(ctx, level, "fetching an original failed", "key", key, "error", safeError(err))
@@ -307,19 +306,14 @@ func (s *Server) OnSwap(snap *source.Snapshot) {
 		s.warmCancel()
 		s.warmCancel = nil
 	}
-	if s.begin() {
-		ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancel(s.ctx)
+	if s.spawn(func() { defer cancel(); s.Warm(ctx, snap) }) {
 		s.warmCancel = cancel
-		go func() {
-			defer s.wg.Done()
-			defer cancel()
-			s.Warm(ctx, snap)
-		}()
+	} else {
+		cancel() // closed: nothing was started
 	}
-	if !s.pruning && s.begin() {
-		s.pruning = true
-		go func() {
-			defer s.wg.Done()
+	if !s.pruning {
+		s.pruning = s.spawn(func() {
 			removed, err := s.cache.Prune(snap.Has, s.tag)
 			if err != nil {
 				s.log.Error("pruning the cache failed", "error", err)
@@ -329,6 +323,6 @@ func (s *Server) OnSwap(snap *source.Snapshot) {
 			s.swapMu.Lock()
 			s.pruning = false
 			s.swapMu.Unlock()
-		}()
+		})
 	}
 }

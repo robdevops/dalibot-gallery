@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -170,11 +171,11 @@ func Build(records []Record, opt Options) *Snapshot {
 		if r.ID == ProbeID || seenID[r.ID] {
 			continue
 		}
-		i := strings.LastIndexByte(r.ID, ':')
-		if i <= 0 || i == len(r.ID)-1 {
+		chat, message, ok := strings.CutLast(r.ID, ":")
+		if !ok || chat == "" || message == "" {
 			continue // not "<chat_id>:<message_id>"
 		}
-		if allow != nil && !allow[r.ID[:i]] {
+		if allow != nil && !allow[chat] {
 			continue
 		}
 		if r.TTL < nowUnix { // DynamoDB deletes expired items lazily
@@ -255,12 +256,7 @@ func Build(records []Record, opt Options) *Snapshot {
 // keys is not empty and is in display order.
 func resolveCurrent(current string, keys []string) string {
 	has := func(k string) bool {
-		for _, x := range keys {
-			if x == k {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(keys, k)
 	}
 	if has(current) {
 		return current

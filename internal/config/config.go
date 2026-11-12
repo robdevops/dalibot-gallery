@@ -134,7 +134,7 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
 	case "none":
 	default:
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
@@ -213,7 +213,7 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		bad("GALLERY_DEFAULT_COMMAND", "must be 1-%d of a-z, 0-9 and '_', not %q", maxDefaultCommandSize, c.DefaultCommand)
 	}
 	seen := map[string]bool{}
-	for _, chat := range strings.Split(get("GALLERY_CHATS"), ",") {
+	for chat := range strings.SplitSeq(get("GALLERY_CHATS"), ",") {
 		chat = strings.TrimSpace(chat)
 		if chat == "" {
 			continue

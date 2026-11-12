@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -266,7 +267,7 @@ func TestBuildDoesNotDependOnInputOrder(t *testing.T) {
 	f, records := fixtureRecords(t)
 	want := describe(Build(records, f.options()).Newest(1000))
 	rng := rand.New(rand.NewSource(1))
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		rng.Shuffle(len(records), func(a, b int) { records[a], records[b] = records[b], records[a] })
 		if got := describe(Build(records, f.options()).Newest(1000)); !reflect.DeepEqual(got, want) {
 			t.Fatalf("order depends on input order:\n got %q\nwant %q", got, want)
@@ -506,9 +507,9 @@ func TestNoDuplicatesWhenItemsExpireOrMoveBetweenPages(t *testing.T) {
 		}
 		return r
 	}
-	for round := 0; round < 200; round++ {
+	for round := range 200 {
 		var records []Record
-		for i := 0; i < 30; i++ {
+		for i := range 30 {
 			records = append(records, newRecord(fmt.Sprintf("%d:%d", -100+rng.Intn(3), i), now-int64(rng.Intn(40))*100))
 		}
 		before := Build(records, opt)
@@ -528,9 +529,7 @@ func TestNoDuplicatesWhenItemsExpireOrMoveBetweenPages(t *testing.T) {
 			case 1: // a new style: ttl refreshed
 				r2 := r
 				r2.Images = map[string]RawImage{"extra": {FileID: "extra-" + r.ID + fmt.Sprint(round), Caption: "x"}}
-				for k, v := range r.Images {
-					r2.Images[k] = v
-				}
+				maps.Copy(r2.Images, r.Images)
 				r2.TTL = now + 90*86400
 				r2.Current = "extra"
 				changed = append(changed, r2)
@@ -542,7 +541,7 @@ func TestNoDuplicatesWhenItemsExpireOrMoveBetweenPages(t *testing.T) {
 				changed = append(changed, r)
 			}
 		}
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			changed = append(changed, newRecord(fmt.Sprintf("9:%d", i), now-int64(rng.Intn(40))*100))
 		}
 		after := Build(changed, opt)
