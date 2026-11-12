@@ -6,21 +6,19 @@
 #
 #   docker build -f deploy/Dockerfile -t dalibot-gallery .
 #
-# The binary links libvips through cgo, so the build stage and the runtime
-# stage must share one distribution release: both are Debian 13 (trixie).
-# libvips comes from Debian's main archive. Rebuild regularly
-# (--pull --no-cache) to pick up security updates to libvips, libwebp and
-# libjpeg-turbo.
+# The binary links libvips through cgo and musl, so the build stage and the
+# runtime stage must share one Alpine release: golang:1.27-alpine and alpine:3
+# both follow the newest Alpine 3.x. Alpine packages libvips' heavier loaders
+# (PDF, ImageMagick, HEIF, JPEG XL) separately; none of them is installed.
+# Rebuild regularly (--pull --no-cache) to pick up security updates to
+# libvips, libwebp and libjpeg-turbo.
 
-ARG GO_IMAGE=golang:1.27-trixie
-ARG BASE_IMAGE=debian:trixie-slim
+ARG GO_IMAGE=golang:1.27-alpine
+ARG BASE_IMAGE=alpine:3
 
-# ---- build: Go toolchain + libvips headers ----------------------------------
+# ---- build: Go toolchain + C compiler + libvips headers ---------------------
 FROM ${GO_IMAGE} AS build
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      pkg-config libvips-dev \
- && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache build-base pkgconf vips-dev
 ENV GOTOOLCHAIN=local \
     CGO_ENABLED=1 \
     GOFLAGS=-mod=readonly
@@ -35,13 +33,9 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/gallery ./cmd/gallery \
 
 # ---- runtime: libvips shared library only, no compiler, no shell tools added -
 FROM ${BASE_IMAGE}
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates libvips42t64 \
- && rm -rf /var/lib/apt/lists/* \
- && groupadd --gid 10001 gallery \
- && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
-      --shell /usr/sbin/nologin gallery \
+RUN apk add --no-cache ca-certificates vips \
+ && addgroup -g 10001 -S gallery \
+ && adduser -u 10001 -S -G gallery -H -h /nonexistent -s /sbin/nologin gallery \
  && install -d -o 10001 -g 10001 -m 0700 /var/cache/dalibot-gallery
 COPY --from=build /out/gallery /usr/local/bin/gallery
 

@@ -85,33 +85,37 @@ The image sets `GALLERY_LISTEN=0.0.0.0:8080` and
 when you use `docker run --env-file` (Compose overrides them for you). Write
 values in `.env` without quotes: `docker run --env-file` and systemd pass quotes through literally.
 
-The image is built with Go 1.27 on `golang:1.27-trixie` and runs on
-`debian:trixie-slim` (Debian 13, libvips 8.16.1 from Debian's main archive).
-Both images can be replaced with the build arguments `GO_IMAGE` and
-`BASE_IMAGE`, but the build and runtime stages must stay on the same
-distribution release and the package names in the Dockerfile are Debian's.
-The image is about 310 MB, nearly all of it libvips' dependencies.
+The image is built with Go 1.27 on `golang:1.27-alpine` and runs on
+`alpine:3` (Alpine 3.24 with libvips 8.18.2 when this was written). Alpine
+packages libvips' heavier loaders (PDF, ImageMagick, HEIF, JPEG XL)
+separately and the image installs none of them, so it is about 125 MB,
+against more than 300 MB on Debian or Ubuntu. Both images can be replaced
+with the build arguments `GO_IMAGE` and `BASE_IMAGE`, but the build and
+runtime stages must stay on the same Alpine release (the binary links musl
+and libvips dynamically) and the package names in the Dockerfile are Alpine's.
 
 **What has and has not been tested.** The image was built and run in the
 development sandbox only (Docker 29, x86-64):
 
 - Built from this Dockerfile, unchanged, but with `GO_IMAGE` and `BASE_IMAGE`
-  set to copies of `golang:1.27-trixie` and `debian:trixie-slim` that add the
-  sandbox proxy's certificate and apt settings, because the sandbox has no
-  direct internet access. The default build arguments (the plain images from
-  Docker Hub) have not been built end to end.
-- The Go tests were run inside the build stage (Go 1.27.4, libvips 8.16.1),
-  except the integration test, which needs moto and ran on the host only.
+  set to copies of `golang:1.27-alpine` and `alpine:3` that add the sandbox
+  proxy's certificate, because the sandbox has no direct internet access.
+  The default build arguments (the plain images from Docker Hub) have not
+  been built end to end.
+- The Go tests were run inside the build stage (Go 1.27.4, musl, libvips
+  8.18.2), except the integration test, which needs moto and ran on the
+  host only (Ubuntu 24.04, libvips 8.15.1).
 - Run with the `docker run` flags above against the dev stack (a local
   DynamoDB stand-in and a fake Telegram): healthy, uid 10001, read-only root,
-  no capabilities, thumbnails and originals served, 119 MiB of the 512 MiB
+  no capabilities, thumbnails and originals served, 15 MiB of the 512 MiB
   in use after warming 240 thumbnails, clean exit on `docker stop`.
 - `deploy/compose.yaml` was brought up and its client-address handling
-  checked through the published port, with the earlier Ubuntu-based image;
-  it has not been run again with the Debian image. The nginx, Caddy and
+  checked through the published port with an earlier Ubuntu-based image;
+  it has not been run again with the Alpine image. The nginx, Caddy and
   Traefik examples were each run in front of that earlier container before
-  `GALLERY_TRUSTED_PROXIES` existed; they have not been run again since, and the Traefik address in
-  `deploy/traefik-labels.yaml` is a placeholder you must change.
+  `GALLERY_TRUSTED_PROXIES` existed; they have not been run again since,
+  and the Traefik address in `deploy/traefik-labels.yaml` is a placeholder
+  you must change.
 - Not tested: real AWS, the real Telegram API, certificate issuance, any
   other machine or architecture, the unit under a running systemd.
 
@@ -381,8 +385,8 @@ pkg-config --modversion vips   # e.g. 8.15.1 (needs the headers / -dev package)
 ```
 
 The gallery also logs the libvips version at start-up, and `gallery -version`
-prints it. Only Ubuntu 24.04 with libvips 8.15.1 and Debian 13 with libvips 8.16.1 have
-been tested; Ubuntu 22.04 ships libvips 8.12, which is too old. A binary must be built on the
+prints it. Ubuntu 24.04 (libvips 8.15.1), Debian 13 (8.16.1) and Alpine 3.24 (8.18.2)
+have been tested; Ubuntu 22.04 ships libvips 8.12, which is too old. A binary must be built on the
 same distribution release it runs on (it is dynamically linked; on Alpine it
 links musl).
 
@@ -631,9 +635,8 @@ together; every tile was fetched at 480 px, about 43 kB each.
 - With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](#reverse-proxy).
 - Responses that Go's HTTP server writes itself for malformed requests carry
   no security headers; see [Security model](#security-model).
-- Debian's libvips package pulls in loaders for many formats the gallery
-  never uses (it only allows JPEG in), which is most of the image's size.
-  Rebuild the image often to pick up security updates.
+- Rebuild the container image often to pick up security updates to Alpine,
+  libvips and its codecs.
 - The whole table is scanned on every refresh and the listing is held in
   memory; this suits a table bounded by a TTL, not an unbounded one.
 
