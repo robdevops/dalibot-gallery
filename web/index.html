@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#111111">
+<meta name="robots" content="noindex, nofollow">
+<title>Gallery</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<h1 class="sr">Gallery</h1>
+<button type="button" class="pill" id="pill" hidden></button>
+<main>
+<ul class="grid" id="grid" aria-label="Gallery"></ul>
+<noscript>
+  <ul class="grid">
+    {{range .Tiles}}<li class="tile"><a href="{{.Full}}"><img src="{{.Src240}}" srcset="{{.Src240}} 240w, {{.Src480}} 480w" sizes="(min-width:1600px) 17vw, (min-width:1200px) 20vw, (min-width:768px) 25vw, (min-width:480px) 34vw, 50vw" width="240" height="240" loading="lazy" decoding="async" alt="{{.Alt}}"></a></li>{{end}}
+  </ul>
+  {{if .Next}}<p class="more"><a href="/?cursor={{.Next}}">Load more</a></p>{{end}}
+</noscript>
+<p class="end" id="end"></p>
+</main>
+<p class="sr" id="live" aria-live="polite"></p>
+<dialog id="lb" aria-label="Image viewer">
+<div class="box">
+  <div class="stage">
+    <img id="full" alt="">
+    <button type="button" class="nav" id="x" aria-label="Close" autofocus>&#215;</button>
+    <button type="button" class="nav" id="prev" aria-label="Previous image">&#8249;</button>
+    <button type="button" class="nav" id="next" aria-label="Next image">&#8250;</button>
+  </div>
+  <div class="meta">
+    <p id="cap"></p>
+    <p id="cmd"></p>
+    <ul id="strip" aria-label="Styles of this image"></ul>
+  </div>
+</div>
+</dialog>
+</body>
+</html>

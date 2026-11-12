@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#111111">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign in · Gallery</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main class="login">
+<h1>Gallery</h1>
+<form method="post" action="/login">
+  <label for="token">Access token</label>
+  <input type="password" id="token" name="token" autocomplete="current-password" required autofocus{{if .Error}} aria-describedby="err"{{end}}>
+  <button type="submit">Sign in</button>
+</form>
+{{if .Error}}<p class="err" id="err" role="alert">That token is not right. Try again.</p>{{end}}
+</main>
+</body>
+</html>
