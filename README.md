@@ -714,7 +714,8 @@ together; every tile was fetched at 480 px, about 43 kB each.
   private chat (see the bot's README). The bot stores each with a `created`
   date, and the gallery shows it at that date instead of at the top. An
   imported picture belongs to the private chat it was forwarded in, expires
-  like any other record, and appears twice if the bot also has an ordinary
+  like any other record, is labelled with the bot's default command whatever
+  model made it, and appears twice if the bot also has an ordinary
   record of the same picture under a different Telegram file id.
 - With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](#reverse-proxy).
 - Responses that Go's HTTP server writes itself for malformed requests carry

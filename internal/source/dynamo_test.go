@@ -136,6 +136,16 @@ func TestDecodeItemEdgeCases(t *testing.T) {
 	if err != nil || r.ID != "111:fAQADabc_-9" || r.Created != 1700000000 || r.TTL != 1800000000 {
 		t.Errorf("imported item = %+v, %v", r, err)
 	}
+	// created is only a hint: a value of the wrong kind is ignored and the item is kept.
+	for name, bad := range map[string]types.AttributeValue{
+		"string": s("yesterday"), "null": null, "fraction": &types.AttributeValueMemberN{Value: "1700000000.5"},
+		"bool": &types.AttributeValueMemberBOOL{Value: true},
+	} {
+		r, err := decodeItem(map[string]types.AttributeValue{"id": s("111:fX"), "ttl": &types.AttributeValueMemberN{Value: "1800000000"}, "created": bad})
+		if err != nil || r.Created != 0 || r.TTL != 1800000000 {
+			t.Errorf("created as %s: %+v, %v", name, r, err)
+		}
+	}
 	if r, err := decodeItem(map[string]types.AttributeValue{"id": s("1:2"), "images": null}); err != nil || r.Images != nil {
 		t.Errorf("NULL images = %+v, %v", r, err)
 	}

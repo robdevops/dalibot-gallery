@@ -156,10 +156,19 @@ test('the strip shows the neighbouring images in gallery order, whatever their p
   expect(await stripKeys()).toEqual(keys.slice(i - 2, i + 7))
   await expect(strip().nth(4)).toHaveAttribute('aria-current', 'true')
 
-  // The arrow keys move the strip too.
+  // The keyboard focus stays in the strip, on the image now showing, although the strip was rebuilt.
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-current'))).toBe('true')
+
+  // The arrow keys move the strip too. With Alt held they are left to the browser (Back and Forward).
   await page.keyboard.press('ArrowLeft')
   await loaded(page, keys[i + 1])
   expect(await stripKeys()).toEqual(keys.slice(i - 3, i + 6))
+  expect(await page.evaluate(() => {
+    const e = new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, cancelable: true })
+    document.activeElement.dispatchEvent(e)
+    return e.defaultPrevented
+  })).toBe(false)
+  expect(await fullKey(page)).toBe(keys[i + 1])
 
   // Close: focus lands on the tile that was showing.
   await page.keyboard.press('Escape')
@@ -171,6 +180,50 @@ test('the strip shows the neighbouring images in gallery order, whatever their p
   await loaded(page, keys[0])
   expect(await stripKeys()).toEqual(keys.slice(0, 5))
   await expect(strip().nth(0)).toHaveAttribute('aria-current', 'true')
+})
+
+test('on a narrow screen the strip is scrolled so the open image is in view', async ({ browser, baseURL }) => {
+  // A landscape phone: the strip is wider than the viewer, so it has to scroll.
+  const context = await browser.newContext({ baseURL, viewport: { width: 740, height: 360 } })
+  const page = await context.newPage()
+  try {
+    await page.goto('/')
+    await page.waitForSelector('#grid .tile')
+    const keys = await domKeys(page)
+    await page.locator(`.tile[data-key="${keys[12]}"] a`).evaluate(a => a.click())
+    await loaded(page, keys[12])
+    const box = await page.locator('#strip').boundingBox()
+    const current = await page.locator('#strip [aria-current]').boundingBox()
+    expect(await page.locator('#strip').evaluate(s => s.scrollWidth > s.clientWidth)).toBe(true)
+    expect(current.x).toBeGreaterThanOrEqual(box.x - 1)
+    expect(current.x + current.width).toBeLessThanOrEqual(box.x + box.width + 1)
+    // It is in the middle, give or take a thumbnail, so neighbours show on both sides.
+    const middle = box.x + box.width / 2
+    expect(Math.abs(current.x + current.width / 2 - middle)).toBeLessThan(60)
+  } finally {
+    await context.close()
+  }
+})
+
+test('a large image that fails to load shows its description and is retried next time', async ({ page, watched }) => {
+  const keys = await domKeys(page)
+  let fail = true
+  await page.route(`**/img/${keys[5]}.jpg`, route => (fail ? route.abort() : route.continue()))
+  await page.locator(`.tile[data-key="${keys[5]}"] a`).evaluate(a => a.click())
+  await expect(dialog(page)).toBeVisible()
+  // Not left hidden: the alt text can show.
+  await expect.poll(() => page.locator('#full').evaluate(i => getComputedStyle(i).visibility)).toBe('visible')
+  await page.keyboard.press('Escape')
+  await expect(dialog(page)).toBeHidden()
+  // Opening the same tile again tries again.
+  fail = false
+  await page.locator(`.tile[data-key="${keys[5]}"] a`).evaluate(a => a.click())
+  await loaded(page, keys[5])
+  await expect.poll(() => page.locator('#full').evaluate(i => getComputedStyle(i).visibility)).toBe('visible')
+  // The only problems are the ones this test caused by failing that request.
+  const mine = watched.problems.filter(p => /ERR_FAILED/.test(p))
+  expect(mine.length).toBe(2)
+  watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/ERR_FAILED/.test(p)))
 })
 
 test('a click on the backdrop closes; a click on the image does not', async ({ page }) => {

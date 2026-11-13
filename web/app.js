@@ -8,9 +8,9 @@ const el = (tag, cls) => {
 }
 const grid = $('grid'), end = $('end'), pill = $('pill'), dlg = $('lb'), full = $('full'), strip = $('strip')
 const SIZES = '(min-width:1600px) 17vw, (min-width:1200px) 20vw, (min-width:768px) 25vw, (min-width:480px) 34vw, 50vw'
-const PER = 60 // tiles per batch: divisible by every column count (2 to 6)
+const PER = 60 // tiles per batch: divisible by 2 to 6 columns
 const LINK = /^#\/p\/([\w-]{22})$/
-const data = new Map() // key -> tile, for every rendered tile
+const data = new Map() // key -> tile
 const cols = +getComputedStyle(grid).getPropertyValue('--cols') || 2
 let v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
 
@@ -25,7 +25,7 @@ async function get(url) {
   return r.json()
 }
 
-function tile(t, i) { // i: position on the page for the first row, else -1
+function tile(t, i) { // i: place in the first row, else -1
   const li = el('li', 'tile'), a = el('a'), img = el('img')
   li.dataset.key = t.key
   a.href = '#/p/' + t.key
@@ -42,7 +42,7 @@ function tile(t, i) { // i: position on the page for the first row, else -1
   return li
 }
 
-// Append tiles: top up the last batch to PER, then add whole new batches in one fragment.
+// Append tiles: top up the last batch, then add whole batches.
 function place(lis) {
   const frag = document.createDocumentFragment()
   for (let i = 0; i < lis.length;) {
@@ -65,13 +65,13 @@ function add(tiles, top) {
     lis.push(tile(t, !top && data.size < cols ? data.size : -1))
     data.set(t.key, t)
   }
-  if (top) { // new tiles go first; re-batch so every batch is full again
+  if (top) { // new tiles go first; re-batch
     lis.push(...grid.querySelectorAll('.tile'))
     grid.replaceChildren()
     tail = null
   }
   place(lis)
-  if (dlg.open && data.has(cur)) show(cur) // its tile or more neighbours arrived
+  if (dlg.open && data.has(cur)) show(cur) // its tile or neighbours arrived
   return lis.length
 }
 
@@ -87,10 +87,10 @@ async function more() {
     done = !next
     if (!first) say('Loaded ' + n + ' more images')
     io.unobserve(end)
-    if (!done) io.observe(end) // still in view on a tall screen: fires again
+    if (!done) io.observe(end) // still in view: fires again
     else if (!data.size) end.textContent = 'No images yet'
     else end.hidden = true
-    // A deep link to an image further down: keep loading until its tile is here.
+    // A deep link further down: keep loading.
     if (cur && !data.has(cur) && seek++ < 20) setTimeout(more)
   } catch {
     say('Could not load images')
@@ -102,7 +102,7 @@ async function more() {
 const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) more() },
   { rootMargin: '0px 0px 1500px 0px' })
 
-// "N new": poll only while the page is visible; nothing is inserted until the click.
+// "N new": poll while visible; insert only on click.
 async function poll() {
   if (!v) return
   try {
@@ -144,13 +144,13 @@ function show(key) {
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
   $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
-  // Strip: its neighbours in gallery order; fetch more before they run out.
-  const all = keys(), i = all.indexOf(key)
+  // Strip: neighbours in gallery order.
+  const all = keys(), i = all.indexOf(key), f = strip.contains(document.activeElement)
   if (i > all.length - 6) more()
   strip.replaceChildren(...(i < 0 ? [] : all.slice(Math.max(0, i - 4), i + 5)).map(k => {
     const s = data.get(k), li = el('li'), b = el('button'), img = el('img')
     b.type = 'button'
-    b.title = img.alt = s.caption || s.prompt
+    b.title = img.alt = s.caption || s.prompt || s.label
     if (k == key) b.setAttribute('aria-current', 'true')
     b.onclick = () => go(k)
     img.width = img.height = 56
@@ -160,6 +160,11 @@ function show(key) {
     return li
   }))
   if (!dlg.open) dlg.showModal()
+  const c = strip.querySelector('[aria-current]')
+  if (c) {
+    strip.scrollLeft = c.offsetLeft - strip.clientWidth / 2 + 28 // centre it
+    if (f) c.focus() // it was in the old strip
+  }
 }
 function go(key) {
   history.replaceState(null, '', '#/p/' + key)
@@ -176,7 +181,7 @@ function route() {
   else if (dlg.open) dlg.close()
 }
 dlg.addEventListener('close', () => {
-  if (dlg.open) return // reopened before this event ran (a quick Back then Forward)
+  if (dlg.open) return // reopened already (Back then Forward)
   if (LINK.test(location.hash)) {
     if (pushed) history.back()
     else history.replaceState(null, '', location.pathname + location.search)
@@ -188,15 +193,16 @@ dlg.addEventListener('close', () => {
 })
 dlg.addEventListener('click', e => { if (e.target == dlg) dlg.close() })
 addEventListener('keydown', e => {
-  const d = dlg.open && { ArrowLeft: -1, ArrowRight: 1 }[e.key]
+  const d = dlg.open && !e.altKey && !e.metaKey && !e.ctrlKey && { ArrowLeft: -1, ArrowRight: 1 }[e.key]
   if (d) {
     e.preventDefault()
     step(d)
   }
 })
 full.onload = () => (full.className = '')
-full.onerror = () => { // a deep link to an image that is gone
-  if (dlg.open && !data.has(cur)) {
+full.onerror = () => {
+  full.dataset.key = full.className = '' // retry next time
+  if (dlg.open && !data.has(cur)) { // a dead deep link
     dlg.close()
     say('Image not found')
   }

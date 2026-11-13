@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -79,7 +80,6 @@ type item struct {
 	Command string               `dynamodbav:"command"`
 	Current string               `dynamodbav:"current"`
 	TTL     int64                `dynamodbav:"ttl"`
-	Created int64                `dynamodbav:"created"`
 	Images  map[string]itemImage `dynamodbav:"images"`
 }
 
@@ -118,6 +118,20 @@ func (d *Dynamo) Records(ctx context.Context) ([]Record, error) {
 	return records, nil
 }
 
+// createdOf reads the optional "created" attribute. It is only a hint for ordering, so a
+// value that is missing or not a whole number counts as absent instead of spoiling the item.
+func createdOf(av map[string]types.AttributeValue) int64 {
+	n, ok := av["created"].(*types.AttributeValueMemberN)
+	if !ok {
+		return 0
+	}
+	v, err := strconv.ParseInt(n.Value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 func decodeItem(av map[string]types.AttributeValue) (Record, error) {
 	var it item
 	if err := attributevalue.UnmarshalMap(av, &it); err != nil {
@@ -126,7 +140,7 @@ func decodeItem(av map[string]types.AttributeValue) (Record, error) {
 	if it.ID == "" {
 		return Record{}, fmt.Errorf("item has no id")
 	}
-	r := Record{ID: it.ID, Prompt: it.Prompt, Command: it.Command, Current: it.Current, TTL: it.TTL, Created: it.Created}
+	r := Record{ID: it.ID, Prompt: it.Prompt, Command: it.Command, Current: it.Current, TTL: it.TTL, Created: createdOf(av)}
 	if len(it.Images) > 0 {
 		r.Images = make(map[string]RawImage, len(it.Images))
 		for k, img := range it.Images {

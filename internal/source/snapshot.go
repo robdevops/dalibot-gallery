@@ -186,7 +186,7 @@ func Build(records []Record, opt Options) *Snapshot {
 		}
 		seenID[r.ID] = true
 		updated := r.TTL - span
-		if r.Created > 0 { // an imported picture keeps its real date instead of the import's
+		if r.Created > 0 && r.Created <= nowUnix { // an imported picture keeps its real date; a date in the future is not believed
 			updated = r.Created
 		}
 		kept = append(kept, rec{r, updated})

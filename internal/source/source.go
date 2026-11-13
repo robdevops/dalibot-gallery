@@ -25,7 +25,7 @@ const KeyLen = 22
 
 // Record is one item of the bot's store, as stored.
 type Record struct {
-	ID      string // "<chat_id>:<message_id>"
+	ID      string // "<chat_id>:<message_id>"; "<chat_id>:f<file_unique_id>" for an imported picture
 	Prompt  string // the user's original prompt
 	Command string // the command used; may be empty in a malformed item
 	Current string // style key shown in Telegram; may name a missing image

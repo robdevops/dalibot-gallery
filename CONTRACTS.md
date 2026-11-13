@@ -103,9 +103,10 @@ func Less(a, b string) bool      // table order, then unknown keys alphabeticall
 
 ```go
 type Record struct {                  // one stored item, raw
-	ID      string                    // "<chat_id>:<message_id>"
+	ID      string                    // "<chat_id>:<message_id>", or "<chat_id>:f<file_unique_id>" for an imported picture
 	Prompt, Command, Current string
 	TTL     int64                     // epoch seconds; 0 if missing
+	Created int64                     // epoch seconds for an imported picture (the "created" attribute); else 0
 	Images  map[string]RawImage       // style key -> image
 }
 type RawImage struct{ FileID, Caption string }
@@ -466,7 +467,7 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
 - `tiles`: always an array (`[]` when empty, never `null`), newest first; each element is `json.Marshal(source.Tile)`.
   - `key`: unique per tile; the DOM de-duplication id and the deep link `#/p/<key>`.
   - `current`: a **string**, the style key of the record's current image. The tile is the record's current image when `tile.style === tile.current`.
-  - `styles`: every image of the tile's record, the tile's own included (find it by `key`), current style first. The lightbox strip no longer shows `styles`: it shows the four tiles either side of the open one, in gallery order; each entry's 240 px thumbnail is `/img/<styles[i].key>-240.webp?v=<v>` and its full image `/img/<styles[i].key>.jpg`.
+  - `styles`: every image of the tile's record, the tile's own included (find it by `key`), current style first. Each entry's 240 px thumbnail is `/img/<styles[i].key>-240.webp?v=<v>` and its full image `/img/<styles[i].key>.jpg`. The lightbox strip does not use `styles`: it shows the four tiles either side of the open one, in gallery order.
   - `updated`: epoch seconds. `caption` may be `""`: alt text is `caption || prompt`.
 - `next`: string cursor for the following page, or `null` at the end. **A page may hold fewer (or, rarely, more) tiles than `limit`**, because pages hold whole records; keep loading until `next` is `null`.
 - `newest`: cursor of the newest tile in the listing at the time of the response, or `null` if the listing is empty. The page keeps the `newest` of its **first** (cursor-less) response as its `since`.

@@ -122,12 +122,28 @@ func TestDynamoReaderAgainstMoto(t *testing.T) {
 		}
 	}
 
+	// A picture the bot imported from a forwarded message: a "created" date and an id named after the file.
+	imported := map[string]types.AttributeValue{
+		"id": s("777:fAQADmoto_-1"), "prompt": s("an old picture"), "command": s("dream"), "current": s("_"),
+		"ttl": n(f.Now + 90*86400), "created": n(f.Now - 500*86400),
+		"images": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"_": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+				"file_id": s("moto-imported"), "caption": s("an old picture"), "base": &types.AttributeValueMemberNULL{Value: true}}},
+		}},
+	}
+	if _, err := client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(table), Item: imported}); err != nil {
+		t.Fatalf("seeding moto: %v", err)
+	}
+
 	records, err := reader.Records(ctx)
 	if err != nil {
 		t.Fatalf("scan with the projection failed (reserved words must use placeholders): %v", err)
 	}
-	if len(records) != 16+extra {
-		t.Fatalf("read %d records, want %d", len(records), 16+extra)
+	if len(records) != 17+extra {
+		t.Fatalf("read %d records, want %d", len(records), 17+extra)
+	}
+	if got, ok := recordByID(records, "777:fAQADmoto_-1"); !ok || got.Created != f.Now-500*86400 || got.TTL != f.Now+90*86400 {
+		t.Errorf("imported record: %+v (found %v)", got, ok)
 	}
 	// Same result as the fake-backed decode, record for record.
 	_, want := fixtureRecords(t)
@@ -145,11 +161,11 @@ func TestDynamoReaderAgainstMoto(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap := st.Snapshot()
-	if snap.Len() != 19+extra {
-		t.Fatalf("%d tiles, want %d", snap.Len(), 19+extra)
+	if snap.Len() != 20+extra {
+		t.Fatalf("%d tiles, want %d", snap.Len(), 20+extra)
 	}
 	all := pageAll(t, snap, "", 60)
-	if len(all) != snap.Len() || all[0].ID != group+":101" || all[len(all)-1].ID != fmt.Sprintf("-1009000000001:%d", 1000+extra-1) {
+	if len(all) != snap.Len() || all[0].ID != group+":101" || all[len(all)-1].ID != "777:fAQADmoto_-1" { // the imported picture is the oldest, by its created date
 		t.Errorf("paged %d tiles, first %s, last %s", len(all), all[0].ID, all[len(all)-1].ID)
 	}
 
@@ -159,8 +175,8 @@ func TestDynamoReaderAgainstMoto(t *testing.T) {
 	if err := st.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := st.Snapshot().Len(); got != extra/3 {
-		t.Errorf("chat 777: %d tiles, want %d", got, extra/3)
+	if got := st.Snapshot().Len(); got != extra/3+1 { // the extra items of that chat, and the imported one
+		t.Errorf("chat 777: %d tiles, want %d", got, extra/3+1)
 	}
 
 	// A missing table is an error, and a Store keeps its snapshot through it.

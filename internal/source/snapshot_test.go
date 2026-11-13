@@ -275,17 +275,39 @@ func TestImportedRecordsKeepTheirDate(t *testing.T) {
 		{ID: "-100:7", TTL: now + span - 3600, Images: img("hour")},                     // drawn an hour ago
 		{ID: "111:fMID", TTL: now + span, Created: now - 60, Images: img("minute")},     // imported, made a minute ago
 		{ID: "111:fGONE", TTL: now - 1, Created: now - 10, Images: img("gone")},         // imported, but expired
+		{ID: "111:fMS", TTL: now + span - 7200, Created: now * 1000, Images: img("ms")}, // a date in the future is not believed
 	}
-	tiles := Build(recs, opt).Newest(10)
+	snap := Build(recs, opt)
+	tiles := snap.Newest(10)
 	var got []string
 	for _, tile := range tiles {
 		got = append(got, tile.ID)
 	}
-	if want := []string{"111:fMID", "-100:7", "111:fOLD"}; !reflect.DeepEqual(got, want) {
+	want := []string{"111:fMID", "-100:7", "111:fMS", "111:fOLD"}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
-	if tiles[2].Updated != now-400*86400 || tiles[1].Updated != now-3600 {
-		t.Errorf("updated = %d and %d", tiles[2].Updated, tiles[1].Updated)
+	if tiles[3].Updated != now-400*86400 || tiles[1].Updated != now-3600 || tiles[2].Updated != now-7200 {
+		t.Errorf("updated = %d, %d and %d", tiles[3].Updated, tiles[1].Updated, tiles[2].Updated)
+	}
+	// Paging one tile at a time visits them in the same order, with cursors that hold such ids.
+	var paged []string
+	cursor := ""
+	for {
+		page, next, err := snap.Page(cursor, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tile := range page {
+			paged = append(paged, tile.ID)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(paged, want) {
+		t.Errorf("paged order = %v, want %v", paged, want)
 	}
 }
 
