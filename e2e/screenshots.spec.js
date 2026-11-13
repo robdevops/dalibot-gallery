@@ -29,7 +29,7 @@ const ORDER = [4, 6, 7, 8, 5, 3, 2, 1].map(n => `telegram-0${n}.jpg`)
 // The picture the viewer screenshot opens, with the caption it had in the chat. (The dev stack's
 // captions are made up and have nothing to do with the pictures.)
 const VIEWER = 'telegram-06.jpg'
-const VIEWER_CAPTION = 'as a pixel art video game sprite, in a retro video game style, from a high angle, with a focus on one detail'
+const VIEWER_CAPTION = 'as a pixel art video game sprite, in a retro video game style, from a high angle'
 const sha = buf => crypto.createHash('sha256').update(buf).digest('hex')
 const samples = path.join(__dirname, '..', 'testdata', 'telegram')
 const fileOf = new Map(fs.readdirSync(samples).map(f => [sha(fs.readFileSync(path.join(samples, f))), f]))
