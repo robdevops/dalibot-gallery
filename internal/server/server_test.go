@@ -342,6 +342,24 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
+// Both pages carry the short description that link previews show. The login
+// page has it too, because a preview fetcher is not signed in.
+func TestLinkPreviewText(t *testing.T) {
+	e := newEnv(t, records(3), nil)
+	for target, opts := range map[string][]reqOpt{"/": {basic}, "/login": nil} {
+		_, body := e.get(target, opts...)
+		for _, want := range []string{
+			`<meta name="description" content="Gallery for dalibot AI images">`,
+			`<meta property="og:title" content="Gallery">`,
+			`<meta property="og:description" content="Gallery for dalibot AI images">`,
+		} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("%s: missing %s", target, want)
+			}
+		}
+	}
+}
+
 func TestLoginCookie(t *testing.T) {
 	e := newEnv(t, records(5), nil)
 	post := func(token string, opts ...reqOpt) (*http.Response, []byte) {
