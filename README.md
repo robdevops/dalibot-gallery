@@ -98,14 +98,20 @@ These are the ones to look at before the first start:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GALLERY_TOKEN` | (required) | The shared access token, at least 16 characters. Not needed only with `GALLERY_AUTH=off`. |
+| `GALLERY_TOKEN` | (required) | The shared access token, at least 16 characters. Not needed only with `GALLERY_AUTH=off` (see note below). |
 | `TELEGRAM_BOT_TOKEN` | (required) | The bot's token. Used only for `getFile` and the file download. |
-| AWS credentials | standard chain | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on. |
+| AWS credentials | standard chain | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on (see [docs/aws-access.md](docs/aws-access.md)). |
 | `AWS_REGION` | `ap-southeast-1` | Falls back to `AWS_DEFAULT_REGION`. |
-| `DALIBOT_TABLE` | `dalibot` | The bot's table. |
+| `DALIBOT_TABLE` | `dalibot` | The bot's AWS DynamoDB table. |
 | `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. |
 | `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
 | `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [docs/reverse-proxy.md](docs/reverse-proxy.md). |
+
+Note on `GALLERY_AUTH=off`: it turns the gallery's own login off, so anything
+that can reach the gallery's port sees every image. It is meant for a
+reverse proxy that does its own sign-in in front. Without `GALLERY_TOKEN` the
+gallery refuses to start unless this is set, so that it is never left open
+by accident. It is described in [docs/configuration.md](docs/configuration.md).
 
 The rest have defaults that suit most installations: turning the login off,
 which chats to show, the refresh interval, cache size, thumbnail quality and
@@ -147,7 +153,7 @@ of HTTP Basic auth with any user name.
 1. Encode `nginx:` followed by the token:
 
    ```sh
-   printf 'nginx:%s' 'YOUR_GALLERY_TOKEN' | base64 -w0
+   printf 'nginx:%s' 'YOUR_GALLERY_TOKEN' | openssl base64 -A
    ```
 
 2. Put the result in a file only root can read, for example
