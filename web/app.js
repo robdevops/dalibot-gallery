@@ -234,29 +234,58 @@ dlg.ontouchmove = e => {
     slide(dx + 'px')
   }
 }
+// Slide the image away towards the side d points from and bring in the one d
+// places on, which waits on the other side until it has loaded. Returns false
+// when there is no such image, or a slide is already under way.
+function fling(d) {
+  const k = near(d), c = cur
+  if (sliding || !k) return false
+  sliding = 1
+  full.style.transition = ''
+  slide(-d * 100 + '%')
+  setTimeout(() => {
+    sliding = 0
+    if (cur != c) return slide() // something else moved on meanwhile
+    full.style.transition = 'none'
+    slide(d * 100 + '%')
+    go(k)
+  }, still() ? 0 : 180)
+  return true
+}
 function release(e) {
   if (sliding) return
   const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
-  const d = !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
-  const k = d && near(d), c = cur
+  const d = e.type == 'touchend' && !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
   sx = NaN
   full.style.transition = ''
-  if (e.type == 'touchend' && k) {
-    sliding = 1
-    slide(-d * 100 + '%')
-    setTimeout(() => {
-      sliding = 0
-      if (cur != c) return slide() // moved on meanwhile
-      full.style.transition = 'none'
-      slide(d * 100 + '%')
-      go(k)
-    }, still() ? 0 : 180)
-  } else {
+  if (!d || !fling(d)) {
     full.className || slide() // spring back, unless it is waiting to one side
-    if (e.type == 'touchend' && d) step(d)
+    if (d) step(d) // past the last loaded image: load more
   }
 }
 dlg.ontouchend = dlg.ontouchcancel = release
+
+// A two-finger sideways swipe on a touchpad arrives as wheel events with a
+// horizontal delta (a pinch arrives with ctrlKey set, and phones send touch
+// events instead, so neither is affected). One swipe moves one image: after a
+// move, the momentum that keeps arriving is ignored until it pauses or a new
+// swipe makes the delta jump up again.
+let wx = 0, wlast = 0, wtime = 0, wdone = 0
+dlg.addEventListener('wheel', e => {
+  const x = Math.abs(e.deltaX)
+  if (e.ctrlKey || x <= Math.abs(e.deltaY) || !full.parentNode.contains(e.target)) return
+  e.preventDefault() // not a scroll, and not the browser's swipe for Back
+  if (e.timeStamp - wtime > 200 || x > wlast * 2 + 8) wdone = wx = 0 // a pause, or a new swipe
+  wtime = e.timeStamp
+  wlast = x
+  if (wdone) return
+  wx += e.deltaX
+  if (Math.abs(wx) > 60) {
+    wdone = 1
+    const d = wx > 0 ? 1 : -1
+    fling(d) || step(d)
+  }
+}, { passive: false })
 function settle() {
   full.className = ''
   if (full.style.transform) {

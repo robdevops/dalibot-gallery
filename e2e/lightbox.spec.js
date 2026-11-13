@@ -292,6 +292,71 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   expect(await shown()).toEqual(overlays.map(() => true))
 })
 
+test('a two-finger sideways swipe on a touchpad moves one image per swipe', async ({ page }) => {
+  const keys = await domKeys(page)
+  await page.locator(`.tile[data-key="${keys[10]}"] a`).click()
+  await loaded(page, keys[10])
+  const box = await page.locator('#full').boundingBox()
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  // A swipe as a touchpad reports it: wheel events that build up, then momentum that dies away.
+  const swipe = async sign => {
+    for (const dx of [4, 12, 30, 45, 40, 30, 22, 16, 11, 8, 5, 3, 2, 1, 1]) {
+      await page.mouse.wheel(sign * dx, 0)
+      await page.waitForTimeout(16)
+    }
+  }
+  const settledAt = async key => {
+    await loaded(page, key)
+    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(0)
+    await page.waitForTimeout(250) // the swipe's momentum has ended
+    expect(await fullKey(page)).toBe(key)
+  }
+
+  await swipe(1) // fingers to the left: the next image, and only one
+  await settledAt(keys[11])
+  await swipe(1)
+  await settledAt(keys[12])
+  await swipe(-1) // fingers to the right: the previous image
+  await settledAt(keys[11])
+
+  // Two swipes in quick succession, the second starting before the first one's momentum has ended.
+  for (const dx of [4, 12, 30, 45, 40, 30, 22, 16, 11, 8]) {
+    await page.mouse.wheel(dx, 0)
+    await page.waitForTimeout(16)
+  }
+  await loaded(page, keys[12])
+  await page.waitForTimeout(250)
+  await page.mouse.wheel(8, 0) // momentum still trickling in
+  await swipe(1)
+  await settledAt(keys[13])
+
+  // Left alone: vertical scrolling, a pinch (wheel with Ctrl), and a slow drift that never adds up to a swipe.
+  await page.mouse.wheel(0, 300)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(120, 0)
+  await page.keyboard.up('Control')
+  await page.mouse.wheel(20, 0)
+  await page.waitForTimeout(400)
+  expect(await fullKey(page)).toBe(keys[13])
+
+  // Over the strip a sideways swipe scrolls the strip and does not change the image.
+  const strip = await page.locator('#strip').boundingBox()
+  await page.mouse.move(strip.x + strip.width / 2, strip.y + strip.height / 2)
+  const before = await page.locator('#strip').evaluate(st => st.scrollLeft)
+  await swipe(1)
+  await page.waitForTimeout(400)
+  expect(await fullKey(page)).toBe(keys[13])
+  expect(await page.locator('#strip').evaluate(st => st.scrollLeft)).toBeGreaterThan(before)
+
+  // At the first image a swipe to the right does nothing and leaves the image in place.
+  await page.keyboard.press('Escape')
+  await page.locator(`.tile[data-key="${keys[0]}"] a`).click()
+  await loaded(page, keys[0])
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await swipe(-1)
+  await settledAt(keys[0])
+})
+
 test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
   const keys = await domKeys(page)
   const opener = page.locator(`.tile[data-key="${keys[1]}"] a`)
