@@ -129,21 +129,10 @@ holds it:
 
 - The JSON listing has no `id` field for anyone but an admin.
 - Cursors (`next`, `newest`, the `since` parameter, the "Load more" link of
-  the page without JavaScript) name a place in the listing, and that place
-  includes the record id. The server therefore encrypts every cursor before
-  sending it (AES-256-GCM, keys derived from the Telegram bot token, which
-  never leaves the server except towards Telegram) and accepts only cursors
-  it sealed itself. Hiding the id is one reason; the other is that a visitor
-  who could make a cursor could find an id by bisection, asking for the page
-  after "this tile's date, a guessed id" and watching whether the tile is on
-  it. A keyed hash of the id was the alternative, but positions are ordered
-  by the id itself, so paging could then no longer find the place of a
-  record that has left the listing. The seal is deterministic: the same
-  place always gives the same cursor, and cursors stay valid across restarts.
-  The text is padded to a fixed size before it is encrypted, so every cursor
-  has the same length and the length does not show how long the id is (which
-  would tell a group chat from a private one). Cursors are sealed in every mode, so a copied "Load more" link never
-  carries a chat id either.
+  the page without JavaScript) hold a tile's date, its place within its
+  record, and the image key of the record's original picture. All three are
+  public already; no cursor holds a record id or chat id, and none is read
+  from one.
 - Deep links (`#/p/<key>`), image URLs and ETags hold only the image key, a
   hash of the Telegram file id.
 - Records with the same date to the second are listed in the order of their

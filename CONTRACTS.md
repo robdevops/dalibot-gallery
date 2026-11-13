@@ -141,7 +141,7 @@ type Tile struct {                    // JSON field names are the lower-case nam
 	Styles  []Image `json:"styles"`   // every image of the record, this tile's included, in display order; never empty
 }
 func (t Tile) Alt() string            // caption, or the prompt when the caption is blank
-func (t Tile) Cursor() string         // cursor naming this tile's sort position; holds the record id, so the server seals it (7.3)
+func (t Tile) Cursor() string         // cursor naming this tile's sort position; holds no record id
 func WithoutIDs(tiles []Tile) []Tile  // copies without the record id, for encoding only (a copy's Cursor is wrong)
 
 type Options struct {
@@ -500,7 +500,7 @@ Image routes:
 
 All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`, `Vary: Accept-Encoding`, gzip when the request allows it. Errors are `{"error":"<short message>"}` with status `400` (bad `limit`, `cursor` or `since`), `401`, `404`, `405` or `429`. No response ever contains a file_id, a token, a Telegram URL or a file_path, and no response to a non-admin visitor of a public gallery contains a record id or a chat id.
 
-**Cursors on the wire are sealed.** Every cursor the server sends (`next`, `newest`, the `?cursor=` of the "Load more" link) is `cursorBox.seal(<cursor of internal/source>)`, and every cursor it receives (`cursor`, `since`, `?cursor=`) goes through `cursorBox.open` first; one that does not open is `400`, exactly like a malformed one. This holds in every mode. The seal is base64url without padding of `nonce || AES-256-GCM(key, nonce, pad(cursor), aad = "dalibot-gallery cursor v1")`, where `pad` appends zero bytes up to the next multiple of 128 bytes (every real cursor fits in 128, so all sealed cursors have the same length, 208 characters, and their length says nothing about the record id; `open` strips the zero bytes), where `key = HMAC-SHA256(TELEGRAM_BOT_TOKEN, "dalibot-gallery cursor encryption v1")` and `nonce` is the first 12 bytes of `HMAC-SHA256(HMAC-SHA256(TELEGRAM_BOT_TOKEN, "dalibot-gallery cursor nonce v1"), cursor)`. It is deterministic (one position, one cursor) and stable across restarts. An empty cursor stays empty. Clients treat cursors as opaque strings and pass them back unchanged; the page reloads itself when the API answers `400` to a cursor it holds (a page from before an upgrade, or after a change of bot token), but never within its first 5 seconds, so it cannot reload in a loop; tests that need one for a known position use the server's `cursors.seal`. Why: the unsealed cursor holds the record id, and a visitor able to make cursors could find an id by bisection (see `internal/server/cursor.go`).
+**Cursors hold no record id.** A cursor is base64url of the tile's date, its place within its record and the image key of the record's original picture.
 
 **`GET /api/tiles`**
 
@@ -526,8 +526,8 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
       ]
     }
   ],
-  "next": "3q2-7w…(a sealed cursor, 208 characters)",
-  "newest": "9J8hZk…(a sealed cursor)",
+  "next": "3q2-7w…(a cursor)",
+  "newest": "9J8hZk…(a cursor)",
   "v": "1"
 }
 ```
@@ -617,7 +617,7 @@ var Files embed.FS
 type indexData struct {
 	V     string       // imaging.Tag()
 	Tiles []indexTile  // one page (limit 60) starting at ?cursor=, or at the newest tile
-	Next  string       // sealed cursor of the next page, "" at the end
+	Next  string       // cursor of the next page, "" at the end
 	Admin      bool    // the visitor has admin access: rendered as <html lang="en" data-admin="1">
 	AdminLogin bool    // an admin token is configured and the visitor is not an admin: a link to /login in the footer
 	SignOut    bool    // the visitor has a session cookie: a POST /logout form in the footer

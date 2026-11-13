@@ -97,7 +97,6 @@ type Server struct {
 	tag                      string           // imaging.Tag()
 	viewSession              string           // the view session cookie's value; "" in public mode
 	adminSession             string           // the admin session cookie's value; "" without an admin token
-	cursors                  *cursorBox       // seals the cursors sent to browsers
 	limiter                  *loginLimiter
 	handler                  http.Handler
 
@@ -153,9 +152,6 @@ func New(d Deps) (*Server, error) {
 		s.adminSession = adminSessionValue(d.Config.AdminToken)
 	}
 	var err error
-	if s.cursors, err = newCursorBox(d.Config.TelegramToken); err != nil {
-		return nil, fmt.Errorf("server: cursor keys: %w", err)
-	}
 	if s.index, err = template.ParseFS(d.Web, "index.html"); err != nil {
 		return nil, fmt.Errorf("server: index.html: %w", err)
 	}

@@ -435,7 +435,7 @@ it a directory of its own that is not wiped with the cache:
   set.
 
 **Pages open during the upgrade.** The cursors in the listing changed form
-(they are now sealed, see [docs/security.md](docs/security.md)). A gallery
+(their format changed). A gallery
 page that was open in a browser before the upgrade reloads itself the next
 time it loads more images or checks for new ones. The same happens after a
 change of `TELEGRAM_BOT_TOKEN`, from which the cursor keys are derived.

@@ -35,7 +35,8 @@ type Tile struct {
 	Current string  `json:"current"`      // style key of the record's current image; always one of Styles
 	Styles  []Image `json:"styles"`       // every image of the record, this one included, in display order
 
-	pos int // index of this image in Styles: the last part of the sort position
+	pos  int    // index of this image in Styles: the last part of the sort position
+	rank string // the record's place among records of the same date (see position)
 }
 
 // Alt is the image's alt text: its caption, falling back to the record's prompt.
@@ -59,11 +60,10 @@ func WithoutIDs(tiles []Tile) []Tile {
 	return out
 }
 
-// Cursor is the keyset cursor that names this tile's sort position. It is
-// opaque but not secret-safe: it holds the record id, so the server seals
-// it before it reaches a browser.
+// Cursor is the keyset cursor that names this tile's sort position. It holds
+// only public values (see position), so it can be sent to anyone.
 func (t Tile) Cursor() string {
-	return position{t.Updated, t.ID, t.pos}.encode()
+	return t.position().encode()
 }
 
 // Options are the listing rules.
@@ -92,10 +92,14 @@ func (o Options) now() time.Time {
 	return time.Now()
 }
 
-// position is a tile's place in the total order: updated desc, id desc, pos asc.
+// position is a tile's place in the total order: updated desc, rank desc, pos asc.
+// The rank stands in for the record id, which a cursor must not carry because it
+// contains the Telegram chat id: it is the key of the record's original image
+// (else its smallest image key), which is public (keys are in every image URL)
+// and says nothing about the chat.
 type position struct {
 	updated int64
-	id      string
+	rank    string
 	pos     int
 }
 
@@ -104,26 +108,30 @@ func (p position) before(q position) bool {
 	if p.updated != q.updated {
 		return p.updated > q.updated
 	}
-	if p.id != q.id {
-		return p.id > q.id
+	if p.rank != q.rank {
+		return p.rank > q.rank
 	}
 	return p.pos < q.pos
 }
 
-func (t *Tile) position() position { return position{t.Updated, t.ID, t.pos} }
+func (t *Tile) position() position { return position{t.Updated, t.rank, t.pos} }
 
-const cursorVersion = "1"
+// A cursor names a tile's sort position: base64url("2|<updated>|<pos>|<rank>").
+// The date and the rank are public and the position within the record is a
+// small number, so a cursor reveals nothing, and in particular not the record
+// id. Nor can a cursor made up by hand probe for ids: none is ever read from one.
+const cursorVersion = "2"
 
-// encode gives base64url("1|<updated>|<pos>|<id>").
 func (p position) encode() string {
-	raw := cursorVersion + "|" + strconv.FormatInt(p.updated, 10) + "|" + strconv.Itoa(p.pos) + "|" + p.id
+	raw := cursorVersion + "|" + strconv.FormatInt(p.updated, 10) + "|" + strconv.Itoa(p.pos) + "|" + p.rank
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
-// ErrBadCursor is returned for a cursor that was not produced by this package.
+// ErrBadCursor is returned for a cursor that was not produced by this package
+// (including the cursors of earlier versions of the gallery, which held the id).
 var ErrBadCursor = errors.New("source: malformed cursor")
 
-const maxCursorLen = 512
+const maxCursorLen = 128
 
 func decodeCursor(c string) (position, error) {
 	if c == "" || len(c) > maxCursorLen {
@@ -134,7 +142,7 @@ func decodeCursor(c string) (position, error) {
 		return position{}, ErrBadCursor
 	}
 	parts := strings.SplitN(string(raw), "|", 4)
-	if len(parts) != 4 || parts[0] != cursorVersion || parts[3] == "" {
+	if len(parts) != 4 || parts[0] != cursorVersion || !validKey(parts[3]) {
 		return position{}, ErrBadCursor
 	}
 	updated, err := strconv.ParseInt(parts[1], 10, 64)
@@ -146,6 +154,19 @@ func decodeCursor(c string) (position, error) {
 		return position{}, ErrBadCursor
 	}
 	return position{updated, parts[3], pos}, nil
+}
+
+// validKey reports whether k has the shape of a key (22 base64url characters).
+func validKey(k string) bool {
+	if len(k) != 22 {
+		return false
+	}
+	for _, c := range k {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // Snapshot is an immutable listing. All methods are safe for concurrent use.
@@ -170,7 +191,8 @@ var emptySnapshot = &Snapshot{byKey: map[string]int{}, fileIDs: map[string]strin
 //
 //   - drops the "check:check" probe, ids without a ':', chats outside the
 //     allowlist, records whose ttl is before now and records with no images;
-//   - orders records by (updated desc, id desc);
+//   - orders records by (updated desc, rank desc, id desc), where rank is the
+//     key of the record's original image (see position);
 //   - removes an image whose file_id already appeared in a newer record (or
 //     earlier in the same record), then drops records left with no images;
 //   - takes out the images Options.Hidden names (after the step above, so a
@@ -195,6 +217,7 @@ func Build(records []Record, opt Options) *Snapshot {
 	type rec struct {
 		Record
 		updated int64
+		rank    string
 	}
 	kept := make([]rec, 0, len(records))
 	seenID := make(map[string]bool, len(records))
@@ -220,11 +243,29 @@ func Build(records []Record, opt Options) *Snapshot {
 		if r.Created > 0 && r.Created <= nowUnix { // an imported picture keeps its real date; a date in the future is not believed
 			updated = r.Created
 		}
-		kept = append(kept, rec{r, updated})
+		// The key of the original image, which a record keeps when styles are added
+		// to it; for a record without one, its smallest image key.
+		rank := ""
+		if img := r.Images[styles.Base]; img.FileID != "" {
+			rank = Key(img.FileID)
+		} else {
+			for _, img := range r.Images {
+				if k := Key(img.FileID); img.FileID != "" && (rank == "" || k < rank) {
+					rank = k
+				}
+			}
+		}
+		if rank == "" { // no image at all
+			continue
+		}
+		kept = append(kept, rec{r, updated, rank})
 	}
 	sort.Slice(kept, func(i, j int) bool {
 		if kept[i].updated != kept[j].updated {
 			return kept[i].updated > kept[j].updated
+		}
+		if kept[i].rank != kept[j].rank {
+			return kept[i].rank > kept[j].rank
 		}
 		return kept[i].ID > kept[j].ID
 	})
@@ -298,7 +339,7 @@ func Build(records []Record, opt Options) *Snapshot {
 			s.tiles = append(s.tiles, Tile{
 				Key: img.Key, ID: r.ID, Style: img.Style, Label: img.Label, Caption: img.Caption,
 				Updated: r.updated, Prompt: r.Prompt, Command: command, Current: current,
-				Styles: images, pos: i,
+				Styles: images, pos: i, rank: r.rank,
 			})
 		}
 		s.records++

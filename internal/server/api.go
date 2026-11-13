@@ -43,10 +43,10 @@ func cursorOrNull(c string) *string {
 	return &c
 }
 
-// newestCursor is the sealed cursor of the snapshot's first tile, "" when it is empty.
+// newestCursor is the cursor of the snapshot's first tile, "" when it is empty.
 func (s *Server) newestCursor(snap *source.Snapshot) string {
 	if first := snap.Newest(1); len(first) > 0 {
-		return s.cursors.seal(first[0].Cursor())
+		return first[0].Cursor()
 	}
 	return ""
 }
@@ -76,35 +76,24 @@ func (s *Server) handleTiles(w http.ResponseWriter, r *http.Request, level acces
 		limit = min(n, MaxLimit)
 	}
 	snap := s.store.Snapshot()
-	cursor, ok := s.cursors.open(q.Get("cursor"))
-	if !ok {
-		s.jsonError(w, r, http.StatusBadRequest, "bad cursor")
-		return
-	}
-	tiles, next, err := snap.Page(cursor, limit)
+	tiles, next, err := snap.Page(q.Get("cursor"), limit)
 	if err != nil {
 		s.jsonError(w, r, http.StatusBadRequest, "bad cursor")
 		return
 	}
 	s.json(w, r, http.StatusOK, tilesResponse{
-		Tiles: s.tilesFor(level, tiles), Next: cursorOrNull(s.cursors.seal(next)), Newest: cursorOrNull(s.newestCursor(snap)), V: s.tag,
+		Tiles: s.tilesFor(level, tiles), Next: cursorOrNull(next), Newest: cursorOrNull(s.newestCursor(snap)), V: s.tag,
 	})
 }
 
 func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, level access) {
 	q := r.URL.Query()
 	snap := s.store.Snapshot()
-	since, ok := s.cursors.open(q.Get("since"))
-	if !ok {
-		s.jsonError(w, r, http.StatusBadRequest, "bad cursor")
-		return
-	}
-	count, newest, err := snap.NewSince(since)
+	count, newest, err := snap.NewSince(q.Get("since"))
 	if err != nil {
 		s.jsonError(w, r, http.StatusBadRequest, "bad cursor")
 		return
 	}
-	newest = s.cursors.seal(newest)
 	if q.Get("tiles") != "1" {
 		s.json(w, r, http.StatusOK, newResponse{Count: count, Newest: cursorOrNull(newest)})
 		return
@@ -139,18 +128,13 @@ type indexTile struct {
 // with a "Load more" link carrying ?cursor=.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, level access) {
 	snap := s.store.Snapshot()
-	cursor, ok := s.cursors.open(r.URL.Query().Get("cursor"))
-	if !ok {
-		plain(w, http.StatusBadRequest, "bad cursor\n")
-		return
-	}
-	tiles, next, err := snap.Page(cursor, DefaultLimit)
+	tiles, next, err := snap.Page(r.URL.Query().Get("cursor"), DefaultLimit)
 	if err != nil {
 		plain(w, http.StatusBadRequest, "bad cursor\n")
 		return
 	}
 	data := indexData{
-		V: s.tag, Next: s.cursors.seal(next), Tiles: make([]indexTile, 0, len(tiles)),
+		V: s.tag, Next: next, Tiles: make([]indexTile, 0, len(tiles)),
 		Admin:      level == accessAdmin,
 		AdminLogin: s.cfg.AdminEnabled() && level < accessAdmin,
 		SignOut:    s.cookieAccess(r) > accessNone,

@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestBuildFixture(t *testing.T) {
 		"42:10 _",
 		"42:9 bw", // its "_" moved to 42:10; current falls back to what is left
 		"-200:5 _",
-		"42:12 _", "42:11 _", // same updated: id descending
+		"42:11 _", "42:12 _", // same updated: by their smallest image key, descending
 		"42:13 ega", // the entry without a file_id is ignored
 	}
 	tiles, next, err := s.Page("", 1000)
@@ -405,16 +406,24 @@ func TestPagingRoundTrip(t *testing.T) {
 		if err != nil || p != tl.position() {
 			t.Errorf("cursor round trip: %+v != %+v (%v)", p, tl.position(), err)
 		}
+		// It holds public values only, not the record id.
+		raw, _ := base64.RawURLEncoding.DecodeString(c)
+		if strings.Contains(string(raw), tl.ID) {
+			t.Errorf("cursor %q holds %q", c, raw)
+		}
 	}
 }
 
 func TestBadCursors(t *testing.T) {
 	_, s := fixtureSnapshot(t)
 	enc := func(raw string) string { return base64.RawURLEncoding.EncodeToString([]byte(raw)) }
+	key := s.Newest(1)[0].Key
 	bad := []string{
-		"!!!", "====", enc("1|2|3"), enc("2|100|0|1:1"), enc("1|x|0|1:1"), enc("1|100|x|1:1"),
-		enc("1|100|-1|1:1"), enc("1|100|0|"), enc("1|99999999999999999999|0|1:1"), strings.Repeat("A", 600),
-		base64.StdEncoding.EncodeToString([]byte("1|100|0|1:1??>>")),
+		"!!!", "====", enc("2|100|0"), enc("2|x|0|" + key), enc("2|100|x|" + key), enc("2|100|-1|" + key),
+		enc("2|100|0|short"), enc("2|100|0|" + key + "x"), enc("2|100|0|" + key[:21] + "!"), enc("3|100|0|" + key),
+		enc("2|99999999999999999999|0|" + key),
+		enc("1|1799997500|7|42:7"), // a cursor of the earlier format, which held the record id
+		strings.Repeat("A", 600), base64.StdEncoding.EncodeToString([]byte("2|100|0|" + key + "??>>")),
 	}
 	for _, c := range bad {
 		if _, _, err := s.Page(c, 10); !errors.Is(err, ErrBadCursor) {
@@ -424,14 +433,18 @@ func TestBadCursors(t *testing.T) {
 			t.Errorf("NewSince(%q): err = %v", c, err)
 		}
 	}
-	// A well-formed cursor for a tile that no longer exists still works: it is a position.
-	if tiles, _, err := s.Page(enc("1|1799997500|7|42:7"), 2); err != nil || len(tiles) != 2 || tiles[0].ID != "42:8" {
-		t.Errorf("position cursor: %v %v", describe(tiles), err)
+	// A cursor for a tile that is no longer listed still works: it is a position.
+	all := s.Newest(1000)
+	mid := all[len(all)/2]
+	gone := enc("2|" + strconv.FormatInt(mid.Updated, 10) + "|0|" + mid.rank)
+	tiles, _, err := s.Page(gone, 1000)
+	if err != nil || len(tiles) == 0 {
+		t.Fatalf("position cursor: %v %v", describe(tiles), err)
 	}
-	// An id containing '|' survives.
-	p := position{5, "a|b:c|d", 3}
-	if q, err := decodeCursor(p.encode()); err != nil || q != p {
-		t.Errorf("round trip with '|': %+v %v", q, err)
+	for _, tl := range tiles {
+		if !mid.position().before(tl.position()) || tl.ID == mid.ID {
+			t.Errorf("position cursor returned %s, which is not after the cursor's record", tl.ID)
+		}
 	}
 }
 
@@ -531,12 +544,12 @@ func TestNoDuplicatesOrGapsWhenItemsAreAddedBetweenPages(t *testing.T) {
 	// The "N new" count for a client that holds the old top tile.
 	oldTop := before.Newest(1)[0]
 	n, newest, err := after.NewSince(oldTop.Cursor())
-	// 42:501 and 42:500, then the two that share the old top's second and have a greater id
-	// (ids compare as strings: "-200:6" > "-1001234567890:900" > "-1001234567890:101"); two tiles each.
+	// 42:500 and 42:501, then the two that share the old top's second and sort before it
+	// (records of the same second are ordered by the key of their original image); two tiles each.
 	if err != nil || n != 8 || newest != after.Newest(1)[0].Cursor() {
 		t.Errorf("NewSince = %d, %q, %v", n, newest, err)
 	}
-	if got := describe(after.Newest(n)); !reflect.DeepEqual(got, []string{"42:501 _", "42:501 monet", "42:500 _", "42:500 monet", "-200:6 _", "-200:6 monet", group + ":900 _", group + ":900 monet"}) {
+	if got := describe(after.Newest(n)); !reflect.DeepEqual(got, []string{"42:500 _", "42:500 monet", "42:501 _", "42:501 monet", group + ":900 _", group + ":900 monet", "-200:6 _", "-200:6 monet"}) {
 		t.Errorf("new tiles = %q", got)
 	}
 }

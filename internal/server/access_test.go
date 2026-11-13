@@ -546,11 +546,12 @@ func TestPublicNeverLeaksChatID(t *testing.T) {
 		snap := e.store.Snapshot()
 		tag := imaging.Tag()
 
-		// The check itself must be able to see a leak: the unsealed cursor and the raw tile do hold one.
-		plainCursor := snap.Newest(1)[0].Cursor()
-		raw, _ := base64.RawURLEncoding.DecodeString(plainCursor)
-		if !strings.Contains(string(raw), "9876543210") && !strings.Contains(string(raw), "5550001234") && !strings.Contains(string(raw), "4440009876") {
-			t.Fatalf("the test's premise is wrong: a source cursor holds no chat id: %q", raw)
+		// A cursor holds no chat id in any mode.
+		raw, _ := base64.RawURLEncoding.DecodeString(snap.Newest(1)[0].Cursor())
+		for _, chat := range []string{"9876543210", "5550001234", "4440009876"} {
+			if strings.Contains(string(raw), chat) {
+				t.Fatalf("a cursor holds a chat id: %q", raw)
+			}
 		}
 
 		see := func(target string, opts ...reqOpt) (*http.Response, []byte) {
@@ -605,7 +606,7 @@ func TestPublicNeverLeaksChatID(t *testing.T) {
 			}
 		}
 		// The "new" poll and its tiles, with and without since.
-		older := e.srv.cursors.seal(snap.Newest(30)[29].Cursor())
+		older := snap.Newest(30)[29].Cursor()
 		for _, target := range []string{
 			"/api/tiles/new", "/api/tiles/new?tiles=1", "/api/tiles/new?since=" + since, "/api/tiles/new?tiles=1&since=" + since,
 			"/api/tiles/new?since=" + older, "/api/tiles/new?tiles=1&since=" + older,
@@ -646,19 +647,11 @@ func TestPublicNeverLeaksChatID(t *testing.T) {
 			see(target)
 		}
 
-		// A visitor cannot make a cursor, which would let the id be found by
-		// bisection: the date of a tile is public, the id would decide whether
-		// the tile is on the page after "<date>, <guess>".
-		tile := snap.Newest(1)[0]
-		for _, forged := range []string{
-			plainCursor,
-			base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("1|%d|0|%s", tile.Updated, "-1009876543210:1"))),
-			base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("1|%d|0|0", tile.Updated))),
-		} {
-			for _, target := range []string{"/api/tiles?cursor=", "/api/tiles/new?since=", "/api/tiles/new?tiles=1&since=", "/?cursor="} {
-				if resp, _ := e.get(target + forged); resp.StatusCode != 400 {
-					t.Errorf("%s: %s<a cursor the visitor made>: %d, want 400", name, target, resp.StatusCode)
-				}
+		// A cursor of the earlier format, which held the record id, is refused.
+		old := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("1|%d|0|%s", snap.Newest(1)[0].Updated, "-1009876543210:1")))
+		for _, target := range []string{"/api/tiles?cursor=", "/api/tiles/new?since=", "/api/tiles/new?tiles=1&since=", "/?cursor="} {
+			if resp, _ := e.get(target + old); resp.StatusCode != 400 {
+				t.Errorf("%s: %s<an old cursor>: %d, want 400", name, target, resp.StatusCode)
 			}
 		}
 
@@ -699,85 +692,6 @@ func TestPublicNeverLeaksChatID(t *testing.T) {
 	noChatID(t, "token-protected page", string(body))
 }
 
-func TestCursorBox(t *testing.T) {
-	a, err := newCursorBox(testBotToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, _ := newCursorBox(testBotToken)
-	other, _ := newCursorBox(testBotToken + "x")
-	random1, _ := newCursorBox("")
-	random2, _ := newCursorBox("")
-	plain := "MXwxNzk0NTgyMDE1fDB8LTEwMDM6MTA0NA"
-	sealed := a.seal(plain)
-	if sealed == plain || strings.Contains(sealed, plain) || a.seal(plain) != sealed || again.seal(plain) != sealed {
-		t.Errorf("seal is not a stable function of the key and the cursor: %q", sealed)
-	}
-	if got, ok := a.open(sealed); !ok || got != plain {
-		t.Errorf("open(seal(x)) = %q, %v", got, ok)
-	}
-	if got, ok := again.open(sealed); !ok || got != plain {
-		t.Errorf("a second box with the same secret cannot open: %q, %v", got, ok)
-	}
-	if a.seal(plain+"x") == sealed || other.seal(plain) == sealed || random1.seal(plain) == random2.seal(plain) {
-		t.Error("different cursors or keys gave the same seal")
-	}
-	for name, box := range map[string]*cursorBox{"another secret": other, "random keys": random1} {
-		if _, ok := box.open(sealed); ok {
-			t.Errorf("a box with %s opened the cursor", name)
-		}
-	}
-	// No cursor stays no cursor, in both directions.
-	if a.seal("") != "" {
-		t.Error(`seal("") is not ""`)
-	}
-	if got, ok := a.open(""); !ok || got != "" {
-		t.Error(`open("") is not "", true`)
-	}
-	// Anything altered, cut, extended or not sealed at all is refused.
-	raw, _ := base64.RawURLEncoding.DecodeString(sealed)
-	for i := range raw {
-		bad := append([]byte(nil), raw...)
-		bad[i] ^= 1
-		if _, ok := a.open(base64.RawURLEncoding.EncodeToString(bad)); ok {
-			t.Fatalf("a cursor with byte %d altered was accepted", i)
-		}
-	}
-	for _, bad := range []string{plain, sealed[1:], sealed[:len(sealed)-2], sealed + "AA", "!!", "AAAA", strings.Repeat("A", 40), strings.Repeat("A", 5000), a.seal(plain) + "=", base64.RawURLEncoding.EncodeToString(raw[:12])} {
-		if _, ok := a.open(bad); ok {
-			t.Errorf("open(%q) accepted", bad)
-		}
-	}
-	// The sealed form is URL-safe as it is, and a real cursor fits the limit.
-	if !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(sealed) {
-		t.Errorf("sealed cursor is not base64url: %q", sealed)
-	}
-	long := strings.Repeat("x", 512)
-	if got, ok := a.open(a.seal(long)); !ok || got != long || len(a.seal(long)) > maxSealedCursor {
-		t.Error("a cursor of the source package's maximum length does not survive")
-	}
-	// The length of a sealed cursor says nothing about the record id: a
-	// private chat, a group, a supergroup and the longest ids all seal to the
-	// same length.
-	want := -1
-	for _, id := range []string{"1:1", "424242:1032", "-4242:7", "-1003456789012:1044", "-1009999999999999:2147483647", "9999999999999:2147483647"} {
-		for _, pos := range []int{0, 9, 99} {
-			p := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("1|%d|%d|%s", int64(1794588247), pos, id)))
-			got := len(a.seal(p))
-			if want < 0 {
-				want = got
-			}
-			if got != want {
-				t.Errorf("id %s, pos %d: sealed length %d, want %d", id, pos, got, want)
-			}
-			if back, ok := a.open(a.seal(p)); !ok || back != p {
-				t.Errorf("id %s: padded cursor does not open: %q %v", id, back, ok)
-			}
-		}
-	}
-}
-
-// A Config that did not come from config.FromEnv cannot open the gallery by accident.
 func TestNewRejectsContradictoryAccess(t *testing.T) {
 	e := newEnv(t, nil, nil)
 	for name, change := range map[string]func(*config.Config){

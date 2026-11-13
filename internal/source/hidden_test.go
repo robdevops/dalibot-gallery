@@ -65,7 +65,7 @@ func TestHiddenImages(t *testing.T) {
 		// 42:10 is gone: its only image is hidden
 		"42:9 bw", // and the hidden image does not come back through the older record that had it
 		// -200:5 is gone
-		"42:12 _", "42:11 _",
+		"42:11 _", "42:12 _",
 		"42:13 ega",
 	}
 	tiles := pageAll(t, s, "", 1000)
