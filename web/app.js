@@ -270,23 +270,27 @@ visualViewport.onresize = () => { full.style.touchAction = visualViewport.scale 
 
 // A two-finger sideways swipe on a touchpad arrives as wheel events with a
 // horizontal delta (a pinch arrives with ctrlKey set, and phones send touch
-// events instead, so neither is affected). One swipe moves one image: after a
-// move, the momentum that keeps arriving is ignored until it pauses or a new
-// swipe makes the delta jump up again.
-let wx = 0, wlast = 0, wtime = 0, wdone = 0
+// events instead, so neither is affected). One swipe moves one image. The
+// deltas of a real swipe are uneven and are followed by momentum, so after a
+// move everything is ignored until the events pause, or, once 400 ms have
+// passed, until the delta jumps up again, which is a new swipe.
+let wx = 0, wlast = 0, wtime = 0, wmoved = -1
 dlg.addEventListener('wheel', e => {
-  const x = Math.abs(e.deltaX)
+  const x = Math.abs(e.deltaX), t = e.timeStamp
   if (e.ctrlKey || x <= Math.abs(e.deltaY) || !full.parentNode.contains(e.target)) return
   e.preventDefault() // not a scroll, and not the browser's swipe for Back
-  if (e.timeStamp - wtime > 200 || x > wlast * 2 + 8) wdone = wx = 0 // a pause, or a new swipe
-  wtime = e.timeStamp
+  if (t - wtime > 200 || wmoved >= 0 && t - wmoved > 400 && x > wlast * 2 + 8) {
+    wx = 0
+    wmoved = -1
+  }
+  wtime = t
   wlast = x
-  if (wdone) return
+  if (wmoved >= 0) return
   wx += e.deltaX
   if (Math.abs(wx) > 60) {
-    wdone = 1
+    wmoved = t
     const d = wx > 0 ? 1 : -1
-    fling(d) || step(d)
+    sliding || fling(d) || step(d)
   }
 }, { passive: false })
 function settle() {

@@ -330,6 +330,29 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await swipe(1)
   await settledAt(keys[13])
 
+  // A real touchpad's deltas are uneven. Such a swipe still moves one image, and the new image
+  // comes in from the right, the side it is on, never from the left.
+  await page.evaluate(() => {
+    window.track = []
+    const f = document.getElementById('full')
+    const tick = () => {
+      track.push([f.dataset.key, Math.round(new DOMMatrix(getComputedStyle(f).transform).m41)])
+      requestAnimationFrame(tick)
+    }
+    tick()
+  })
+  for (const dx of [3, 14, 2, 25, 6, 40, 10, 45, 30, 8, 28, 12, 20, 5, 9, 2, 6, 1, 3, 1]) {
+    await page.mouse.wheel(dx, 0)
+    await page.waitForTimeout(16)
+  }
+  await settledAt(keys[14])
+  const track = await page.evaluate(() => track)
+  expect(track.filter(([k, x]) => k === keys[13] && x > 0), 'the old image leaves to the left').toEqual([])
+  expect(track.filter(([k, x]) => k === keys[14] && x < 0), 'the new image arrives from the right').toEqual([])
+  expect(track.some(([k, x]) => k === keys[14] && x > 0)).toBe(true)
+  await swipe(-1)
+  await settledAt(keys[13])
+
   // Left alone: vertical scrolling, a pinch (wheel with Ctrl), and a slow drift that never adds up to a swipe.
   await page.mouse.wheel(0, 300)
   await page.keyboard.down('Control')
