@@ -387,6 +387,123 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await settledAt(keys[0])
 })
 
+test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan', async ({ page }) => {
+  const keys = await domKeys(page)
+  await page.locator(`.tile[data-key="${keys[6]}"] a`).click()
+  await loaded(page, keys[6])
+  const stage = await page.locator('.stage').boundingBox()
+  const cx = stage.x + stage.width / 2, cy = stage.y + stage.height / 2
+  // The image's scale and offset, read from what is on screen.
+  const view = () => page.locator('#full').evaluate(i => {
+    const m = new DOMMatrix(getComputedStyle(i).transform)
+    return { z: +m.a.toFixed(3), x: Math.round(m.e), y: Math.round(m.f) }
+  })
+  const settled = async want => { await expect.poll(async () => (await view()).z).toBeCloseTo(want, 2) }
+  const bare = () => dialog(page).evaluate(d => d.classList.contains('bare'))
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
+
+  // A pinch (the browser reports it as a wheel with Ctrl) zooms in around the pointer.
+  const px = cx + 120, py = cy - 80
+  await page.mouse.move(px, py)
+  await page.keyboard.down('Control')
+  for (let i = 0; i < 8; i++) await page.mouse.wheel(0, -10)
+  await page.keyboard.up('Control')
+  let v = await view()
+  expect(v.z).toBeCloseTo(Math.exp(0.8), 2)
+  // The spot under the pointer stayed where it was: offset = (1 - z) x its distance from the centre.
+  expect(Math.abs(v.x - (1 - v.z) * 120)).toBeLessThan(2)
+  expect(Math.abs(v.y - (1 - v.z) * -80)).toBeLessThan(2)
+  expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('grab')
+
+  // It stops at 4x, and the image always covers its frame.
+  await page.keyboard.down('Control')
+  for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -100)
+  await page.keyboard.up('Control')
+  v = await view()
+  expect(v.z).toBe(4)
+  expect(Math.abs(v.x)).toBeLessThanOrEqual(Math.ceil(1.5 * stage.width))
+
+  // Hold and drag pans it. A drag is not a click: the buttons and caption stay.
+  const before = await view()
+  await page.mouse.move(cx, cy)
+  await page.mouse.down()
+  await page.mouse.move(cx + 60, cy + 40, { steps: 4 })
+  await page.mouse.up()
+  v = await view()
+  expect([v.x - before.x, v.y - before.y]).toEqual([60, 40])
+  expect(await bare()).toBe(false)
+  // A very long drag stops at the edge of the picture.
+  await page.mouse.down()
+  await page.mouse.move(cx + 3000, cy + 3000, { steps: 4 })
+  await page.mouse.up()
+  v = await view()
+  expect(v.x).toBe(Math.round(1.5 * stage.width))
+  expect(v.y).toBe(Math.round(1.5 * stage.height))
+  // A plain click still hides and shows them.
+  await page.mouse.click(cx, cy)
+  expect(await bare()).toBe(true)
+  await page.mouse.click(cx, cy)
+  expect(await bare()).toBe(false)
+
+  // Zoomed in, two fingers move the picture; they do not go to the next image.
+  const at = await view()
+  for (const dx of [10, 30, 45, 30, 10]) await page.mouse.wheel(dx, 0)
+  await page.waitForTimeout(400)
+  expect(await fullKey(page)).toBe(keys[6])
+  expect((await view()).x).toBe(at.x - 125)
+
+  // The keyboard: - zooms out, + and = zoom in, 0 goes back to normal size.
+  await page.keyboard.press('0')
+  await settled(1)
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
+  await page.keyboard.press('+')
+  await settled(1.5)
+  await page.keyboard.press('=')
+  await settled(2.25)
+  await page.keyboard.press('-')
+  await settled(1.5)
+  await page.keyboard.press('-')
+  await page.keyboard.press('-')
+  await settled(1) // not smaller than normal
+  // At normal size the pointer is an ordinary one and a drag does nothing.
+  expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('')
+  await page.mouse.down()
+  await page.mouse.move(cx + 80, cy, { steps: 3 })
+  await page.mouse.up()
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
+  expect(await bare()).toBe(false) // nor does it count as a click
+
+  // A double click zooms in on that spot, another zooms back out.
+  await page.mouse.dblclick(px, py)
+  await settled(2)
+  v = await view()
+  expect([v.x, v.y]).toEqual([-120, 80])
+  await page.mouse.dblclick(px, py)
+  await settled(1)
+  expect(await bare()).toBe(false) // the two clicks of a double click cancel out
+
+  // Another image starts at normal size, and so does the viewer when it is opened again.
+  await page.keyboard.press('+')
+  await settled(1.5)
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[7])
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
+  await page.keyboard.press('+')
+  await settled(1.5)
+  await page.keyboard.press('Escape')
+  await expect(dialog(page)).toBeHidden()
+  await page.locator(`.tile[data-key="${keys[7]}"] a`).click()
+  await loaded(page, keys[7])
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
+  // And a two-finger sideways swipe goes to the next image again.
+  await page.mouse.move(cx, cy)
+  for (const dx of [4, 12, 30, 45, 40, 30, 22, 16, 11, 8, 5, 3, 2, 1]) {
+    await page.mouse.wheel(dx, 0)
+    await page.waitForTimeout(16)
+  }
+  await loaded(page, keys[8])
+})
+
 test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
   const keys = await domKeys(page)
   const opener = page.locator(`.tile[data-key="${keys[1]}"] a`)

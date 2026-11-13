@@ -151,6 +151,28 @@ pill.onclick = async () => {
 
 // Lightbox
 const keys = () => [...grid.querySelectorAll('.tile')].map(e => e.dataset.key)
+
+// Zoom and pan for a mouse, a trackpad and the keyboard (touch screens keep the browser's
+// own pinch zoom). z is the scale, 1 to 4; px, py the offset, kept so the image covers its frame.
+let z = 1, px = 0, py = 0
+function pan(dx, dy, smooth) {
+  const r = full.parentNode.getBoundingClientRect(), bx = (z - 1) * r.width / 2, by = (z - 1) * r.height / 2
+  px = Math.max(-bx, Math.min(bx, px + dx))
+  py = Math.max(-by, Math.min(by, py + dy))
+  full.style.transition = smooth && !still() ? '' : 'none'
+  full.style.transform = z > 1 ? 'translate(' + px + 'px,' + py + 'px) scale(' + z + ')' : ''
+  full.style.cursor = z > 1 ? 'grab' : ''
+}
+// Zoom to nz, keeping the screen point (x, y) where it is (the centre if not given).
+function zoom(nz, x, y, smooth) {
+  const r = full.parentNode.getBoundingClientRect()
+  const mx = x == null ? 0 : x - r.left - r.width / 2, my = y == null ? 0 : y - r.top - r.height / 2
+  nz = Math.max(1, Math.min(4, nz))
+  px = mx - nz / z * (mx - px)
+  py = my - nz / z * (my - py)
+  z = nz
+  pan(0, 0, smooth)
+}
 function show(key) {
   const t = data.get(key)
   cur = key
@@ -158,6 +180,7 @@ function show(key) {
     full.dataset.key = key
     full.className = 'wait' // hidden until loaded
     full.src = src(key)
+    if (z > 1) zoom(1)
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
   $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
@@ -203,18 +226,44 @@ dlg.onclose = () => {
   cur = ''
   pushed = 0
   dlg.className = '' // the buttons and caption are shown again next time
+  if (z > 1) zoom(1)
   a?.focus()
 }
-// A tap or click on the large image hides the buttons, the caption and the strip, and the
-// next one shows them again. A swipe is not a tap, so it does not get here.
-full.onclick = () => dlg.classList.toggle('bare')
+// A tap or click on the large image hides the buttons, caption and strip; the next shows them.
+// A mouse drag moves the zoomed image. A press that ends somewhere else is a drag, not a click.
+let drag = null, dragged = 0, down = [0, 0]
+full.onclick = e => {
+  if (dragged || Math.abs(e.clientX - down[0]) + Math.abs(e.clientY - down[1]) > 3) dragged = 0
+  else dlg.classList.toggle('bare')
+}
+full.onpointerdown = e => {
+  dragged = 0
+  down = [e.clientX, e.clientY]
+  if (z > 1 && e.pointerType == 'mouse' && !e.button) {
+    drag = down
+    full.setPointerCapture(e.pointerId)
+  }
+}
+full.onpointermove = e => {
+  if (!drag) return
+  const dx = e.clientX - drag[0], dy = e.clientY - drag[1]
+  if (dragged || Math.abs(dx) + Math.abs(dy) > 3) {
+    dragged = 1
+    drag = [e.clientX, e.clientY]
+    pan(dx, dy)
+  }
+}
+full.onpointerup = full.onpointercancel = () => { drag = null }
+full.ondblclick = e => zoom(z > 1 ? 1 : 2, e.clientX, e.clientY, 1)
 dlg.onclick = e => { if (e.target == dlg) dlg.close() }
 addEventListener('keydown', e => {
-  const d = dlg.open && !e.altKey && !e.metaKey && !e.ctrlKey && { ArrowLeft: -1, ArrowRight: 1 }[e.key]
-  if (d) {
-    e.preventDefault()
-    step(d)
-  }
+  if (!dlg.open || e.altKey || e.metaKey || e.ctrlKey) return
+  const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key]
+  const f = { '+': 1.5, '=': 1.5, '-': 1 / 1.5, 0: 0 }[e.key] // in, in, out, normal size
+  if (d) step(d)
+  else if (f != null) zoom(z * f, null, null, 1)
+  else return
+  e.preventDefault()
 })
 // Swipe the large image: left for the next, right for the previous. One finger,
 // starting on the image, not while zoomed. It follows the finger, then slides
@@ -223,7 +272,7 @@ let sx = NaN, sy = 0, sliding = 0
 const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
-  sx = t[1] || sliding || !full.parentNode.contains(e.target) || visualViewport.scale > 1.01 ? NaN : t[0].clientX
+  sx = t[1] || sliding || z > 1 || !full.parentNode.contains(e.target) || visualViewport.scale > 1.01 ? NaN : t[0].clientX
   sy = t[0].clientY
 }, { passive: true })
 dlg.ontouchmove = e => {
@@ -234,9 +283,8 @@ dlg.ontouchmove = e => {
     slide(dx + 'px')
   }
 }
-// Slide the image away towards the side d points from and bring in the one d
-// places on, which waits on the other side until it has loaded. Returns false
-// when there is no such image, or a slide is already under way.
+// Slide the image away and bring in the one d places on, which waits on the
+// other side until loaded. False if there is none, or a slide is under way.
 function fling(d) {
   const k = near(d), c = cur
   if (sliding || !k) return false
@@ -253,7 +301,7 @@ function fling(d) {
   return true
 }
 function release(e) {
-  if (sliding) return
+  if (sliding || z > 1) return
   const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
   const d = e.type == 'touchend' && !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
   sx = NaN
@@ -264,20 +312,26 @@ function release(e) {
   }
 }
 dlg.ontouchend = dlg.ontouchcancel = release
-// Unzoomed, the image only lets the browser pan up and down (see app.css), which leaves
-// sideways drags to the swipe. Zoomed in, the browser must be free to pan every way.
+// Unzoomed, the browser may only pan the image up and down (app.css), leaving sideways
+// drags to the swipe; zoomed in, it must be free to pan every way.
 visualViewport.onresize = () => { full.style.touchAction = visualViewport.scale > 1.01 ? 'auto' : '' }
 
 // A two-finger sideways swipe on a touchpad arrives as wheel events with a
-// horizontal delta (a pinch arrives with ctrlKey set, and phones send touch
-// events instead, so neither is affected). One swipe moves one image. The
-// deltas of a real swipe are uneven and are followed by momentum, so after a
-// move everything is ignored until the events pause, or, once 400 ms have
-// passed, until the delta jumps up again, which is a new swipe.
+// horizontal delta. One swipe moves one image: its deltas are uneven and are
+// followed by momentum, so after a move everything is ignored until the events
+// pause or, after 400 ms, the delta jumps up again (a new swipe).
 let wx = 0, wlast = 0, wtime = 0, wmoved = -1
+// A touchpad pinch (a wheel event with ctrlKey) zooms at the pointer; while zoomed, two fingers pan.
 dlg.addEventListener('wheel', e => {
   const x = Math.abs(e.deltaX), t = e.timeStamp
-  if (e.ctrlKey || x <= Math.abs(e.deltaY) || !full.parentNode.contains(e.target)) return
+  if (!full.parentNode.contains(e.target)) return
+  if (e.ctrlKey || z > 1) {
+    e.preventDefault()
+    if (e.ctrlKey) zoom(z * Math.exp(-Math.max(-30, Math.min(30, e.deltaY)) / 100), e.clientX, e.clientY)
+    else pan(-e.deltaX, -e.deltaY)
+    return
+  }
+  if (x <= Math.abs(e.deltaY)) return
   e.preventDefault() // not a scroll, and not the browser's swipe for Back
   if (t - wtime > 200 || wmoved >= 0 && t - wmoved > 400 && x > wlast * 2 + 8) {
     wx = 0
@@ -293,9 +347,21 @@ dlg.addEventListener('wheel', e => {
     sliding || fling(d) || step(d)
   }
 }, { passive: false })
+// Safari on a Mac reports a pinch with its own gesture events (ignored on touch devices).
+let gz = 1
+if (!navigator.maxTouchPoints) {
+  full.addEventListener('gesturestart', e => {
+    e.preventDefault()
+    gz = z
+  })
+  full.addEventListener('gesturechange', e => {
+    e.preventDefault()
+    zoom(gz * e.scale, e.clientX, e.clientY)
+  })
+}
 function settle() {
   full.className = ''
-  if (full.style.transform) {
+  if (z == 1 && full.style.transform) {
     full.offsetWidth // reflow first
     full.style.transition = ''
     slide()
