@@ -34,7 +34,7 @@ Contents: [Quick start](#quick-start-container) ·
 ## Quick start (container)
 
 You need Docker with Compose, the bot's Telegram token, and a read-only AWS
-key for the bot's table (see [AWS access](#aws-access)).
+key for the bot's table (see [docs/aws-access.md](docs/aws-access.md)).
 
 ```sh
 git clone https://github.com/robdevops/dalibot-gallery
@@ -157,45 +157,13 @@ running gallery's `/healthz` answers 200) and `-version`.
 
 ## AWS access
 
-Give the gallery its own read-only identity. Do not reuse the bot's: the
-bot's policy can write, and it has no `Scan`.
+The gallery needs its own read-only AWS identity for the bot's table: an IAM
+policy allowing `dynamodb:Scan` on that one table, attached to a new user
+whose access key goes in `.env`. Do not reuse the bot's identity.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ReadOnlyOneTable",
-      "Effect": "Allow",
-      "Action": ["dynamodb:Scan", "dynamodb:GetItem"],
-      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT_ID:table/dalibot"
-    }
-  ]
-}
-```
-
-Replace `REGION`, `ACCOUNT_ID` and the table name. The current code only
-calls `Scan`, so `dynamodb:GetItem` can be left out. Add `kms:Decrypt` on the
-key only if the table is encrypted with a customer-managed KMS key.
-
-To create the user with the AWS CLI (as an administrator), save the policy
-above as `gallery-policy.json` and run:
-
-```sh
-aws iam create-user --user-name dalibot-gallery
-aws iam put-user-policy --user-name dalibot-gallery \
-  --policy-name dalibot-gallery-read --policy-document file://gallery-policy.json
-aws iam create-access-key --user-name dalibot-gallery
-```
-
-Put the `AccessKeyId` and `SecretAccessKey` that the last command prints in
-`.env`. On EC2 or ECS, attach the same policy to a role
-instead and leave the key variables unset.
-
-The gallery scans the whole table every `GALLERY_REFRESH` and serves every
-request from memory. The table is bounded by the bot's 90-day TTL, so this is
-small, but each scan is billed as read capacity for the whole table; raise
-`GALLERY_REFRESH` if that matters.
+[docs/aws-access.md](docs/aws-access.md) has the policy, step-by-step
+instructions for the AWS console and the AWS CLI, where to put the key, and
+troubleshooting.
 
 ## Security model
 
