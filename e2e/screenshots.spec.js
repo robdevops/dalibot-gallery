@@ -26,6 +26,10 @@ const PROFILES = [
 // The sample pictures in the order they are shown: the four birds in the top
 // row on a desktop, then the fifth bird, the fish and the two flies.
 const ORDER = [4, 6, 7, 8, 5, 3, 2, 1].map(n => `telegram-0${n}.jpg`)
+// The picture the viewer screenshot opens, with the caption it had in the chat. (The dev stack's
+// captions are made up and have nothing to do with the pictures.)
+const VIEWER = 'telegram-06.jpg'
+const VIEWER_CAPTION = 'as a pixel art video game sprite, in a retro video game style, from a high angle, with a focus on one detail'
 const sha = buf => crypto.createHash('sha256').update(buf).digest('hex')
 const samples = path.join(__dirname, '..', 'testdata', 'telegram')
 const fileOf = new Map(fs.readdirSync(samples).map(f => [sha(fs.readFileSync(path.join(samples, f))), f]))
@@ -39,6 +43,12 @@ async function distinctTiles(request) {
     if (byFile.size === fileOf.size) break
     const file = fileOf.get(sha(await (await request.get(`/img/${t.key}.jpg`, { headers: basic() })).body()))
     if (file && !byFile.has(file)) byFile.set(file, { ...t, styles: [t.styles.find(x => x.key === t.key)] })
+  }
+  const shown = byFile.get(VIEWER)
+  if (shown) {
+    shown.caption = shown.styles[0].caption = VIEWER_CAPTION
+    shown.label = shown.styles[0].label = 'Original' // the made-up style label would contradict the caption
+    shown.viewer = true
   }
   return { ...listing, tiles: ORDER.map(f => byFile.get(f)).filter(Boolean), next: null }
 }
@@ -69,10 +79,12 @@ for (const [name, profile, gridView, viewerView, scale] of PROFILES) {
 
       // The lightbox, with its strip of the other images.
       await page.setViewportSize(viewerView)
-      const key = (listing.tiles.find(t => t.caption) || listing.tiles[0]).key
+      const key = listing.tiles.find(t => t.viewer).key
+      await expect(page.locator(`.tile[data-key="${key}"] img`)).toHaveAttribute('alt', VIEWER_CAPTION)
       await page.locator(`.tile[data-key="${key}"] a`).evaluate(a => a.click())
       await expect(page.locator('dialog#lb')).toBeVisible()
       await expect.poll(() => page.locator('#full').evaluate(i => i.complete && i.naturalWidth)).toBe(1024)
+      await expect(page.locator('#cap')).toHaveText(VIEWER_CAPTION)
       // The strip's thumbnails load lazily: wait for the ones in view.
       await expect.poll(() => page.locator('#strip').evaluate(st => {
         const box = st.getBoundingClientRect()
