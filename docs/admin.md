@@ -128,7 +128,9 @@ as for any image.
 
 They exist only with an admin token, and only for an admin. To everyone
 else, signed in to view or not, they answer exactly as a path that does not
-exist (`404`), whether or not the key is real.
+exist, whether or not the key is real: `404`, or, for a visitor who is not
+signed in to a gallery that needs the token, the usual redirect to `/login`
+(`401` for `/api/`). A `POST` from anyone but an admin is always `404`.
 
 | Route | |
 |---|---|

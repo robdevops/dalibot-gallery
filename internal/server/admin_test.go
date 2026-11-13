@@ -223,8 +223,8 @@ func TestAdminAuthorization(t *testing.T) {
 
 			// An admin over the limit of wrong tokens is not an admin until it has passed.
 			blocked := from("198.51.100.200:1")
-			for range loginPerClient {
-				e.get("/", blocked, func(r *http.Request) { r.SetBasicAuth("u", "wrong-wrong-wrong-wrong") })
+			for i := range loginPerClient {
+				e.get("/", blocked, func(r *http.Request) { r.SetBasicAuth("u", fmt.Sprintf("wrong-wrong-wrong-%d", i)) })
 			}
 			if got := e.answer("POST", adminHidePath+listedKey, blocked, basicAdmin); got.status != 404 {
 				t.Errorf("blocked admin: %+v", got)

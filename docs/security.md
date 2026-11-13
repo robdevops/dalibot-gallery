@@ -108,6 +108,14 @@ guess is a guess at both tokens, counted once:
   credentials do not count. A Basic password is only looked at when it could
   raise what the request may do, so in a public gallery without an admin
   token it is ignored altogether.
+- The same wrong Basic password sent again by the same client within the
+  minute is not counted again: it is no new guess. Browsers resend a Basic
+  password with every request, and so does a proxy that does its own Basic
+  sign-in and forwards the header; counting each request would block such
+  a visitor, `/login` included, after one page. Each different wrong
+  password still counts. The limiter keeps only a keyed fingerprint of a
+  wrong password (random key per process), never the password. Tokens
+  posted to `/login` are always counted.
 - The limit is only as good as the client address. Behind a reverse proxy
   that is not listed in `GALLERY_TRUSTED_PROXIES`, every visitor has the
   proxy's address and shares one allowance of 5; see [Reverse proxy](reverse-proxy.md).
@@ -132,7 +140,9 @@ holds it:
   by the id itself, so paging could then no longer find the place of a
   record that has left the listing. The seal is deterministic: the same
   place always gives the same cursor, and cursors stay valid across restarts.
-  Cursors are sealed in every mode, so a copied "Load more" link never
+  The text is padded to a fixed size before it is encrypted, so every cursor
+  has the same length and the length does not show how long the id is (which
+  would tell a group chat from a private one). Cursors are sealed in every mode, so a copied "Load more" link never
   carries a chat id either.
 - Deep links (`#/p/<key>`), image URLs and ETags hold only the image key, a
   hash of the Telegram file id.

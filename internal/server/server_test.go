@@ -591,7 +591,7 @@ func TestBasicAuthRateLimit(t *testing.T) {
 		}
 		// IPv6: the limit is per /64, so a client cannot step through its own prefix.
 		for i := range loginPerClient {
-			try("/api/tiles", "wrong", fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1))
+			try("/api/tiles", fmt.Sprintf("wrong-%d", i), fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1))
 		}
 		if resp := try("/api/tiles", testToken, "[2001:db8:1:2:ffff::9]:1"); resp.StatusCode != 429 {
 			t.Fatalf("another address in the same /64: %d", resp.StatusCode)
@@ -690,6 +690,55 @@ func TestLimiterAttempt(t *testing.T) {
 		l.attempt("a", true)
 		if len(l.clients) != 0 {
 			t.Fatalf("%d clients remembered after their window", len(l.clients))
+		}
+	})
+}
+
+// A wrong Basic password repeated by the same client counts once; a
+// different one counts again; tokens posted at /login always count; and a
+// repeated password is still refused, never let through.
+func TestLimiterRepeatedGuess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := newLoginLimiter()
+		for i := range 10 * loginPerClient {
+			wait, ok, repeated := l.guess("a", false, "same")
+			if wait != 0 || ok || repeated != (i > 0) {
+				t.Fatalf("same wrong password %d: %v %v %v", i, wait, ok, repeated)
+			}
+		}
+		if len(l.clients["a"]) != 1 || len(l.all) != 1 {
+			t.Fatalf("a repeated password was recorded: %d for the client, %d overall", len(l.clients["a"]), len(l.all))
+		}
+		for _, f := range l.clients["a"] {
+			if strings.Contains(f.guess, "same") {
+				t.Fatal("the limiter keeps the password itself")
+			}
+		}
+		// Another client's same password is that client's first guess.
+		if _, _, repeated := l.guess("b", false, "same"); repeated {
+			t.Fatal("a password was treated as repeated for another client")
+		}
+		for i := range loginPerClient - 1 {
+			if wait, ok, repeated := l.guess("a", false, fmt.Sprint("other-", i)); wait != 0 || ok || repeated {
+				t.Fatalf("distinct wrong password %d: %v %v %v", i, wait, ok, repeated)
+			}
+		}
+		if wait, ok, _ := l.guess("a", true, "right"); wait == 0 || ok {
+			t.Fatalf("after %d distinct wrong passwords the client is not blocked: %v %v", loginPerClient, wait, ok)
+		}
+		// /login attempts are not deduplicated.
+		for i := range loginPerClient {
+			if wait, ok := l.attempt("c", false); wait != 0 || ok {
+				t.Fatalf("wrong login %d: %v %v", i, wait, ok)
+			}
+		}
+		if wait, _ := l.attempt("c", false); wait == 0 {
+			t.Fatal("repeated wrong logins were not counted")
+		}
+		// After the window a repeated password is a new guess again.
+		time.Sleep(loginWindow + time.Second)
+		if _, _, repeated := l.guess("b", false, "same"); repeated {
+			t.Fatal("a password was remembered past the window")
 		}
 	})
 }

@@ -26,10 +26,16 @@ Whatever proxy you use:
   have the proxy add an `Authorization` header for visitors; for a gallery
   without a password use `GALLERY_PUBLIC=1` (see the
   [README](../README.md#a-public-gallery-behind-a-proxy)). If the proxy has
-  its own Basic auth, that header reaches the gallery too, which reads the
-  password as a token guess: either stop the proxy from forwarding it
-  (nginx: `proxy_set_header Authorization "";`) or expect those requests to
-  be counted by the limiter.
+  its own Basic auth, it forwards the visitor's `Authorization` header to the
+  gallery, which, when an admin token is set, reads the password as a guess
+  at the tokens. The same password on every request counts only once a
+  minute, so visitors are not blocked and the admin can still sign in at
+  `/login`, but each visitor uses up one of the five attempts a minute and a
+  `basic auth failed` line is logged. Better: stop the proxy from forwarding
+  the header (nginx: `proxy_set_header Authorization "";`, Caddy:
+  `header_up -Authorization` inside `reverse_proxy`, Traefik: a `headers`
+  middleware with `customRequestHeaders.Authorization=` set empty). The
+  gallery's own Basic sign-in for scripts then works only past the proxy.
 - **Set `X-Forwarded-For`, and tell the gallery which proxies to believe.**
   The limiter on token guesses counts per client address. The gallery uses
   the address of the TCP peer, unless that peer is listed in

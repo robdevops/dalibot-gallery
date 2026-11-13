@@ -23,6 +23,8 @@ const node = key => grid.querySelector('[data-key="' + key + '"]')
 async function get(url) {
   const r = await fetch(url)
   if (r.status == 401) location.href = '/login'
+  // 400: a cursor the server no longer accepts (new version or bot token). Start afresh, but not in a loop.
+  if (r.status == 400 && performance.now() > 5e3) location.reload()
   if (!r.ok) throw Error(r.status)
   return r.json()
 }

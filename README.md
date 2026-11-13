@@ -116,9 +116,13 @@ those, on the same machine:
    user only):
 
    ```sh
+   sudo chgrp dalibot /opt/dalibot/var /opt/dalibot/var/dalibot.db
    sudo chmod g+rx /opt/dalibot/var
    sudo chmod g+r /opt/dalibot/var/dalibot.db
    ```
+
+   (`dalibot` is the bot's group; see
+   [docs/sqlite.md](docs/sqlite.md#permissions).)
 
 3. In `deploy/compose.sqlite.yaml`, set the bot's `var` directory and the id
    of the bot's group, then start with both files:
@@ -245,7 +249,12 @@ work as they are. The gallery then serves everyone who can reach it, so:
   default `GALLERY_LISTEN` is loopback, and the Compose file publishes the
   port on `127.0.0.1` only.
 - To limit who can view, do it at the proxy (`allow` / `deny`, its own
-  password or SSO), or use `GALLERY_TOKEN` instead of `GALLERY_PUBLIC`.
+  password or SSO), or use `GALLERY_TOKEN` instead of `GALLERY_PUBLIC`. If
+  the proxy asks for its own password and you set `GALLERY_ADMIN_TOKEN`,
+  also stop the proxy from passing that password on (nginx:
+  `proxy_set_header Authorization "";`, see `deploy/nginx.conf`), so the
+  gallery does not read it as a guess at the admin token (see
+  [docs/reverse-proxy.md](docs/reverse-proxy.md)).
 - The proxy must not present a token on visitors' behalf, and listing it in
   `GALLERY_TRUSTED_PROXIES` gives it no access: that setting only says whose
   `X-Forwarded-For` to believe.
@@ -383,7 +392,9 @@ so, rather than start with a different meaning. What to do:
 - `GALLERY_AUTH=off` (no login in the gallery, a proxy in front): remove the
   line and add `GALLERY_PUBLIC=1`. Viewing still needs no login. If your
   proxy did its own sign-in, it still does; the gallery itself is open to
-  whatever can reach its port, as it was.
+  whatever can reach its port, as it was. If that sign-in is the proxy's
+  own Basic password and you add `GALLERY_ADMIN_TOKEN`, add
+  `proxy_set_header Authorization "";` (or your proxy's equivalent) too.
 - nginx presenting `GALLERY_TOKEN` for every visitor (the old "no password
   for visitors" recipe): that still works, but is no longer the way. Remove
   the `Authorization` line (and `/etc/nginx/gallery-auth.conf`) from nginx,
@@ -414,8 +425,9 @@ it a directory of its own that is not wiped with the cache:
 
 **Pages open during the upgrade.** The cursors in the listing changed form
 (they are now sealed, see [docs/security.md](docs/security.md)). A gallery
-page that was open in a browser before the upgrade stops loading more images
-until it is reloaded.
+page that was open in a browser before the upgrade reloads itself the next
+time it loads more images or checks for new ones. The same happens after a
+change of `TELEGRAM_BOT_TOKEN`, from which the cursor keys are derived.
 
 **Container:**
 

@@ -169,3 +169,42 @@ test('scrolling loads every page to the very end with no duplicates', async ({ p
   expect(images.ok).toBeGreaterThan(100)
   expect(images.placeholder).toBeLessThanOrEqual(1)
 })
+
+// A page left open across an upgrade (or a change of bot token) holds cursors
+// the server no longer accepts and gets 400 for them. It reloads once and
+// carries on, both when scrolling for more and when polling for new images.
+// The page is never reloaded in its first seconds, so a server that refused
+// its own cursors could not put it in a loop.
+for (const how of ['scrolling', 'polling']) {
+  test(`a page holding cursors the server no longer accepts reloads and recovers (${how})`, async ({ page, watched }) => {
+    const stale = 'MXwxNzAwMDAwMDAwfDB8b2xkOjE' // the shape of a cursor from before cursors were sealed
+    let tampered = 0, refused = 0
+    await page.route(u => u.pathname === '/api/tiles' && !u.search.includes('cursor='), async route => {
+      if (tampered++) return route.continue()
+      const r = await route.fetch(), j = await r.json()
+      route.fulfill({ response: r, json: { ...j, next: stale, newest: stale } })
+    })
+    page.on('response', r => { if (r.status() === 400 && new URL(r.url()).pathname.startsWith('/api/tiles')) refused++ })
+    await page.goto('/')
+    await page.waitForSelector('#grid .tile')
+    const first = await page.locator('#grid .tile').count()
+    await page.evaluate(() => { window.__before = 1 })
+    await page.waitForTimeout(5500)
+    const reloaded = page.waitForEvent('load')
+    if (how === 'scrolling') await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight))
+    else await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+    await reloaded
+    expect(refused, 'the stale cursor was refused').toBe(1)
+    expect(await page.evaluate(() => window.__before), 'the page reloaded').toBeUndefined()
+    // After the reload the cursors are fresh: scrolling loads the next page.
+    await page.waitForSelector('#grid .tile')
+    for (let i = 0; i < 50 && await page.locator('#grid .tile').count() <= first; i++) {
+      await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight))
+      await page.waitForTimeout(100)
+    }
+    expect(await page.locator('#grid .tile').count()).toBeGreaterThan(first)
+    expect(refused).toBe(1)
+    // The browser logs the refused request; that one is expected.
+    watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/status of 400/.test(p)))
+  })
+}

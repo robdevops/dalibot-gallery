@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -113,6 +114,11 @@ func (s *Server) tokenAccess(token string) access {
 // like a sign-in at /login, so neither token can be guessed faster through
 // Basic. It is only looked at when it could raise the level (so never in a
 // public gallery without an admin token, and not for an admin session).
+// The same wrong password sent again by the same client within the window
+// is not a new guess and is not counted again: a browser resends it with
+// every request, and a proxy that does its own Basic sign-in forwards its
+// password on every page and image. Counting each of those would block the
+// client, /login included, after the first page.
 //
 // wait > 0 means the client is over the limit and its password was not
 // evaluated, right or wrong. The level is then whatever the request has
@@ -133,12 +139,14 @@ func (s *Server) authorize(r *http.Request) (level access, wait time.Duration) {
 	}
 	client := s.clientAddr(r)
 	got := s.tokenAccess(pass)
-	wait, ok := s.limiter.attempt(limiterKey(client), got > accessNone)
+	wait, ok, repeated := s.limiter.guess(limiterKey(client), got > accessNone, pass)
 	if wait > 0 {
 		return level, wait
 	}
 	if !ok {
-		s.log.Warn("basic auth failed", "remote", client)
+		if !repeated {
+			s.log.Warn("basic auth failed", "remote", client)
+		}
 		return level, 0
 	}
 	return max(level, got), 0
@@ -303,12 +311,26 @@ func limiterKey(client string) string {
 // loginLimiter counts wrong tokens over a sliding minute, per client and overall.
 type loginLimiter struct {
 	mu      sync.Mutex
-	clients map[string][]time.Time
+	clients map[string][]failure
 	all     []time.Time
+	// key keys the fingerprints of wrong Basic passwords, so that the
+	// limiter's memory never holds a password or a plain hash of one.
+	key []byte
+}
+
+// failure is one wrong token. guess is the keyed fingerprint of a wrong Basic
+// password, or "" for a token posted at /login.
+type failure struct {
+	at    time.Time
+	guess string
 }
 
 func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{clients: map[string][]time.Time{}}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic(err) // crypto/rand.Read does not fail on supported platforms
+	}
+	return &loginLimiter{clients: map[string][]failure{}, key: key}
 }
 
 // recent drops the entries older than the window.
@@ -320,13 +342,37 @@ func recent(ts []time.Time, cutoff time.Time) []time.Time {
 	return ts[i:]
 }
 
-// attempt judges one presented token in a single step under the lock, so
-// concurrent requests cannot all pass a check before any failure is recorded.
-// correct says whether the token matched (compared by the caller in constant
-// time). If the client is over a limit, wait is how long it must stay away
-// and the attempt is refused even when correct, so that a blocked guesser
-// learns nothing. Otherwise ok is correct, and a wrong token is recorded.
+func recentFailures(fs []failure, cutoff time.Time) []failure {
+	i := 0
+	for i < len(fs) && !fs[i].at.After(cutoff) {
+		i++
+	}
+	return fs[i:]
+}
+
+// attempt judges one token posted at /login in a single step under the lock,
+// so concurrent requests cannot all pass a check before any failure is
+// recorded. correct says whether the token matched (compared by the caller in
+// constant time). If the client is over a limit, wait is how long it must
+// stay away and the attempt is refused even when correct, so that a blocked
+// guesser learns nothing. Otherwise ok is correct, and a wrong token is
+// recorded.
 func (l *loginLimiter) attempt(client string, correct bool) (wait time.Duration, ok bool) {
+	wait, ok, _ = l.judge(client, correct, "")
+	return wait, ok
+}
+
+// guess is attempt for a Basic password. A wrong password that this client
+// already presented within the window is refused without being recorded
+// again (repeated is then true): it tells the client nothing new, and
+// browsers and proxies resend the same password with every request.
+func (l *loginLimiter) guess(client string, correct bool, password string) (wait time.Duration, ok, repeated bool) {
+	m := hmac.New(sha256.New, l.key)
+	m.Write([]byte(password))
+	return l.judge(client, correct, string(m.Sum(nil)[:16]))
+}
+
+func (l *loginLimiter) judge(client string, correct bool, guess string) (wait time.Duration, ok, repeated bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -335,23 +381,26 @@ func (l *loginLimiter) attempt(client string, correct bool) (wait time.Duration,
 	if len(l.all) >= loginOverall {
 		wait = l.all[len(l.all)-loginOverall].Add(loginWindow).Sub(now)
 	}
-	ts := recent(l.clients[client], cutoff)
-	if len(ts) >= loginPerClient {
-		wait = max(wait, ts[len(ts)-loginPerClient].Add(loginWindow).Sub(now))
+	fs := recentFailures(l.clients[client], cutoff)
+	if len(fs) >= loginPerClient {
+		wait = max(wait, fs[len(fs)-loginPerClient].at.Add(loginWindow).Sub(now))
 	}
-	if wait > 0 || correct {
-		if len(ts) == 0 {
+	if !correct && wait == 0 && guess != "" {
+		repeated = slices.ContainsFunc(fs, func(f failure) bool { return f.guess == guess })
+	}
+	if wait > 0 || correct || repeated {
+		if len(fs) == 0 {
 			delete(l.clients, client)
 		} else {
-			l.clients[client] = ts
+			l.clients[client] = fs
 		}
-		return wait, wait == 0
+		return wait, wait == 0 && correct, repeated
 	}
 	l.all = append(l.all, now)
 	if len(l.clients) >= maxLimiterClient {
 		// Bounded memory: forget everything but the overall count, which still limits attempts.
-		l.clients = map[string][]time.Time{}
+		l.clients = map[string][]failure{}
 	}
-	l.clients[client] = append(ts, now)
-	return 0, false
+	l.clients[client] = append(fs, failure{at: now, guess: guess})
+	return 0, false, false
 }

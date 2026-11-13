@@ -202,14 +202,16 @@ func TestRateLimitCoversBothTokens(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := newEnv(t, records(2), tokenAndAdmin)
 		const addr = "203.0.113.5:1000"
-		wrongBasic := func(r *http.Request) { r.SetBasicAuth("u", "a-wrong-guess-0123456789") }
+		wrongBasic := func(i int) reqOpt {
+			return func(r *http.Request) { r.SetBasicAuth("u", fmt.Sprintf("a-wrong-guess-%d-0123456789", i)) }
+		}
 		// Five wrong tokens, some posted and some as Basic passwords.
 		for i := range loginPerClient {
 			if i%2 == 0 {
 				if resp := e.login(fmt.Sprintf("wrong-guess-%d-0123456789", i), from(addr)); resp.StatusCode != 401 {
 					t.Fatalf("wrong token %d: %d", i, resp.StatusCode)
 				}
-			} else if resp, _ := e.get("/api/tiles", from(addr), wrongBasic); resp.StatusCode != 401 {
+			} else if resp, _ := e.get("/api/tiles", from(addr), wrongBasic(i)); resp.StatusCode != 401 {
 				t.Fatalf("wrong Basic password %d: %d", i, resp.StatusCode)
 			}
 		}
@@ -242,8 +244,8 @@ func TestRateLimitCoversBothTokens(t *testing.T) {
 			}
 		}
 		// A wrong admin guess on top of a view session counts like any other.
-		for range loginPerClient {
-			e.level(from("203.0.113.7:1"), view, wrongBasic)
+		for i := range loginPerClient {
+			e.level(from("203.0.113.7:1"), view, wrongBasic(i))
 		}
 		if resp := e.login(testAdminToken, from("203.0.113.7:2")); resp.StatusCode != 429 {
 			t.Errorf("after %d wrong admin guesses behind a view cookie: %d", loginPerClient, resp.StatusCode)
@@ -751,8 +753,27 @@ func TestCursorBox(t *testing.T) {
 		t.Errorf("sealed cursor is not base64url: %q", sealed)
 	}
 	long := strings.Repeat("x", 512)
-	if got, ok := a.open(a.seal(long)); !ok || got != long {
+	if got, ok := a.open(a.seal(long)); !ok || got != long || len(a.seal(long)) > maxSealedCursor {
 		t.Error("a cursor of the source package's maximum length does not survive")
+	}
+	// The length of a sealed cursor says nothing about the record id: a
+	// private chat, a group, a supergroup and the longest ids all seal to the
+	// same length.
+	want := -1
+	for _, id := range []string{"1:1", "424242:1032", "-4242:7", "-1003456789012:1044", "-1009999999999999:2147483647", "9999999999999:2147483647"} {
+		for _, pos := range []int{0, 9, 99} {
+			p := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("1|%d|%d|%s", int64(1794588247), pos, id)))
+			got := len(a.seal(p))
+			if want < 0 {
+				want = got
+			}
+			if got != want {
+				t.Errorf("id %s, pos %d: sealed length %d, want %d", id, pos, got, want)
+			}
+			if back, ok := a.open(a.seal(p)); !ok || back != p {
+				t.Errorf("id %s: padded cursor does not open: %q %v", id, back, ok)
+			}
+		}
 	}
 }
 
@@ -770,4 +791,48 @@ func TestNewRejectsContradictoryAccess(t *testing.T) {
 			t.Errorf("%s: New accepted the configuration", name)
 		}
 	}
+}
+
+// A proxy that does its own HTTP Basic sign-in forwards the visitor's
+// Authorization header with every request. That password is a wrong guess
+// at the gallery's tokens, but the same one each time: it is counted once,
+// so browsing does not block the visitor, and the admin can still sign in
+// at /login. Distinct wrong passwords are still each counted.
+func TestProxyBasicPasswordDoesNotBlockAdminSignIn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		proxyBasic := func(r *http.Request) { r.SetBasicAuth("family", "proxy-password-unrelated") }
+		for name, vars := range map[string]map[string]string{"public": publicAndAdmin, "token": tokenAndAdmin} {
+			e := newEnv(t, records(3), vars)
+			key := e.store.Snapshot().Keys()[0]
+			const addr = "203.0.113.20:1000"
+			opts := []reqOpt{from(addr), proxyBasic}
+			if name == "token" {
+				opts = append(opts, cookie(sessionValue(testToken)))
+			}
+			targets := []string{"/", "/api/tiles", "/api/tiles/new", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag()}
+			for i := range 4 * loginPerClient {
+				target := targets[i%len(targets)]
+				if resp, _ := e.get(target, opts...); resp.StatusCode != 200 {
+					t.Fatalf("%s: request %d to %s with the proxy's password: %d", name, i, target, resp.StatusCode)
+				}
+			}
+			if n := strings.Count(e.logs.String(), "basic auth failed"); n != 1 {
+				t.Errorf("%s: %d failures logged for one repeated password, want 1", name, n)
+			}
+			resp := e.login(testAdminToken, opts...)
+			if resp.StatusCode != 303 || len(resp.Cookies()) != 1 || resp.Cookies()[0].Value != adminSessionValue(testAdminToken) {
+				t.Errorf("%s: admin sign-in behind a Basic proxy: %d", name, resp.StatusCode)
+			}
+			// Distinct wrong passwords from the same client still count, the
+			// proxy's one included, and then block it.
+			const guesser = "203.0.113.21:1"
+			e.get("/api/tiles", from(guesser), proxyBasic)
+			for i := range loginPerClient - 1 {
+				e.get("/api/tiles", from(guesser), func(r *http.Request) { r.SetBasicAuth("u", fmt.Sprintf("guess-%d-0123456789", i)) })
+			}
+			if resp := e.login(testAdminToken, from(guesser)); resp.StatusCode != 429 {
+				t.Errorf("%s: after %d distinct wrong passwords: %d, want 429", name, loginPerClient, resp.StatusCode)
+			}
+		}
+	})
 }

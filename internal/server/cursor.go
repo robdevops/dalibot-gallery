@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -36,6 +37,13 @@ import (
 // stay valid across restarts and between instances with the same bot, and
 // no key needs storing. The same sealing is used in every mode, so there is
 // one cursor format and a shared "Load more" link never carries a chat id.
+//
+// The plain text is padded before sealing (to cursorPad bytes, or a multiple
+// of it for an unusually long one), because GCM keeps the length of what it
+// encrypts. Unpadded, the length of a cursor would give away the length of
+// the record id, and so tell a group chat (-100 and ten digits) from a
+// private one. Every real cursor is shorter than cursorPad, so all cursors
+// have the same length.
 type cursorBox struct {
 	aead cipher.AEAD
 	mac  []byte
@@ -45,7 +53,11 @@ const (
 	cursorEncLabel   = "dalibot-gallery cursor encryption v1"
 	cursorNonceLabel = "dalibot-gallery cursor nonce v1"
 	cursorAAD        = "dalibot-gallery cursor v1"
-	maxSealedCursor  = 1024 // above any cursor the source package accepts, sealed
+	maxSealedCursor  = 1024 // above any cursor the source package accepts, padded and sealed
+	// cursorPad is the size cursors are padded to. A cursor of the source
+	// package is base64 of "1|<updated>|<pos>|<chat id>:<message id>", about
+	// 60 bytes for the longest ids Telegram uses today.
+	cursorPad = 128
 )
 
 func derive(secret []byte, label string) []byte {
@@ -82,7 +94,10 @@ func (b *cursorBox) seal(plain string) string {
 		return ""
 	}
 	nonce := derive(b.mac, plain)[:b.aead.NonceSize()]
-	return base64.RawURLEncoding.EncodeToString(b.aead.Seal(nonce, nonce, []byte(plain), []byte(cursorAAD)))
+	// Padded with zero bytes, which base64 text never contains.
+	padded := make([]byte, (len(plain)+cursorPad-1)/cursorPad*cursorPad)
+	copy(padded, plain)
+	return base64.RawURLEncoding.EncodeToString(b.aead.Seal(nonce, nonce, padded, []byte(cursorAAD)))
 }
 
 // open is the reverse. It reports false for anything this server (or one
@@ -100,6 +115,7 @@ func (b *cursorBox) open(sealed string) (string, bool) {
 	}
 	n := b.aead.NonceSize()
 	plain, err := b.aead.Open(nil, raw[:n], raw[n:], []byte(cursorAAD))
+	plain = bytes.TrimRight(plain, "\x00")
 	if err != nil || len(plain) == 0 {
 		return "", false
 	}
