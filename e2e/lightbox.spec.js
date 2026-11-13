@@ -270,13 +270,19 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   await expect.poll(shown).toEqual(overlays.map(() => true))
   const before = await page.locator('#full').boundingBox()
 
+  // A mouse click waits a moment in case it is the first half of a double click. Then they fade
+  // over 200 ms: 80 ms after the fade begins they are still there, partly faded.
+  const sample = page.evaluate(() => new Promise(resolve => {
+    const lb = document.getElementById('lb')
+    new MutationObserver((_, o) => {
+      o.disconnect()
+      setTimeout(() => resolve(+getComputedStyle(document.getElementById('next')).opacity), 80)
+    }).observe(lb, { attributes: true, attributeFilter: ['class'] })
+  }))
   await page.locator('#full').click()
-  // They fade over 200 ms: still there, partly faded, a moment after the click, then gone.
-  await page.waitForTimeout(80)
-  const mid = await page.locator('#next').evaluate(b => +getComputedStyle(b).opacity)
+  const mid = await sample
   expect(mid).toBeGreaterThan(0)
   expect(mid).toBeLessThan(1)
-  expect(await page.locator('#next').isVisible()).toBe(true)
   await expect.poll(shown).toEqual(overlays.map(() => false))
   expect(await page.locator('#next').evaluate(b => getComputedStyle(b).transitionDuration)).toContain('0.2s')
   await expect(dialog(page)).toBeVisible()
@@ -431,7 +437,7 @@ test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan',
   await page.mouse.up()
   v = await view()
   expect([v.x - before.x, v.y - before.y]).toEqual([60, 40])
-  expect(await bare()).toBe(false)
+  await expect.poll(bare).toBe(false)
   // A very long drag stops at the edge of the picture.
   await page.mouse.down()
   await page.mouse.move(cx + 3000, cy + 3000, { steps: 4 })
@@ -441,9 +447,9 @@ test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan',
   expect(v.y).toBe(Math.round(1.5 * stage.height))
   // A plain click still hides and shows them.
   await page.mouse.click(cx, cy)
-  expect(await bare()).toBe(true)
+  await expect.poll(bare).toBe(true)
   await page.mouse.click(cx, cy)
-  expect(await bare()).toBe(false)
+  await expect.poll(bare).toBe(false)
 
   // Zoomed in, two fingers move the picture; they do not go to the next image.
   const at = await view()
@@ -471,21 +477,70 @@ test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan',
   await page.mouse.move(cx + 80, cy, { steps: 3 })
   await page.mouse.up()
   expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
-  expect(await bare()).toBe(false) // nor does it count as a click
+  await expect.poll(bare).toBe(false) // nor does it count as a click
 
-  // A double click zooms in on that spot, another zooms back out.
+  // A double click zooms in on that spot, another zooms back out. The buttons and caption do not flash.
+  await page.evaluate(() => {
+    window.flashes = 0
+    new MutationObserver(() => { window.flashes++ }).observe(document.getElementById('lb'), { attributes: true, attributeFilter: ['class'] })
+  })
   await page.mouse.dblclick(px, py)
   await settled(2)
   v = await view()
   expect([v.x, v.y]).toEqual([-120, 80])
   await page.mouse.dblclick(px, py)
   await settled(1)
-  expect(await bare()).toBe(false) // the two clicks of a double click cancel out
+  await page.waitForTimeout(400)
+  expect(await page.evaluate(() => window.flashes)).toBe(0)
+  await expect.poll(bare).toBe(false)
+
+  // While zoomed the arrow keys move the picture, within its limits; they do not change image.
+  await page.keyboard.press('+')
+  await page.keyboard.press('+')
+  await settled(2.25)
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(async () => (await view()).x).toBe(-80)
+  await page.keyboard.press('ArrowDown')
+  await expect.poll(async () => (await view()).y).toBe(-80)
+  await page.keyboard.press('ArrowLeft')
+  await page.keyboard.press('ArrowUp')
+  await expect.poll(view).toEqual({ z: 2.25, x: 0, y: 0 })
+  for (let i = 0; i < 12; i++) await page.keyboard.press('ArrowLeft')
+  await expect.poll(async () => (await view()).x).toBe(Math.round(0.625 * stage.width))
+  expect(await fullKey(page)).toBe(keys[6])
+
+  // A pinch all the way back out ends at exactly normal size, and swiping works again.
+  await page.keyboard.press('0')
+  await settled(1)
+  await page.mouse.move(cx, cy)
+  await page.keyboard.down('Control')
+  for (let i = 0; i < 9; i++) await page.mouse.wheel(0, -10)
+  for (let i = 0; i < 9; i++) await page.mouse.wheel(0, 10)
+  await page.keyboard.up('Control')
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
+  expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('')
+
+  // Resizing the window while zoomed keeps the picture covering its frame.
+  await page.keyboard.down('Control')
+  for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -100)
+  await page.keyboard.up('Control')
+  await page.mouse.down()
+  await page.mouse.move(cx + 3000, cy + 3000, { steps: 3 })
+  await page.mouse.up()
+  await page.setViewportSize({ width: 900, height: 600 })
+  const small = await page.locator('.stage').boundingBox()
+  await expect.poll(async () => (await view()).x).toBe(Math.round(1.5 * small.width))
+  const img = await page.locator('#full').boundingBox()
+  expect(img.x).toBeLessThanOrEqual(small.x + 1)
+  expect(img.x + img.width).toBeGreaterThanOrEqual(small.x + small.width - 1)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.keyboard.press('0')
+  await settled(1)
 
   // Another image starts at normal size, and so does the viewer when it is opened again.
   await page.keyboard.press('+')
   await settled(1.5)
-  await page.keyboard.press('ArrowRight')
+  await page.locator('#next').click()
   await loaded(page, keys[7])
   expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
   await page.keyboard.press('+')
@@ -675,17 +730,17 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     // A tap on the image hides the buttons and caption; a swipe leaves them as they are; a tap shows them.
     const bare = () => dialog(page).evaluate(d => d.classList.contains('bare'))
     await page.locator('#full').tap()
-    expect(await bare()).toBe(true)
+    await expect.poll(bare).toBe(true)
     await expect(page.locator('#next')).toBeHidden()
     await swipe(300, y, 80, y)
     await loaded(page, keys[2])
     await settled()
-    expect(await bare()).toBe(true)
+    await expect.poll(bare).toBe(true)
     await swipe(80, y, 300, y)
     await loaded(page, keys[1])
     await settled()
     await page.locator('#full').tap()
-    expect(await bare()).toBe(false)
+    await expect.poll(bare).toBe(false)
     await expect(page.locator('#next')).toBeVisible()
 
     // A swipe and, while the image is still sliding away, a tap on Next: one step, not two.
@@ -741,6 +796,26 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await expect.poll(() => page.evaluate(() => visualViewport.scale)).toBe(1)
     await swipe(300, y, 80, y)
     await expect.poll(() => fullKey(page)).not.toBe(open)
+    await settled()
+
+    // A double tap does not zoom: on a touch screen that is the browser's business.
+    await page.locator('#full').tap()
+    await page.locator('#full').tap()
+    await page.waitForTimeout(400)
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+    await expect.poll(bare).toBe(false)
+    // But an image zoomed from a keyboard (a tablet with one, say) can be moved with a finger,
+    // and a swipe does not change the image until it is back at normal size.
+    const here = await fullKey(page)
+    await page.keyboard.press('+')
+    await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toBe('translate(0px, 0px) scale(1.5)')
+    await swipe(250, y, 190, y + 30)
+    await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toBe('translate(-60px, 30px) scale(1.5)')
+    expect(await fullKey(page)).toBe(here)
+    await page.keyboard.press('0')
+    await settled()
+    await swipe(300, y, 80, y)
+    await expect.poll(() => fullKey(page)).not.toBe(here)
     await settled()
 
     expect((await w.done()).problems).toEqual([])
