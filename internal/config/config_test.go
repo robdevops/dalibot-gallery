@@ -33,7 +33,7 @@ func TestDefaults(t *testing.T) {
 	}
 	abs, _ := filepath.Abs("./cache")
 	want := Config{
-		Listen: "127.0.0.1:8080", Token: testToken, Table: "dalibot", Region: "us-east-2",
+		Listen: "127.0.0.1:8080", Token: testToken, Table: "dalibot", Region: "ap-southeast-1",
 		TelegramToken: testBotToken, TelegramAPIBase: "https://api.telegram.org", StoreDays: 90,
 		DefaultCommand: "dream", Refresh: 60 * time.Second, CacheDir: abs, CacheMaxMB: 2048,
 		WebPQuality: 76, ImageWorkers: runtime.GOMAXPROCS(0), Warm: 120,

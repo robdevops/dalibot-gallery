@@ -24,7 +24,7 @@ import (
 const (
 	DefaultListen         = "127.0.0.1:8080"
 	DefaultTable          = "dalibot"
-	DefaultRegion         = "us-east-2"
+	DefaultRegion         = "ap-southeast-1"
 	DefaultTelegramAPI    = "https://api.telegram.org"
 	DefaultStoreDays      = 90
 	DefaultCommand        = "dream"

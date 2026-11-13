@@ -26,7 +26,7 @@ Contents: [The policy](#the-policy) · [AWS console](#aws-console) ·
 
 Before you use it, edit the `Resource` line:
 
-- `REGION`: the table's region. The bot's default is `us-east-2`.
+- `REGION`: the table's region. The gallery assumes `ap-southeast-1` unless `AWS_REGION` says otherwise.
 - `ACCOUNT_ID`: your 12-digit AWS account number, shown in the menu at the
   top right of the console, or printed by
   `aws sts get-caller-identity --query Account --output text`.
@@ -74,11 +74,11 @@ Put the two values in the gallery's `.env`, without quotes:
 ```sh
 AWS_ACCESS_KEY_ID=AKIA...
 AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=us-east-2
+AWS_REGION=ap-southeast-1
 ```
 
 `AWS_REGION` and `DALIBOT_TABLE` only need setting when the bot does not use
-the defaults (`us-east-2` and `dalibot`). The gallery uses the standard AWS
+the defaults (`ap-southeast-1` and `dalibot`). The gallery uses the standard AWS
 credential chain, so `AWS_PROFILE` works as well when it does not run in a
 container.
 
@@ -113,5 +113,5 @@ the gallery's log says why. The usual causes:
 To check the key by itself, with the same variables exported:
 
 ```sh
-aws dynamodb scan --table-name dalibot --region us-east-2 --select COUNT
+aws dynamodb scan --table-name dalibot --region ap-southeast-1 --select COUNT
 ```

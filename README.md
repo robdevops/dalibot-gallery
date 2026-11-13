@@ -137,7 +137,7 @@ variable at fault. Secrets are never printed. `.env.example` lists them all.
 | `TELEGRAM_BOT_TOKEN` | (required) | The bot's token. Used only for `getFile` and the file download. |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | For a local Bot API server or tests. |
 | AWS credentials | standard chain | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on. |
-| `AWS_REGION` | `us-east-2` | Falls back to `AWS_DEFAULT_REGION`. |
+| `AWS_REGION` | `ap-southeast-1` | Falls back to `AWS_DEFAULT_REGION`. |
 | `DALIBOT_TABLE` | `dalibot` | The bot's table. |
 | `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. |
 | `GALLERY_DEFAULT_COMMAND` | `dream` | Shown for records that carry no command. Display only. |

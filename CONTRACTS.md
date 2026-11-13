@@ -51,7 +51,7 @@ type Config struct {
 	Token           string        // GALLERY_TOKEN (secret); "" only when AuthOff
 	AuthOff         bool          // GALLERY_AUTH=off
 	Table           string        // DALIBOT_TABLE; default dalibot
-	Region          string        // AWS_REGION, else AWS_DEFAULT_REGION, else us-east-2
+	Region          string        // AWS_REGION, else AWS_DEFAULT_REGION, else ap-southeast-1
 	TelegramToken   string        // TELEGRAM_BOT_TOKEN (secret); required
 	TelegramAPIBase string        // TELEGRAM_API_BASE without a trailing slash; default https://api.telegram.org
 	StoreDays       int           // GALLERY_STORE_DAYS; default 90; 1..3650
