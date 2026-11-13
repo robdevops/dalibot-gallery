@@ -117,6 +117,9 @@ func TestIntegrationSQLite(t *testing.T) {
 			"GALLERY_REFRESH=5s",
 			"GALLERY_WARM=40",
 			"GALLERY_CACHE_DIR=" + filepath.Join(tmp, "cache"),
+			// For the hiding at the end: an admin, and a state directory of its own.
+			"GALLERY_ADMIN_TOKEN=" + devstack.AdminToken,
+			"GALLERY_STATE_DIR=" + filepath.Join(tmp, "state"),
 			// Settings of the other source. With DynamoDB the first two would stop the gallery at
 			// start-up and the rest would make every scan fail; with SQLite they are not read.
 			"DALIBOT_TABLE=not a table!",
@@ -408,6 +411,15 @@ func TestIntegrationSQLite(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	listed(seeded.Tiles+6, "once the database appeared")
+
+	// --- the admin hides images: the same steps as with DynamoDB --------------
+	// The hidden list is the gallery's own; the bot's directory stays as it is.
+	beforeHiding := dirState(t, botDir)
+	hideAcrossRestarts(t, s, true, filepath.Join(tmp, "cache"), filepath.Join(tmp, "state"))
+	if now := dirState(t, botDir); now != beforeHiding {
+		t.Errorf("hiding and restoring changed the bot's directory:\nbefore %s\nafter  %s", beforeHiding, now)
+	}
+
 	final := dirState(t, botDir)
 	s.stop()
 	if now := dirState(t, botDir); now != final {

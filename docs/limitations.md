@@ -3,7 +3,8 @@
 - **Images disappear with the bot's TTL.** When a record expires (90 days
   after its last write by default), its tiles and cached files go too.
 - **Read-only.** No uploads, likes, comments, search, or writing to the
-  bot's table or database file.
+  bot's table or database file. The one thing an admin can change is the
+  gallery's own list of hidden images; see [Hiding images](admin.md).
 - **One shared token.** No users or roles, and no per-session sign-out.
   Many addresses failing together can block sign-ins for a while; see
   [Security model](security.md).
@@ -38,8 +39,13 @@
 - The "Admin" and "Sign out" links are at the foot of the page, below the
   last image, so in a long gallery they are a long scroll away. `/login` can
   be opened directly.
-- Nothing an admin can do exists yet beyond signing in: the admin session is
-  the base for admin features.
+- **Hiding only hides.** A hidden image stays in the bot's records and in
+  Telegram; delete it with the bot's `#delete`. Pages already open in other
+  browsers keep its tile until they are reloaded (its image no longer
+  loads), and a shared cache in front of a public gallery may keep serving
+  a copy it already holds. The list is read at start-up only, so edit
+  `hidden.json` by hand only while the gallery is stopped. Hiding works one
+  image at a time. See [Hiding images](admin.md).
 - Responses that Go's HTTP server writes itself for malformed requests carry
   no security headers; see [Security model](security.md).
 - Rebuild the container image often to pick up security updates to Alpine,

@@ -26,6 +26,7 @@ import (
 
 	"github.com/robdevops/dalibot-gallery/internal/cache"
 	"github.com/robdevops/dalibot-gallery/internal/config"
+	"github.com/robdevops/dalibot-gallery/internal/hidden"
 	"github.com/robdevops/dalibot-gallery/internal/imaging"
 	"github.com/robdevops/dalibot-gallery/internal/source"
 )
@@ -62,8 +63,15 @@ type Deps struct {
 	Store   *source.Store
 	Fetcher Fetcher
 	Cache   *cache.Cache
-	Web     fs.FS // web.Files: index.html, login.html, app.js, app.css, favicon.png at its root
-	Log     *slog.Logger
+	// Hidden is the list of images an admin has hidden. It must be the list
+	// behind the Store's Options.Hidden, or hiding would change nothing. It
+	// may be nil: then nothing can be hidden or restored, and the routes for
+	// that do not exist.
+	Hidden *hidden.List
+	// Web is web.Files: index.html, login.html, hidden.html, app.js, app.css,
+	// admin.js, admin.css and favicon.png at its root.
+	Web fs.FS
+	Log *slog.Logger
 }
 
 // asset is an embedded static file.
@@ -72,6 +80,7 @@ type asset struct {
 	ctype string
 	etag  string
 	open  bool // served without auth
+	admin bool // served to admins only; to everyone else the path does not exist
 }
 
 // Server holds the handler and the background image work.
@@ -80,16 +89,17 @@ type Server struct {
 	store   *source.Store
 	fetcher Fetcher
 	cache   *cache.Cache
+	hidden  *hidden.List // nil: nothing can be hidden
 	log     *slog.Logger
 
-	index, login *template.Template
-	assets       map[string]asset // by URL path
-	tag          string           // imaging.Tag()
-	viewSession  string           // the view session cookie's value; "" in public mode
-	adminSession string           // the admin session cookie's value; "" without an admin token
-	cursors      *cursorBox       // seals the cursors sent to browsers
-	limiter      *loginLimiter
-	handler      http.Handler
+	index, login, hiddenPage *template.Template
+	assets                   map[string]asset // by URL path
+	tag                      string           // imaging.Tag()
+	viewSession              string           // the view session cookie's value; "" in public mode
+	adminSession             string           // the admin session cookie's value; "" without an admin token
+	cursors                  *cursorBox       // seals the cursors sent to browsers
+	limiter                  *loginLimiter
+	handler                  http.Handler
 
 	origins singleflight.Group // per key
 	thumbs  singleflight.Group // per key and size
@@ -120,7 +130,7 @@ func New(d Deps) (*Server, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	s := &Server{
-		cfg: d.Config, store: d.Store, fetcher: d.Fetcher, cache: d.Cache, log: log,
+		cfg: d.Config, store: d.Store, fetcher: d.Fetcher, cache: d.Cache, hidden: d.Hidden, log: log,
 		assets:  map[string]asset{},
 		tag:     imaging.Tag(),
 		limiter: newLoginLimiter(),
@@ -152,9 +162,14 @@ func New(d Deps) (*Server, error) {
 	if s.login, err = template.ParseFS(d.Web, "login.html"); err != nil {
 		return nil, fmt.Errorf("server: login.html: %w", err)
 	}
+	if s.hiddenPage, err = template.ParseFS(d.Web, "hidden.html"); err != nil {
+		return nil, fmt.Errorf("server: hidden.html: %w", err)
+	}
 	for name, ctype := range map[string]string{
 		"app.js":      "text/javascript; charset=utf-8",
 		"app.css":     "text/css; charset=utf-8",
+		"admin.js":    "text/javascript; charset=utf-8",
+		"admin.css":   "text/css; charset=utf-8",
 		"favicon.png": "image/png",
 	} {
 		data, err := fs.ReadFile(d.Web, name)
@@ -162,7 +177,11 @@ func New(d Deps) (*Server, error) {
 			return nil, fmt.Errorf("server: %s: %w", name, err)
 		}
 		sum := sha256.Sum256(data)
-		s.assets["/"+name] = asset{data: data, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:12]) + `"`, open: name != "app.js"}
+		s.assets["/"+name] = asset{
+			data: data, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:12]) + `"`,
+			open:  name == "app.css" || name == "favicon.png",
+			admin: strings.HasPrefix(name, "admin."),
+		}
 	}
 	s.handler = s.middleware(http.HandlerFunc(s.route))
 	return s, nil
@@ -216,6 +235,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	// POST on /logout. Those two exist only when there is something to sign
 	// in to; in a public gallery without an admin token they are unknown paths.
 	login := s.cfg.LoginEnabled()
+	// The admin's routes (admin.go) exist only with an admin token, and only
+	// for an admin. For everyone else these paths are like any unknown path,
+	// except that a POST is answered 404 rather than 405.
+	adminPath := s.adminRoutes() && isAdminPath(p)
 	allow := "GET, HEAD"
 	switch {
 	case login && p == "/login":
@@ -223,7 +246,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case login && p == "/logout":
 		allow = "POST"
 	}
-	if !slices.Contains(strings.Split(allow, ", "), r.Method) {
+	if !slices.Contains(strings.Split(allow, ", "), r.Method) && !(adminPath && r.Method == http.MethodPost) {
 		w.Header().Set("Allow", allow)
 		if api {
 			s.jsonError(w, r, http.StatusMethodNotAllowed, "method not allowed")
@@ -253,6 +276,19 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 
 	// Everything else needs at least view access.
 	level, wait := s.authorize(r)
+	admin := level == accessAdmin && wait == 0
+	if adminPath {
+		if admin {
+			s.handleAdmin(w, r, p)
+			return
+		}
+		if r.Method == http.MethodPost {
+			// Whoever it is and whatever the key: the same answer.
+			s.notFound(w, r, api)
+			return
+		}
+		// A GET goes on as for any path that does not exist.
+	}
 	if level < accessView {
 		switch {
 		case wait > 0 && api:
@@ -265,7 +301,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		case strings.HasPrefix(p, "/img/"):
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusUnauthorized)
-		case s.assets[p].data != nil:
+		case s.assets[p].data != nil && !s.assets[p].admin:
 			plain(w, http.StatusUnauthorized, "unauthorized\n")
 		default:
 			redirect(w, "/login")
@@ -273,13 +309,13 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a, ok := s.assets[p]; ok {
+	// The admin's script and stylesheet are for admins only. Nobody else is
+	// served them, so an ordinary visitor's browser never downloads them.
+	if a, ok := s.assets[p]; ok && (!a.admin || (admin && s.adminRoutes())) {
 		s.serveAsset(w, r, a)
 		return
 	}
 	// Handlers that answer differently to an admin are given the level.
-	// Routes only an admin may use belong here too: check level == accessAdmin
-	// (and wait == 0) and answer everyone else as for an unknown path.
 	switch {
 	case p == "/":
 		s.handleIndex(w, r, level)
@@ -288,12 +324,19 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case p == "/api/tiles/new":
 		s.handleNew(w, r, level)
 	case strings.HasPrefix(p, "/img/"):
-		s.handleImage(w, r, p[len("/img/"):])
-	case api:
-		s.jsonError(w, r, http.StatusNotFound, "not found")
+		s.handleImage(w, r, p[len("/img/"):], admin)
 	default:
-		plain(w, http.StatusNotFound, "not found\n")
+		s.notFound(w, r, api)
 	}
+}
+
+// notFound is the answer for a path that does not exist.
+func (s *Server) notFound(w http.ResponseWriter, r *http.Request, api bool) {
+	if api {
+		s.jsonError(w, r, http.StatusNotFound, "not found")
+		return
+	}
+	plain(w, http.StatusNotFound, "not found\n")
 }
 
 func (s *Server) healthz(w http.ResponseWriter) {
@@ -306,7 +349,11 @@ func (s *Server) healthz(w http.ResponseWriter) {
 
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, a asset) {
 	h := w.Header()
-	h.Set("Cache-Control", "no-cache")
+	if a.admin {
+		h.Set("Cache-Control", "private, no-cache") // a shared cache must not hand it to others
+	} else {
+		h.Set("Cache-Control", "no-cache")
+	}
 	h.Set("ETag", a.etag)
 	if etagMatch(r.Header.Get("If-None-Match"), a.etag) {
 		w.WriteHeader(http.StatusNotModified)

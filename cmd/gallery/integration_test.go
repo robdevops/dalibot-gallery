@@ -674,7 +674,8 @@ func TestIntegration(t *testing.T) {
 	listen2 := fmt.Sprintf("127.0.0.1:%d", port2)
 	pub := &stack{
 		t: t, base: "http://" + listen2, bin: bin, logs: &lockedBuffer{},
-		env: withEnv("GALLERY_LISTEN="+listen2, "GALLERY_TOKEN=", "GALLERY_PUBLIC=1", "GALLERY_ADMIN_TOKEN="+devstack.AdminToken),
+		env: withEnv("GALLERY_LISTEN="+listen2, "GALLERY_TOKEN=", "GALLERY_PUBLIC=1", "GALLERY_ADMIN_TOKEN="+devstack.AdminToken,
+			"GALLERY_STATE_DIR="+filepath.Join(tmp, "state")),
 		// Nothing a public visitor receives may hold a chat id, on top of everything else.
 		secrets: append(append([]string{devstack.AdminToken}, s.secrets...), "1001111111111", "1002222222222", "424242"),
 		client:  s.client,
@@ -812,6 +813,9 @@ func TestIntegration(t *testing.T) {
 	if resp, _ := pub.send(req); resp.StatusCode != 303 || len(resp.Cookies()) != 1 || resp.Cookies()[0].MaxAge >= 0 {
 		t.Errorf("POST /logout: %d %v", resp.StatusCode, resp.Cookies())
 	}
+
+	// --- the admin hides images; the list survives restarts and a cache wipe --
+	hideAcrossRestarts(t, pub, false, filepath.Join(tmp, "cache"), filepath.Join(tmp, "state"))
 	pub.stop()
 	publog := pub.logs.String()
 	for _, secret := range []string{devstack.AdminToken, adminCookie.Value, devstack.BotToken, devstack.FileIDPrefix} {

@@ -44,6 +44,7 @@ const (
 	MaxStoreDays          = 3650
 	redacted              = "[redacted]"
 	envCacheDirectory     = "CACHE_DIRECTORY" // set by systemd's CacheDirectory=
+	envStateDirectory     = "STATE_DIRECTORY" // set by systemd's StateDirectory=
 	envRegionFallback     = "AWS_DEFAULT_REGION"
 	maxChats              = 1000
 	maxTrustedProxies     = 64
@@ -74,9 +75,15 @@ type Config struct {
 	Refresh         time.Duration // GALLERY_REFRESH
 	CacheDir        string        // GALLERY_CACHE_DIR, absolute
 	CacheMaxMB      int           // GALLERY_CACHE_MAX_MB
-	WebPQuality     int           // GALLERY_WEBP_QUALITY
-	ImageWorkers    int           // GALLERY_IMAGE_WORKERS
-	Warm            int           // GALLERY_WARM
+	// StateDir is GALLERY_STATE_DIR, absolute: where the gallery keeps what
+	// cannot be made again (the list of hidden images). StateInCache says
+	// that neither GALLERY_STATE_DIR nor $STATE_DIRECTORY was set, so
+	// StateDir is CacheDir and wiping the cache would lose the state.
+	StateDir     string
+	StateInCache bool
+	WebPQuality  int // GALLERY_WEBP_QUALITY
+	ImageWorkers int // GALLERY_IMAGE_WORKERS
+	Warm         int // GALLERY_WARM
 	// TrustedProxies is GALLERY_TRUSTED_PROXIES: the peers whose
 	// X-Forwarded-For header is believed. Loopback when unset; empty for "none".
 	TrustedProxies []netip.Prefix
@@ -315,6 +322,26 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	} else {
 		c.CacheDir = abs
 	}
+	// State: what cannot be fetched or made again. Without a directory of
+	// its own it lives in the cache directory (main warns about that).
+	state := get("GALLERY_STATE_DIR")
+	if state == "" {
+		state, _, _ = strings.Cut(get(envStateDirectory), ":")
+	}
+	switch {
+	case state == "":
+		c.StateDir, c.StateInCache = c.CacheDir, true
+	case strings.ContainsRune(state, 0):
+		bad("GALLERY_STATE_DIR", "is not a valid path")
+	default:
+		if abs, err := filepath.Abs(state); err != nil {
+			bad("GALLERY_STATE_DIR", "cannot be made absolute: %v", err)
+		} else if abs == string(filepath.Separator) {
+			bad("GALLERY_STATE_DIR", "must not be the filesystem root")
+		} else {
+			c.StateDir = abs
+		}
+	}
 	c.CacheMaxMB = integer("GALLERY_CACHE_MAX_MB", DefaultCacheMaxMB, MinCacheMaxMB, 1<<30)
 	c.WebPQuality = integer("GALLERY_WEBP_QUALITY", DefaultWebPQuality, 1, 100)
 	c.ImageWorkers = integer("GALLERY_IMAGE_WORKERS", min(runtime.GOMAXPROCS(0), MaxImageWorkers), 1, MaxImageWorkers)
@@ -403,6 +430,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("refresh", c.Refresh),
 		slog.String("cache_dir", c.CacheDir),
 		slog.Int("cache_max_mb", c.CacheMaxMB),
+		slog.String("state_dir", c.StateDir),
 		slog.Int("webp_quality", c.WebPQuality),
 		slog.Int("image_workers", c.ImageWorkers),
 		slog.Int("warm", c.Warm),

@@ -25,6 +25,7 @@ import (
 
 	"github.com/robdevops/dalibot-gallery/internal/cache"
 	"github.com/robdevops/dalibot-gallery/internal/config"
+	"github.com/robdevops/dalibot-gallery/internal/hidden"
 	"github.com/robdevops/dalibot-gallery/internal/imaging"
 	"github.com/robdevops/dalibot-gallery/internal/source"
 	"github.com/robdevops/dalibot-gallery/internal/telegram"
@@ -114,6 +115,7 @@ type env struct {
 	store   *source.Store
 	fetcher *fakeFetcher
 	cache   *cache.Cache
+	hidden  *hidden.List // the list behind the store's Hidden rule, as in main
 	cfg     *config.Config
 	secrets []string // nothing in here may appear in any response
 	logs    *syncBuffer
@@ -162,7 +164,7 @@ func newEnv(t *testing.T, recs []source.Record, vars map[string]string) *env {
 	t.Helper()
 	m := map[string]string{
 		"GALLERY_TOKEN": testToken, "TELEGRAM_BOT_TOKEN": testBotToken,
-		"GALLERY_CACHE_DIR": t.TempDir(), "GALLERY_WARM": "10",
+		"GALLERY_CACHE_DIR": t.TempDir(), "GALLERY_STATE_DIR": t.TempDir(), "GALLERY_WARM": "10",
 	}
 	maps.Copy(m, vars)
 	cfg, err := config.FromEnv(func(k string) string { return m[k] })
@@ -175,19 +177,23 @@ func newEnv(t *testing.T, recs []source.Record, vars map[string]string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := source.NewStore(source.Static(recs), source.Options{StoreDays: 90, DefaultCommand: "dream"}, log)
+	hid, err := hidden.Open(cfg.StateDir, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := source.NewStore(source.Static(recs), source.Options{StoreDays: 90, DefaultCommand: "dream", Hidden: hid.Has}, log)
 	if recs != nil {
 		if err := store.Refresh(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
 	ff := &fakeFetcher{calls: map[string]int{}, fail: map[string]bool{}, data: map[string][]byte{}, errs: map[string]error{}}
-	srv, err := New(Deps{Config: cfg, Store: store, Fetcher: ff, Cache: ca, Web: web.Files, Log: log})
+	srv, err := New(Deps{Config: cfg, Store: store, Fetcher: ff, Cache: ca, Hidden: hid, Web: web.Files, Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
-	e := &env{t: t, srv: srv, h: srv.Handler(), store: store, fetcher: ff, cache: ca, cfg: cfg, logs: logs,
+	e := &env{t: t, srv: srv, h: srv.Handler(), store: store, fetcher: ff, cache: ca, hidden: hid, cfg: cfg, logs: logs,
 		secrets: []string{testToken, testAdminToken, testBotToken, fileIDMark, "api.telegram.org", "file_path", "file_id"}}
 	return e
 }

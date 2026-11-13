@@ -74,6 +74,7 @@ func run() error {
 	warm := flag.Int("warm", 120, "how many of the newest tiles to pre-generate (GALLERY_WARM)")
 	delay := flag.Duration("telegram-delay", 0, "delay added to every fake Telegram answer")
 	cacheDir := flag.String("cache", "", "cache directory; default is a temporary one that is removed on exit")
+	stateDir := flag.String("state", "", "state directory (GALLERY_STATE_DIR: the list of hidden images); default is a temporary one that is removed on exit")
 	images := flag.String("images", "testdata/telegram", "directory of sample JPEGs the fake Telegram serves")
 	binary := flag.String("binary", "", "an already built gallery binary; default is to build ./cmd/gallery")
 	debug := flag.Bool("debug", false, "log every image request (GALLERY_DEBUG=1)")
@@ -92,6 +93,9 @@ func run() error {
 	defer os.RemoveAll(tmp)
 	if *cacheDir == "" {
 		*cacheDir = filepath.Join(tmp, "cache")
+	}
+	if *stateDir == "" {
+		*stateDir = filepath.Join(tmp, "state")
 	}
 
 	imgs, err := devstack.LoadImages(*images)
@@ -166,6 +170,7 @@ func run() error {
 		"GALLERY_REFRESH="+refresh.String(),
 		"GALLERY_WARM="+strconv.Itoa(*warm),
 		"GALLERY_CACHE_DIR="+*cacheDir,
+		"GALLERY_STATE_DIR="+*stateDir,
 		"GALLERY_CHATS=",
 	)
 	// Every access variable is set, so that nothing is inherited from the caller's environment.

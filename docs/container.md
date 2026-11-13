@@ -44,6 +44,15 @@ development sandbox only (Docker 29, x86-64):
   was checked with `docker compose config` only, not brought up. The
   SQLite and configuration unit tests also pass inside the build stage
   (Alpine 3.24, musl).
+- The state volume for the list of hidden images: the image was built again
+  with `/var/lib/dalibot-gallery` and run with the README's `docker run`
+  flags, `--network host`, a public dev stack with an admin token, and named
+  volumes for the cache and the state. As uid 10001 an image was hidden
+  (`hidden.json` written to the state volume, the image's URL then `404`),
+  the container and the cache volume were removed, and a new container on
+  the same state volume still had it hidden; restoring brought it back, and
+  a cross-site `POST` was refused. Without a state mount Docker made an
+  anonymous volume there. Compose's new `state` volume was not brought up.
 - Not tested: real AWS, the real Telegram API, a real bot's database, certificate issuance, any
   other machine or architecture, the unit under a running systemd.
 
@@ -52,3 +61,18 @@ succeeded, so the container is "starting" or "unhealthy" while AWS is
 unreachable or the credentials are wrong (or, with `GALLERY_SOURCE=sqlite`,
 while the database file cannot be read); the log says why. Traefik does not route to a
 container that is not healthy.
+
+**Volumes.** The image declares two:
+
+- `/var/cache/dalibot-gallery` (`GALLERY_CACHE_DIR`): originals and
+  thumbnails. It can be deleted at any time.
+- `/var/lib/dalibot-gallery` (`GALLERY_STATE_DIR`): the list of images an
+  admin has hidden ([Hiding images](admin.md)). This is state: keep it, and
+  include it in backups. `deploy/compose.yaml` mounts the named volume
+  `state` there; with `docker run`, add `-v
+  dalibot-gallery-state:/var/lib/dalibot-gallery`, or Docker makes an
+  anonymous volume that is lost when the container is removed.
+
+Both belong to uid 10001 in the image. A new named volume takes that owner
+from the image; a host directory mounted instead must be writable by uid
+10001 (`chown 10001:10001`).

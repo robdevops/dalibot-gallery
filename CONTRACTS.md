@@ -64,6 +64,8 @@ type Config struct {
 	Refresh         time.Duration // GALLERY_REFRESH; default 60s; 5s..24h; a bare number means seconds
 	CacheDir        string        // GALLERY_CACHE_DIR, else first entry of $CACHE_DIRECTORY, else ./cache; absolute
 	CacheMaxMB      int           // GALLERY_CACHE_MAX_MB; default 2048; >= 16
+	StateDir        string        // GALLERY_STATE_DIR, else first entry of $STATE_DIRECTORY, else CacheDir; absolute; not "/"
+	StateInCache    bool          // neither GALLERY_STATE_DIR nor $STATE_DIRECTORY was set: StateDir is CacheDir (main warns)
 	WebPQuality     int           // GALLERY_WEBP_QUALITY; default 76; 1..100
 	ImageWorkers    int           // GALLERY_IMAGE_WORKERS; default runtime.GOMAXPROCS(0), which follows a container's CPU limit; 1..64
 	Warm            int           // GALLERY_WARM; default 120; 0..10000
@@ -147,6 +149,7 @@ type Options struct {
 	Chats          []string           // cfg.Chats
 	DefaultCommand string             // cfg.DefaultCommand
 	Now            func() time.Time   // nil = time.Now (tests set it)
+	Hidden         func(key string) bool // nil = nothing hidden; else hidden.List.Has. Asked on every Build; must be safe for concurrent use
 }
 ```
 
@@ -193,8 +196,11 @@ func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, er
 func (s *Snapshot) NewSince(cursor string) (count int, newest string, err error)
 func (s *Snapshot) Newest(n int) []Tile            // first n tiles; for the warmer and for /api/tiles/new
 func (s *Snapshot) Tile(key string) (Tile, bool)
-func (s *Snapshot) Has(key string) bool            // is this key live (may it be served, must its original be kept)?
-func (s *Snapshot) FileID(key string) (string, bool)   // SERVER-SIDE SECRET: only ever pass to telegram.Client.Fetch
+func (s *Snapshot) Has(key string) bool            // is this key listed (may everyone with view access be served it)?
+func (s *Snapshot) Hidden() []Tile                 // images Options.Hidden took out, in listing order; Tiles without Styles and Current
+func (s *Snapshot) HasHidden(key string) bool      // a hidden image that is still in the bot's records (served to admins only)
+func (s *Snapshot) Known(key string) bool          // Has || HasHidden: must the cache keep this key's files?
+func (s *Snapshot) FileID(key string) (string, bool)   // listed or hidden. SERVER-SIDE SECRET: only ever pass to telegram.Client.Fetch
 func (s *Snapshot) Keys() []string                 // every live key, newest first
 
 // Store: the current snapshot plus the refresher.
@@ -202,7 +208,8 @@ func NewStore(src Source, opt Options, log *slog.Logger) *Store   // log may be 
 func (st *Store) Snapshot() *Snapshot              // never nil; empty until the first successful refresh
 func (st *Store) Refresh(ctx context.Context) error    // on error the previous snapshot stays
 func (st *Store) Run(ctx context.Context, interval time.Duration)  // blocks; refreshes now, then every interval; logs failures
-func (st *Store) OnSwap(fn func(*Snapshot))        // called after every successful swap, on the refresher goroutine
+func (st *Store) Rebuild()                         // Build again from the records read last (no read) and swap; after a change to Options.Hidden
+func (st *Store) OnSwap(fn func(*Snapshot))        // called after every swap, by Refresh or Rebuild, on the goroutine that swapped
 func (st *Store) LastRefresh() time.Time           // last success; zero if none
 func (st *Store) Age() time.Duration               // since last success; math.MaxInt64 if none
 func (st *Store) Healthy(maxAge time.Duration) bool    // a refresh succeeded less than maxAge ago
@@ -210,13 +217,14 @@ func (st *Store) Healthy(maxAge time.Duration) bool    // a refresh succeeded le
 
 ### Behaviour other packages rely on
 
-- **Listing rules (`Build`)**: drops `check:check`, ids that are not `<chat>:<message>`, chats outside `Options.Chats` (when not empty), records with `ttl < now`, and records without images. Sorts records by (updated desc, id desc; ids compare as strings). Removes an image whose file_id already appeared in a newer record, and drops records left empty. `Current` = stored current if that image exists, else `_`, else the first image in display order. One tile per remaining image: the current style first, then style-table order, then unknown keys alphabetically.
+- **Listing rules (`Build`)**: drops `check:check`, ids that are not `<chat>:<message>`, chats outside `Options.Chats` (when not empty), records with `ttl < now`, and records without images. Sorts records by (updated desc, id desc; ids compare as strings). Removes an image whose file_id already appeared in a newer record, and drops records left empty. Then takes out every image whose key `Options.Hidden` reports (after the de-duplication, so a hidden image does not come back through an older record), keeps it aside for `Snapshot.Hidden`, and drops records left empty; a hidden image is not among the `Styles` of its record's other tiles. `Current` = stored current if that image exists, else `_`, else the first image in display order. One tile per remaining image: the current style first, then style-table order, then unknown keys alphabetically.
 - **`Page`**: `cursor == ""` starts at the newest tile. `next == ""` means the end. A page always holds **whole records**: it takes records while they fit in `limit` and always at least one, so a page can be a little shorter than `limit` (or longer, if one record has more images than `limit`). **A short page is not the end; only `next == ""` is.** This is what keeps paging free of duplicates and gaps when the table changes between requests, including when a user switches a record's style in Telegram (which reorders that record's tiles without changing its timestamp). `limit < 1` is treated as 1; the caller applies the default (60) and the cap (120).
 - **`NewSince(cursor)`**: `count` = number of tiles that sort before the cursor's tile (i.e. are newer); `newest` = cursor of the snapshot's first tile, `""` if the snapshot is empty. `cursor == ""` counts every tile. `s.Newest(count)` are exactly those new tiles, newest first.
 - **Cursors** are opaque base64url strings without padding (URL-safe as they are). Never build or parse one outside this package. A malformed one gives `ErrBadCursor`. A cursor stays valid across snapshot swaps, even if its tile is gone. A cursor of this package is base64 of text that includes the record id, so it must not reach a browser as it is: the server seals every cursor it sends and opens every cursor it receives (7.3).
 - **Request handling**: call `store.Snapshot()` once per request and use that value for everything in the request.
-- **`OnSwap` hooks** run synchronously on the refresher goroutine, in registration order, only after a successful swap. A hook must return quickly: the warmer and the cache pruning must start their own goroutine (and should cancel or skip a still-running previous run). Register hooks before `Run`.
-- **Liveness**: a key is live exactly when `store.Snapshot().Has(key)`. Pass `snap.Has` (from the snapshot given to the hook) as the `live` function of `cache.Prune`. Never prune from the empty start-up snapshot: only prune inside an `OnSwap` hook, which runs only after a successful scan.
+- **`OnSwap` hooks** run synchronously on the goroutine that swapped (the refresher, or the caller of `Rebuild`), in registration order, only after a successful swap; a hook may be called from two goroutines at once. A hook must return quickly: the warmer and the cache pruning must start their own goroutine (and should cancel or skip a still-running previous run). Register hooks before `Run`.
+- **Rebuild**: when `Rebuild` returns, the current snapshot reflects every change to `Options.Hidden` made before the call, whatever refresh runs at the same time (snapshots are built and swapped under one lock, from the records read last). It does nothing before the first successful refresh and does not count as a refresh for `LastRefresh`, `Age` or `Healthy`.
+- **Liveness**: a key is served to everyone exactly when `store.Snapshot().Has(key)`, and to an admin also when `HasHidden(key)`. Pass `snap.Known` (from the snapshot given to the hook) as the `live` function of `cache.Prune`, so a hidden image keeps its files while its record lasts. Never prune from the empty start-up snapshot: only prune inside an `OnSwap` hook, which runs only after a successful scan.
 - **Health**: `/healthz` is `store.Healthy(3 * cfg.Refresh)`.
 - **File ids**: `Snapshot.FileID` is the only way to get one. Do not log it, put it in an error that reaches a response, or send it to a browser.
 - **SQLite rows (`SQLite.Records`)**: each call opens the file with `file:<escaped path>?mode=ro&_query_only=1&_busy_timeout=0`, runs one `SELECT` (every column cast, so any stored type scans) and closes it; nothing stays open between refreshes. A row maps to `Record{ID: chat_id + ":" + message_id, TTL: updated + StoreDays*86400, Created: data.created (a whole number, else 0), …}`, so `Build` needs no SQLite case: its `ttl < now` rule hides a row older than the store days (the bot purges only at start-up) and `ttl - StoreDays*86400` dates a record from `updated`. `base` and `kind` are not decoded. A row whose `data` is not a JSON object in the bot's shape is skipped and counted in one warning. `SQLITE_BUSY` is retried every 20 ms until `BusyTimeout` or the context ends; every other failure (missing file, no table, hot journal, permissions) is returned at once, and `Store` keeps the previous snapshot. A file whose header says WAL (bytes 18/19 = 2) is refused before SQLite opens it, because a read-only WAL connection creates `-shm`/`-wal` files. Driver: `github.com/mattn/go-sqlite3` (cgo, SQLite compiled in).
@@ -382,6 +390,34 @@ func (c *Cache) Size() int64
 - A `Get` miss, a read error and a zero-length file are all `ok=false`.
 - Files are written 0600.
 
+## 6a. `internal/hidden` (exists)
+
+The gallery's own list of images an admin has hidden. It is the only state the gallery writes besides its cache; it never touches the bot's data.
+
+```go
+package hidden
+
+const FileName = "hidden.json"   // in cfg.StateDir: {"version":1,"hidden":[{"key":"<22>","at":<epoch s>}, …]}
+const MaxEntries = 100_000
+var ErrBadKey, ErrFull, ErrReadOnly error
+
+type Entry struct{ Key string; At int64 }
+type List struct{ /* unexported */ }   // safe for concurrent use
+
+func Open(dir string, log *slog.Logger) (*List, error)
+func (l *List) Path() string
+func (l *List) Has(key string) bool       // what source.Options.Hidden takes
+func (l *List) At(key string) (int64, bool)
+func (l *List) Len() int
+func (l *List) Entries() []Entry          // most recently hidden first
+func (l *List) Hide(key string) (changed bool, err error)
+func (l *List) Restore(key string) (changed bool, err error)
+```
+
+- `Open` creates `dir` (0700), removes leftover temporary files, and reads the list. A missing file is an empty list. A file it cannot understand (not JSON, another version) is renamed to `hidden.json.corrupt-<UTC time>` and logged, and the list starts empty; if the rename fails the list starts empty and every change returns `ErrReadOnly`, so the file is never overwritten. Entries whose key fails `source.ValidKey` are skipped with a warning. An error is returned only when the directory cannot be used or the file exists but cannot be read (or is not a regular file, or is over 16 MiB); `cmd/gallery` then exits with status 1.
+- `Hide` and `Restore` take `source.ValidKey` keys only (`ErrBadKey`), write the whole list to a temporary file in the same directory (0600), `fsync` it, rename it over the list and `fsync` the directory. If the write fails, the change is undone in memory: `Has` always says what the file says. `changed` is false (and nothing is written) when the key was already hidden, or not hidden.
+- The file is read at `Open` only.
+
 ## 7. HTTP API (REQUIRED; implemented by `internal/server`, consumed by `web/`)
 
 ### 7.1 Construction
@@ -398,7 +434,8 @@ type Deps struct {
 	Store   *source.Store
 	Fetcher Fetcher
 	Cache   *cache.Cache
-	Web     fs.FS            // web.Files: index.html, login.html, app.js, app.css, favicon.png at its root
+	Hidden  *hidden.List     // the list behind Store's Options.Hidden; nil: nothing can be hidden and the admin routes do not exist
+	Web     fs.FS            // web.Files: index.html, login.html, hidden.html, app.js, app.css, admin.js, admin.css, favicon.png at its root
 	Log     *slog.Logger
 }
 
@@ -423,13 +460,13 @@ and logs image, asset and health requests only when `GALLERY_DEBUG=1`. JSON bodi
 `internal/devstack` and `scripts/dev-stack.sh` run the whole stack locally (moto, a fake Telegram API, seeded data);
 sample JPEGs are in `testdata/telegram/` (not `testdata/images/`).
 
-`cmd/gallery/main.go` wires, in this order: `config.Load` → logger → `imaging.Startup` → `cache.Open` → `telegram.New` → `source.NewSQLite` when `cfg.Source` is sqlite, else `source.NewDynamo` (only the chosen one is constructed) → `source.NewStore` → `server.New` → `store.OnSwap(...)` → `go store.Run(ctx, cfg.Refresh)` → `http.Server{ReadHeaderTimeout: 5s, ReadTimeout: 10s, WriteTimeout: 60s, IdleTimeout: 120s, MaxHeaderBytes: 16 << 10}`; on SIGINT/SIGTERM: shut the server down, cancel ctx, `imaging.Shutdown`.
+`cmd/gallery/main.go` wires, in this order: `config.Load` → logger → `imaging.Startup` → `cache.Open` → `hidden.Open(cfg.StateDir)` (warning when `cfg.StateInCache` and there is an admin token or something hidden) → `telegram.New` → `source.NewSQLite` when `cfg.Source` is sqlite, else `source.NewDynamo` (only the chosen one is constructed) → `source.NewStore` (with `Options.Hidden = hid.Has`) → `server.New` (with `Hidden: hid`) → `store.OnSwap(...)` → `go store.Run(ctx, cfg.Refresh)` → `http.Server{ReadHeaderTimeout: 5s, ReadTimeout: 10s, WriteTimeout: 60s, IdleTimeout: 120s, MaxHeaderBytes: 16 << 10}`; on SIGINT/SIGTERM: shut the server down, cancel ctx, `imaging.Shutdown`.
 
 How an image is produced (server): thumbnail request → `cache.GetThumb` → else original (`cache.GetOriginal` → else `snap.FileID` + `Fetcher.Fetch` + `imaging.Verify` (header check, then a full decode) + `cache.PutOriginal`) → `imaging.Thumbnail` → `cache.PutThumb`. Use singleflight per `key+size` so concurrent requests for one cold tile do the work once.
 
 ### 7.2 Routes
 
-Only `GET` and `HEAD` are allowed, except `POST /login` and `/logout`, which takes only `POST`; anything else is `405` with an `Allow` header. Unknown paths are `404`. `/login` and `/logout` exist only when `cfg.LoginEnabled()`; in a public gallery without an admin token they are unknown paths (`404`, and `405` for a `POST`). All routes except `/healthz`, `/login`, `/logout`, `/app.css` (the login page's stylesheet) and `/favicon.png` need view access (7.4), which everyone has in a public gallery.
+Only `GET` and `HEAD` are allowed, except `POST /login`, `/logout`, which takes only `POST`, and the admin's `POST` routes below; anything else is `405` with an `Allow` header. Unknown paths are `404`. `/login` and `/logout` exist only when `cfg.LoginEnabled()`; in a public gallery without an admin token they are unknown paths (`404`, and `405` for a `POST`). All routes except `/healthz`, `/login`, `/logout`, `/app.css` (the login page's stylesheet) and `/favicon.png` need view access (7.4), which everyone has in a public gallery.
 
 | Route | Response |
 |---|---|
@@ -441,11 +478,18 @@ Only `GET` and `HEAD` are allowed, except `POST /login` and `/logout`, which tak
 | `GET /img/<key>.jpg` | the original JPEG, byte for byte, see below. |
 | `GET /login`, `POST /login`, `POST /logout` | see 7.4. |
 | `GET /healthz` | `200 text/plain` body `ok\n` when `store.Healthy(3*cfg.Refresh)`, else `503` body `stale\n`. No auth. |
+| `GET /admin.js`, `GET /admin.css` | admin only (see below): the embedded file, `Cache-Control: private, no-cache`, `ETag`, `304`. |
+| `GET /admin/hidden` | admin only: `hidden.html` (7.5), `no-store`. |
+| `GET /api/admin/hidden` | admin only: `{"hidden":[{"key","style","label","caption","prompt","command","updated","hidden_at"}],"gone":<n>,"v":"<tag>"}`: the hidden images still in the bot's records (`snap.Hidden()`), most recently hidden first, and the number of other entries of the list. No record id. |
+| `POST /api/admin/hide/<key>` | admin only: hide an image the snapshot knows (`snap.Known`) or that is hidden already; `200 {"key":"<key>","hidden":true}`. |
+| `POST /api/admin/restore/<key>` | admin only: restore a hidden image (also one no longer in the records); `200 {"key":"<key>","hidden":false}`. |
+
+Admin routes (`internal/server/admin.go`) exist only when `cfg.AdminEnabled()` and `Deps.Hidden != nil`, and are served only when `authorize` gives admin level with no wait. Everyone else gets exactly what an unknown path gives: a `GET` goes through the usual access handling (`303` to `/login`, or `401`, or `404`), and a `POST` is `404` (JSON `{"error":"not found"}`) whatever the key, never `405`. For an admin: a `POST` that fails `http.CrossOriginProtection` is `403` `{"error":"cross-origin request refused"}` and changes nothing; an invalid or unknown key is `404`; `MaxEntries` reached is `409`; a list that cannot be written is `500` and changes nothing; a wrong method is `405` with `Allow`. On success the server calls `store.Rebuild()` before answering, so the listing and the image routes already reflect the change, and logs the key and client address. `/admin.js` and `/admin.css` are unknown paths (`404`) to everyone but an admin.
 
 Image routes:
 
 - The path after `/img/` must match `^[A-Za-z0-9_-]{22}-(240|480)\.webp$` or `^[A-Za-z0-9_-]{22}\.jpg$`. A key may itself contain `-` and `_`: it is always the first 22 characters. Anything else is `404`.
-- The key must be in the current snapshot (`snap.Has`), else `404`. For `.webp`, `v` must equal `imaging.Tag()`, else `404` (an old page asking for an old pipeline version must not be given new bytes under an immutable URL).
+- The key must be in the current snapshot (`snap.Has`), else `404`. A hidden image (`snap.HasHidden`) is `404` like any unknown key, except to an admin, who is served it with `Cache-Control: no-store` and no `ETag` (and no `304`). For `.webp`, `v` must equal `imaging.Tag()`, else `404` (an old page asking for an old pipeline version must not be given new bytes under an immutable URL).
 - Success: `200`, `Content-Type: image/webp` or `image/jpeg`, `Cache-Control: private, max-age=31536000, immutable` (`public, …` when `cfg.Public`; the brief's `public` would let shared caches store images that are behind the login), `ETag: "<key>-<size>-v<tag>"` (thumbnail) or `"<key>"` (original), `Content-Length`. `If-None-Match` with that ETag gives `304` without doing any work.
 - Failure to obtain the image (Telegram error, invalid bytes):
   - `.webp`: `200`, `Content-Type: image/webp`, body `imaging.Placeholder()`, `Cache-Control: no-store`, header `X-Gallery-Placeholder: 1`, no `ETag`.
@@ -561,11 +605,11 @@ package web
 
 import "embed"
 
-//go:embed index.html login.html app.js app.css favicon.png
+//go:embed index.html login.html hidden.html app.js app.css admin.js admin.css favicon.png
 var Files embed.FS
 ```
 
-`index.html` and `login.html` are parsed with `html/template` (so `{{`…`}}` is template syntax in those two files; `app.js` and `app.css` are served as they are). The scripts and styles are referenced as `/app.css` and `/app.js` (`<script src="/app.js" defer>`).
+`index.html`, `login.html` and `hidden.html` are parsed with `html/template` (so `{{`…`}}` is template syntax in those files; the scripts and stylesheets are served as they are). The scripts and styles are referenced as `/app.css` and `/app.js` (`<script src="/app.js" defer>`).
 
 `index.html` is executed with:
 
@@ -577,6 +621,7 @@ type indexData struct {
 	Admin      bool    // the visitor has admin access: rendered as <html lang="en" data-admin="1">
 	AdminLogin bool    // an admin token is configured and the visitor is not an admin: a link to /login in the footer
 	SignOut    bool    // the visitor has a session cookie: a POST /logout form in the footer
+	Hide       bool    // admin level and the admin routes exist: /admin.css and /admin.js (after /app.js) in <head>, and a link to /admin/hidden in the footer
 }
 type indexTile struct {
 	Key    string  // tile key
@@ -602,7 +647,11 @@ With JavaScript, `?cursor=` in the page URL is ignored.
 
 **The admin flag.** For an admin the server renders `<html lang="en" data-admin="1">`; for everyone else `<html lang="en">`, with no attribute. Script reads it as `document.documentElement.dataset.admin`. It is a hint for the page: the server checks the level on every request. Admin-only script must be a separate file served only at admin level, so that `app.js` + `app.css` stay within their budget and other visitors download nothing extra.
 
-**The footer.** When `AdminLogin` or `SignOut`, the page ends with `<footer class="foot">` holding `<a href="/login">Admin</a>` and/or `<form method="post" action="/logout"><button type="submit">Sign out</button></form>`. An anonymous visitor of a public gallery without an admin token gets no footer.
+**Admin script.** `admin.js` and `admin.css` hold everything for hiding and restoring; nothing in `app.js`, `app.css` or the page of a visitor without `Hide` refers to them (tested in `web/web_test.go`). `admin.js` works on the page `app.js` builds without changing it: it adds `<p id="adm">` after `#cmd` in the viewer (a "Hide" button, the question "Hide this image from the gallery?" with "Cancel" and "Hide image", and "Image hidden. Undo") and `<div id="undo">` at the end of `<body>` for Undo while the viewer is closed. "Hide image" acts only for the image the question was asked about and not within 500 ms of "Hide". After hiding it removes the tile and its strip thumbnail, refills the grid's 60-tile batches in order, and moves the viewer to the next image (the previous at the end) through `location.replace('#/p/<key>')`. On `hidden.html` it handles the `data-restore` buttons.
+
+`hidden.html` is executed with `struct{ Tiles []struct{ Key, Alt, Text, Src240, Src480, Full string }; Gone int; SignOut bool }` and is always rendered with `<html lang="en" data-admin="1">`; it lists each tile in `<ul id="hidden">` with a `<button type="button" data-restore="<key>">Restore</button>`, has `<p id="none">` (hidden unless the list is empty) and a `#live` region, and loads `/app.css`, `/admin.css` and `/admin.js` only.
+
+**The footer.** When `AdminLogin`, `SignOut` or `Hide`, the page ends with `<footer class="foot">` holding `<a href="/admin/hidden">Hidden images</a>` (with `Hide`), `<a href="/login">Admin</a>` and/or `<form method="post" action="/logout"><button type="submit">Sign out</button></form>`. An anonymous visitor of a public gallery without an admin token gets no footer.
 
 `login.html` is executed with `struct{ Error, AdminOnly bool }` (`AdminOnly` is `cfg.Public`: the label reads "Admin token" and a link leads back to the gallery) and must contain a `<form method="post" action="/login">` with `<input type="password" name="token" autocomplete="current-password" required autofocus>` and a submit button, and show a message when `{{if .Error}}`.
 
@@ -616,5 +665,6 @@ Fixed values shared by `web/` and the server:
 
 - Call any Telegram method other than `getFile` and the file download, or any DynamoDB operation other than `Scan` (and `GetItem`). Tests may create and fill tables in moto only.
 - Open the bot's SQLite file in any way but read-only, or run any statement on it but the one `SELECT`. Tests and the dev stack write only to database files they created themselves.
+- Write anywhere but `cfg.CacheDir` (the cache) and `cfg.StateDir` (`hidden.json`).
 - Send or log a file_id, the bot token, the gallery token, a cookie value, a Telegram URL or a file_path.
 - Import or run anything from the bot's repository.

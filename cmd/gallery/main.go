@@ -4,7 +4,8 @@
 // It is configured only through environment variables (see internal/config and
 // .env.example). It reads the table with Scan, or the database file through a
 // read-only connection, fetches originals from Telegram with getFile and the
-// file download, and never writes to any of them.
+// file download, and never writes to any of them. What it writes is its own:
+// the cache, and the list of images an admin has hidden (internal/hidden).
 //
 // Usage:
 //
@@ -29,6 +30,7 @@ import (
 
 	"github.com/robdevops/dalibot-gallery/internal/cache"
 	"github.com/robdevops/dalibot-gallery/internal/config"
+	"github.com/robdevops/dalibot-gallery/internal/hidden"
 	"github.com/robdevops/dalibot-gallery/internal/imaging"
 	"github.com/robdevops/dalibot-gallery/internal/server"
 	"github.com/robdevops/dalibot-gallery/internal/source"
@@ -84,6 +86,20 @@ func run() int {
 		log.Error("opening the cache failed", "dir", cfg.CacheDir, "error", err)
 		return 1
 	}
+	// The gallery's own state: the images an admin has hidden. It is read
+	// whether or not there is an admin token now: what was hidden stays hidden.
+	hid, err := hidden.Open(cfg.StateDir, log)
+	if err != nil {
+		log.Error("opening the list of hidden images failed", "dir", cfg.StateDir, "error", err)
+		return 1
+	}
+	if hid.Len() > 0 {
+		log.Info("hidden images", "count", hid.Len(), "file", hid.Path())
+	}
+	if cfg.StateInCache && (cfg.AdminEnabled() || hid.Len() > 0) {
+		log.Warn("the list of hidden images is kept in the cache directory, because neither GALLERY_STATE_DIR nor STATE_DIRECTORY is set: deleting the cache would show every hidden image again. Set GALLERY_STATE_DIR to a directory of its own",
+			"file", hid.Path())
+	}
 	tg := telegram.New(cfg.TelegramAPIBase, cfg.TelegramToken, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -111,9 +127,10 @@ func run() int {
 	}
 	store := source.NewStore(src, source.Options{
 		StoreDays: cfg.StoreDays, Chats: cfg.Chats, DefaultCommand: cfg.DefaultCommand,
+		Hidden: hid.Has, // the same rule for both sources
 	}, log)
 
-	srv, err := server.New(server.Deps{Config: cfg, Store: store, Fetcher: tg, Cache: ca, Web: web.Files, Log: log})
+	srv, err := server.New(server.Deps{Config: cfg, Store: store, Fetcher: tg, Cache: ca, Hidden: hid, Web: web.Files, Log: log})
 	if err != nil {
 		log.Error("setting up the server failed", "error", err)
 		return 1

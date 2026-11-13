@@ -58,11 +58,32 @@ through). Requests with neither header, such as curl, are not affected.
 in to. When viewing needs the token, everything else needs a session or the
 Basic password. In a public gallery everything is open, and `/login` and
 `/logout` exist only if an admin token is set (otherwise they are 404).
+The admin's routes (`/admin/hidden`, `/api/admin/…`) and files (`/admin.js`,
+`/admin.css`) are the exception: they exist only with an admin token and
+are served only to an admin. Everyone else, with a view session or none,
+gets the answer for a path that does not exist, the same for every key.
 
 **The page knows whether the visitor is an admin.** The server renders
 `<html data-admin="1">` for an admin and no such attribute for anyone else.
 That is a hint for the page only; the server checks the session on every
 request and never relies on it.
+
+**Hiding images.** An admin can hide images from the gallery
+([Hiding images](admin.md)). This writes only the gallery's own list,
+`hidden.json` in `GALLERY_STATE_DIR`; it never touches the bot's table or
+database file. The bot's `#delete` removes a record; the gallery's hide only
+hides. A change needs an admin session (or the admin token as the Basic
+password), must be a `POST`, and is refused with `403` when it comes from
+another site's page (`http.CrossOriginProtection`, as for `/login`; the
+cookie is `SameSite=Strict`, but a Basic password a browser remembers is
+not). A hidden image is left out of the listing and the page without
+JavaScript, and its image URLs answer `404` as for a key that never
+existed, so nobody can tell a hidden image from a missing one. An admin is
+still served a hidden image, with `Cache-Control: no-store` and no `ETag`.
+The list holds image keys and times only. Hidden is not secret: the image
+is still in the bot's records and in Telegram, and copies fetched before it
+was hidden (in browsers, or in a shared cache in front of a public gallery)
+are not recalled.
 
 **Guessing a token is rate-limited.** A wrong token counts the same whether
 it is posted to `/login` or sent as a Basic password to any route, and one
@@ -160,6 +181,8 @@ with timeouts, at most 4 at a time; failures are remembered (24 h for a file
 Telegram rejects, 5 minutes otherwise) and the tile shows a plain placeholder.
 
 **DynamoDB.** Read-only by policy and by code: the gallery only calls `Scan`.
+Whatever the source, the only files the gallery writes are its cache and
+its list of hidden images.
 
 **SQLite.** With `GALLERY_SOURCE=sqlite` the bot's database file is opened
 read-only for each read (`mode=ro` and `query_only`) and closed again; the
@@ -194,7 +217,8 @@ with full-resolution colour would need roughly twice as much (an estimate, not m
 
 **Logs.** Every log line passes through a filter that removes the gallery's
 tokens and the bot token. File ids, file paths, Telegram URLs and cookie
-values are not logged. An admin sign-in is logged with the client address.
+values are not logged. An admin sign-in is logged with the client address,
+and so is every hide and restore, with the image key.
 
 **Process.** The gallery listens on `127.0.0.1` by default, sets request
 timeouts (header 5 s, read 10 s, write 60 s, idle 120 s) and a 16 KB header

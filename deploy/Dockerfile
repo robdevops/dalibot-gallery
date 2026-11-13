@@ -38,17 +38,20 @@ FROM ${BASE_IMAGE}
 RUN apk add --no-cache ca-certificates vips \
  && addgroup -g 10001 -S gallery \
  && adduser -u 10001 -S -G gallery -H -h /nonexistent -s /sbin/nologin gallery \
- && install -d -o 10001 -g 10001 -m 0700 /var/cache/dalibot-gallery
+ && install -d -o 10001 -g 10001 -m 0700 /var/cache/dalibot-gallery /var/lib/dalibot-gallery
 COPY --from=build /out/gallery /usr/local/bin/gallery
 
 # Inside the container the gallery listens on every interface; publish the port
 # only to the reverse proxy (for example -p 127.0.0.1:8080:8080).
 ENV GALLERY_LISTEN=0.0.0.0:8080 \
-    GALLERY_CACHE_DIR=/var/cache/dalibot-gallery
+    GALLERY_CACHE_DIR=/var/cache/dalibot-gallery \
+    GALLERY_STATE_DIR=/var/lib/dalibot-gallery
 
 USER 10001:10001
-# The only path the gallery writes to. Everything else may be read-only.
-VOLUME /var/cache/dalibot-gallery
+# The only paths the gallery writes to. Everything else may be read-only.
+# The cache can be deleted at any time; the state directory holds the list of
+# images an admin has hidden (docs/admin.md) and must be kept.
+VOLUME /var/cache/dalibot-gallery /var/lib/dalibot-gallery
 EXPOSE 8080
 
 # The binary checks its own /healthz, so the image needs no curl or wget.

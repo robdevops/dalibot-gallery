@@ -13,7 +13,8 @@ with infinite scroll and a full-size viewer.
   bot's records (from AWS, or from the bot's SQLite file) and talks to
   Telegram (`getFile` and the file download, nothing else).
 - The gallery never writes to the table or to the database file, and never
-  changes the bot.
+  changes the bot. An admin can [hide](docs/admin.md) images from the
+  gallery; that is the gallery's own list, kept on its own disk.
 - One Go binary with the page, script and stylesheet embedded (under 20 KB of
   JavaScript and CSS, no framework, no build step). It links libvips through cgo,
   so libvips must be installed wherever it runs; the container image takes care of that.
@@ -31,7 +32,7 @@ Contents: [Quick start](#quick-start-container) ·
 [SQLite](#a-self-hosted-bot-sqlite) ·
 [Security model](docs/security.md) · [Reverse proxy](#reverse-proxy) ·
 [Running without a container](#running-without-a-container) ·
-[Cache](docs/cache.md) · [Upgrading](#upgrading) ·
+[Hiding images](docs/admin.md) · [Cache](docs/cache.md) · [Upgrading](#upgrading) ·
 [Development and tests](docs/development.md) · [Performance](docs/performance.md) ·
 [Limitations](docs/limitations.md)
 
@@ -71,7 +72,8 @@ What `deploy/compose.yaml` sets up:
 | Root filesystem | read-only; `/tmp` is a 16 MB tmpfs |
 | Capabilities | all dropped, `no-new-privileges` |
 | Memory | hard limit 512 MB; at most 256 processes/threads |
-| Cache | named volume `cache` at `/var/cache/dalibot-gallery` (the only writable path) |
+| Cache | named volume `cache` at `/var/cache/dalibot-gallery`; can be deleted at any time |
+| State | named volume `state` at `/var/lib/dalibot-gallery`: the list of images an admin has [hidden](docs/admin.md); keep it. With the cache, the only writable paths |
 | Health | `gallery -healthcheck` every 30 s (the binary asks its own `/healthz`; the image has no curl) |
 
 Without Compose, the same thing is:
@@ -85,11 +87,13 @@ docker run -d --name dalibot-gallery --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --memory 512m --pids-limit 256 \
   -v dalibot-gallery-cache:/var/cache/dalibot-gallery \
+  -v dalibot-gallery-state:/var/lib/dalibot-gallery \
   dalibot-gallery
 ```
 
-The image sets `GALLERY_LISTEN=0.0.0.0:8080` and
-`GALLERY_CACHE_DIR=/var/cache/dalibot-gallery`; do not set either in `.env`
+The image sets `GALLERY_LISTEN=0.0.0.0:8080`,
+`GALLERY_CACHE_DIR=/var/cache/dalibot-gallery` and
+`GALLERY_STATE_DIR=/var/lib/dalibot-gallery`; do not set them in `.env`
 when you use `docker run --env-file` (Compose overrides them for you). Write
 values in `.env` without quotes: `docker run --env-file` and systemd pass quotes through literally.
 
@@ -190,6 +194,16 @@ gallery behind a proxy. If the variable is still set, to anything, the
 gallery stops at start-up and says so. Remove it, and set `GALLERY_PUBLIC=1`
 if the gallery is meant to be viewable without a login. See
 [Upgrading](#upgrading).
+
+### Hiding images
+
+An admin can hide an image: a "Hide" button in the viewer, with a
+confirmation, removes it from the gallery for everyone at once, and a page
+of hidden images (linked at the foot of the gallery) puts it back. Hiding
+never touches the bot's data: the gallery keeps its own list of hidden
+images in `GALLERY_STATE_DIR`, which, unlike the cache, must be kept. To
+delete a picture for good, use the bot's `#delete`. See
+[docs/admin.md](docs/admin.md).
 
 ## AWS access
 
@@ -319,7 +333,7 @@ fails with `cannot stat 'dalibot-gallery'`.
    ```
 
 2. Make sure `.env` exists and is filled in (`cp .env.example .env`, then
-   edit it). Leave `GALLERY_CACHE_DIR` unset.
+   edit it). Leave `GALLERY_CACHE_DIR` and `GALLERY_STATE_DIR` unset.
 
 3. Install the binary, the settings and the unit:
 
@@ -346,8 +360,9 @@ The unit runs the gallery as a throw-away user (`DynamicUser`) with
 empty capability set, `MemoryMax=512M`,
 `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` and
 `SystemCallFilter=@system-service`, among others. The cache is
-`/var/cache/dalibot-gallery` (`CacheDirectory=`); leave `GALLERY_CACHE_DIR`
-unset. The unit does not set `MemoryDenyWriteExecute`, because some libvips
+`/var/cache/dalibot-gallery` (`CacheDirectory=`) and the list of hidden
+images is in `/var/lib/dalibot-gallery` (`StateDirectory=`); leave
+`GALLERY_CACHE_DIR` and `GALLERY_STATE_DIR` unset. The unit does not set `MemoryDenyWriteExecute`, because some libvips
 builds generate code at run time. A configuration error (exit status 2) is not restarted.
 
 For a self-hosted bot's SQLite database, the unit has two commented lines
@@ -358,7 +373,8 @@ visible; see [docs/sqlite.md](docs/sqlite.md#systemd).
 
 The gallery has no database of its own and nothing to migrate. The cache is kept across
 upgrades: originals are reused, and thumbnails are regenerated only if the
-pipeline version changed.
+pipeline version changed. The one file of state, the list of hidden images,
+is kept as well.
 
 **If you used `GALLERY_AUTH`.** The variable has been removed, and a gallery
 that still has it set, to any value, stops at start-up with a message saying
@@ -380,6 +396,21 @@ so, rather than start with a different meaning. What to do:
 database file. Nothing changes for an existing installation: the default is
 still DynamoDB, with the same settings. Building from source now also
 compiles SQLite into the binary, with the C compiler the build already needed.
+
+**Hiding images.** New: an admin can hide images (see
+[docs/admin.md](docs/admin.md)). The list of hidden images is state, so give
+it a directory of its own that is not wiped with the cache:
+
+- Compose: `deploy/compose.yaml` now has a second volume, `state`. Nothing
+  to do but `up -d --build`.
+- `docker run`: add `-v dalibot-gallery-state:/var/lib/dalibot-gallery`.
+  Without it Docker makes an anonymous volume, which is lost when the
+  container is removed.
+- systemd: install the unit again (it now has `StateDirectory=`), then
+  `sudo systemctl daemon-reload`.
+- Anything else: set `GALLERY_STATE_DIR`. Without it the list is kept in the
+  cache directory, and the gallery warns at start-up when an admin token is
+  set.
 
 **Pages open during the upgrade.** The cursors in the listing changed form
 (they are now sealed, see [docs/security.md](docs/security.md)). A gallery
@@ -421,6 +452,7 @@ After a system update of libvips, rebuild as well.
 | Document | What it covers |
 |---|---|
 | [docs/aws-access.md](docs/aws-access.md) | The read-only IAM policy, creating the user and key, troubleshooting |
+| [docs/admin.md](docs/admin.md) | Hiding images as an admin: how it works, where the list is kept, what an admin can and cannot do |
 | [docs/sqlite.md](docs/sqlite.md) | Reading a self-hosted bot's SQLite database: settings, permissions, container and systemd, what the gallery does to the file |
 | [docs/configuration.md](docs/configuration.md) | The settings beyond the essentials above |
 | [docs/container.md](docs/container.md) | How the image is built, what has been tested, the health check |

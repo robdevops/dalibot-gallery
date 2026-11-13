@@ -76,6 +76,13 @@ type Options struct {
 	DefaultCommand string
 	// Now is the clock used for the ttl filter and the snapshot's build time. Nil means time.Now.
 	Now func() time.Time
+	// Hidden, when not nil, reports whether the image with this key has been
+	// hidden in the gallery (the gallery's own list; the bot's data is not
+	// involved). A hidden image gets no tile and is not among the styles of
+	// its record's other tiles. It is asked on every Build, so a change to
+	// the list shows at the next Build: see Store.Rebuild. It must be safe
+	// for concurrent use.
+	Hidden func(key string) bool
 }
 
 func (o Options) now() time.Time {
@@ -146,13 +153,18 @@ func decodeCursor(c string) (position, error) {
 type Snapshot struct {
 	tiles   []Tile
 	byKey   map[string]int    // key -> index in tiles
-	fileIDs map[string]string // key -> Telegram file_id; never leaves the server
+	fileIDs map[string]string // key -> Telegram file_id, of listed and hidden images; never leaves the server
 	built   time.Time
 	records int // records that contributed at least one tile
+
+	// Images that would be listed if Options.Hidden did not name them, in
+	// listing order. They are in no tile and no page.
+	hidden      []Tile
+	hiddenByKey map[string]int // key -> index in hidden
 }
 
 // emptySnapshot is what a Store serves before its first successful refresh.
-var emptySnapshot = &Snapshot{byKey: map[string]int{}, fileIDs: map[string]string{}}
+var emptySnapshot = &Snapshot{byKey: map[string]int{}, fileIDs: map[string]string{}, hiddenByKey: map[string]int{}}
 
 // Build applies the listing rules to raw records and returns the snapshot:
 //
@@ -161,6 +173,10 @@ var emptySnapshot = &Snapshot{byKey: map[string]int{}, fileIDs: map[string]strin
 //   - orders records by (updated desc, id desc);
 //   - removes an image whose file_id already appeared in a newer record (or
 //     earlier in the same record), then drops records left with no images;
+//   - takes out the images Options.Hidden names (after the step above, so a
+//     hidden image does not come back through an older record that also has
+//     it), then drops records left with no images. Such images are kept
+//     aside: see Snapshot.Hidden;
 //   - resolves the current style (current, else "_", else the first image);
 //   - emits one tile per remaining image: the current style first, then the
 //     style-table order, then unknown keys alphabetically.
@@ -214,9 +230,10 @@ func Build(records []Record, opt Options) *Snapshot {
 	})
 
 	s := &Snapshot{
-		byKey:   make(map[string]int, len(kept)),
-		fileIDs: make(map[string]string, len(kept)),
-		built:   now,
+		byKey:       make(map[string]int, len(kept)),
+		fileIDs:     make(map[string]string, len(kept)),
+		hiddenByKey: map[string]int{},
+		built:       now,
 	}
 	seenFile := make(map[string]bool, len(kept))
 	for _, r := range kept {
@@ -234,6 +251,28 @@ func Build(records []Record, opt Options) *Snapshot {
 				seenFile[id] = true
 				live = append(live, k)
 			}
+		}
+		command := strings.TrimLeft(r.Command, "/")
+		if command == "" {
+			command = opt.DefaultCommand
+		}
+		if opt.Hidden != nil {
+			shown := live[:0]
+			for _, k := range live {
+				raw := r.Images[k]
+				key := Key(raw.FileID)
+				if !opt.Hidden(key) {
+					shown = append(shown, k)
+					continue
+				}
+				s.fileIDs[key] = raw.FileID
+				s.hiddenByKey[key] = len(s.hidden)
+				s.hidden = append(s.hidden, Tile{
+					Key: key, ID: r.ID, Style: k, Label: styles.Label(k), Caption: raw.Caption,
+					Updated: r.updated, Prompt: r.Prompt, Command: command,
+				})
+			}
+			live = shown
 		}
 		if len(live) == 0 {
 			continue
@@ -253,10 +292,6 @@ func Build(records []Record, opt Options) *Snapshot {
 			key := Key(raw.FileID)
 			images[i] = Image{Style: k, Label: styles.Label(k), Key: key, Caption: raw.Caption}
 			s.fileIDs[key] = raw.FileID
-		}
-		command := strings.TrimLeft(r.Command, "/")
-		if command == "" {
-			command = opt.DefaultCommand
 		}
 		for i, img := range images {
 			s.byKey[img.Key] = len(s.tiles)
@@ -381,7 +416,25 @@ func (s *Snapshot) Has(key string) bool {
 	return ok
 }
 
-// FileID returns the Telegram file_id behind key. The result is a secret of
+// Hidden returns the images that are in the bot's records but hidden in the
+// gallery (Options.Hidden), in listing order. Each is a Tile without Styles
+// and Current: a hidden image is not part of the listing, and no method
+// other than Hidden, HasHidden, Known and FileID knows it.
+func (s *Snapshot) Hidden() []Tile { return s.hidden[:len(s.hidden):len(s.hidden)] }
+
+// HasHidden reports whether key names an image that is hidden in the gallery
+// and still in the bot's records.
+func (s *Snapshot) HasHidden(key string) bool {
+	_, ok := s.hiddenByKey[key]
+	return ok
+}
+
+// Known reports whether key names an image of the bot's records as the
+// listing rules read them, listed or hidden. The cache keeps the files of
+// such keys, so a hidden image that is restored needs no second download.
+func (s *Snapshot) Known(key string) bool { return s.Has(key) || s.HasHidden(key) }
+
+// FileID returns the Telegram file_id behind key, listed or hidden. The result is a secret of
 // the server: pass it to the Telegram client only; never log it or send it to a browser.
 func (s *Snapshot) FileID(key string) (string, bool) {
 	id, ok := s.fileIDs[key]

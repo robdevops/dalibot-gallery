@@ -16,7 +16,9 @@ Whatever proxy you use:
   same.) In a public gallery (`GALLERY_PUBLIC=1`) they are sent as `public`
   and a shared cache may store them: anyone may see them anyway. If your
   proxy restricts who can reach a public gallery, a cache must sit behind
-  that restriction, not in front of it. Pages and the JSON listing are
+  that restriction, not in front of it. A shared cache also goes on
+  serving an image it already holds after an admin has [hidden](admin.md)
+  it, until you purge it. Pages and the JSON listing are
   `no-store` in every mode; do not override that, because an admin's page
   and listing differ from a visitor's.
 - **The proxy grants no access.** The gallery decides who may view and who

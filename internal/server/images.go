@@ -71,17 +71,34 @@ func (f *failures) add(key string) {
 // handleImage serves /img/<key>-<size>.webp and /img/<key>.jpg. Only keys in
 // the current snapshot are served, so the route cannot be used to fetch
 // arbitrary files.
-func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string) {
+//
+// A hidden image is not in the listing, and its routes answer exactly as for
+// a key that never existed. The one exception is an admin, who has to see
+// what there is to restore: an admin is served a hidden image, uncacheable
+// (no-store, no ETag), so that no cache, shared or the admin's own, keeps a
+// copy under the image's public URL.
+func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string, admin bool) {
 	snap := s.store.Snapshot()
+	// served: listed, or hidden and asked for by an admin.
+	served := func(key string) (ok, hidden bool) {
+		if snap.Has(key) {
+			return true, false
+		}
+		if admin && snap.HasHidden(key) {
+			return true, true
+		}
+		return false, false
+	}
 	if m := reThumb.FindStringSubmatch(name); m != nil {
 		key := m[1]
 		size, _ := strconv.Atoi(m[2])
-		if !snap.Has(key) || r.URL.Query().Get("v") != s.tag {
+		ok, hid := served(key)
+		if !ok || r.URL.Query().Get("v") != s.tag {
 			plain(w, http.StatusNotFound, "not found\n")
 			return
 		}
 		etag := `"` + key + "-" + m[2] + "-v" + s.tag + `"`
-		if s.notModified(w, r, etag) {
+		if !hid && s.notModified(w, r, etag) {
 			return
 		}
 		data, err := s.thumbnail(r.Context(), snap, key, size)
@@ -93,19 +110,24 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 			writeImage(w, "image/webp", imaging.Placeholder())
 			return
 		}
-		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", s.immutable())
+		if hid {
+			w.Header().Set("Cache-Control", "no-store")
+		} else {
+			w.Header().Set("ETag", etag)
+			w.Header().Set("Cache-Control", s.immutable())
+		}
 		writeImage(w, "image/webp", data)
 		return
 	}
 	if m := reOriginal.FindStringSubmatch(name); m != nil {
 		key := m[1]
-		if !snap.Has(key) {
+		ok, hid := served(key)
+		if !ok {
 			plain(w, http.StatusNotFound, "not found\n")
 			return
 		}
 		etag := `"` + key + `"`
-		if s.notModified(w, r, etag) {
+		if !hid && s.notModified(w, r, etag) {
 			return
 		}
 		data, err := s.original(r.Context(), snap, key)
@@ -113,8 +135,12 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 			plain(w, http.StatusBadGateway, "image unavailable\n")
 			return
 		}
-		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", s.immutable())
+		if hid {
+			w.Header().Set("Cache-Control", "no-store")
+		} else {
+			w.Header().Set("ETag", etag)
+			w.Header().Set("Cache-Control", s.immutable())
+		}
 		writeImage(w, "image/jpeg", data)
 		return
 	}
@@ -298,7 +324,9 @@ func (s *Server) Warm(ctx context.Context, snap *source.Snapshot) {
 // OnSwap is the hook for source.Store.OnSwap. It returns at once; in the
 // background it warms the newest tiles of the new snapshot (cancelling a
 // warm-up still running for an older one) and prunes cache files whose key is
-// no longer in the snapshot or whose pipeline version is old.
+// no longer in the bot's records or whose pipeline version is old. The files
+// of a hidden image are kept while its record lasts: restoring it then needs
+// no second download, which Telegram may no longer allow.
 func (s *Server) OnSwap(snap *source.Snapshot) {
 	s.swapMu.Lock()
 	defer s.swapMu.Unlock()
@@ -314,7 +342,7 @@ func (s *Server) OnSwap(snap *source.Snapshot) {
 	}
 	if !s.pruning {
 		s.pruning = s.spawn(func() {
-			removed, err := s.cache.Prune(snap.Has, s.tag)
+			removed, err := s.cache.Prune(snap.Known, s.tag)
 			if err != nil {
 				s.log.Error("pruning the cache failed", "error", err)
 			} else if removed > 0 {

@@ -12,6 +12,9 @@
 #   scripts/dev-stack.sh -auth=false              public: no login to view (GALLERY_PUBLIC=1)
 #   scripts/dev-stack.sh -admin-token dev-admin-token-0123456789
 #                                                 also an admin, who signs in at /login
+#                                                 and can hide images (docs/admin.md)
+#   scripts/dev-stack.sh -state /tmp/gallery-state
+#                                                 keep the list of hidden images between runs
 #   scripts/dev-stack.sh -source sqlite           read a SQLite database instead of DynamoDB
 #                                                 (GALLERY_SOURCE=sqlite); needs no moto
 #   scripts/dev-stack.sh -telegram-delay 300ms    imitate a slow Telegram

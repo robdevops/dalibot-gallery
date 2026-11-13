@@ -126,6 +126,9 @@ type indexData struct {
 	AdminLogin bool
 	// SignOut: the visitor has a session cookie, so the page offers to drop it.
 	SignOut bool
+	// Hide: the visitor is an admin and images can be hidden, so the page
+	// loads the admin's script and stylesheet and links to the hidden images.
+	Hide bool
 }
 
 type indexTile struct {
@@ -151,6 +154,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, level acces
 		Admin:      level == accessAdmin,
 		AdminLogin: s.cfg.AdminEnabled() && level < accessAdmin,
 		SignOut:    s.cookieAccess(r) > accessNone,
+		Hide:       level == accessAdmin && s.adminRoutes(),
 	}
 	for _, t := range tiles {
 		data.Tiles = append(data.Tiles, indexTile{

@@ -36,6 +36,7 @@ func TestDefaults(t *testing.T) {
 		Listen: "127.0.0.1:8080", Token: testToken, Source: "dynamodb", Table: "dalibot", Region: "ap-southeast-1",
 		TelegramToken: testBotToken, TelegramAPIBase: "https://api.telegram.org", StoreDays: 90,
 		DefaultCommand: "dream", Refresh: 60 * time.Second, CacheDir: abs, CacheMaxMB: 2048,
+		StateDir: abs, StateInCache: true, // no directory of its own: the cache's
 		WebPQuality: 76, ImageWorkers: runtime.GOMAXPROCS(0), Warm: 120,
 		TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
 	}
@@ -92,6 +93,61 @@ func TestRegionAndCacheFallbacks(t *testing.T) {
 	if c.Region != "us-west-2" || c.CacheDir != "/b" {
 		t.Errorf("explicit values must win: %v", c)
 	}
+}
+
+// GALLERY_STATE_DIR: where the list of hidden images lives. Its own
+// directory when one is named, by the variable or by systemd; otherwise the
+// cache directory, flagged so that main can warn.
+func TestStateDir(t *testing.T) {
+	for name, c := range map[string]struct {
+		vars    []string
+		dir     string
+		inCache bool
+	}{
+		"nothing set: the cache directory":   {[]string{"GALLERY_CACHE_DIR", "/var/cache/x"}, "/var/cache/x", true},
+		"the cache directory from systemd":   {[]string{"CACHE_DIRECTORY", "/var/cache/g"}, "/var/cache/g", true},
+		"systemd's StateDirectory":           {[]string{"GALLERY_CACHE_DIR", "/c", "STATE_DIRECTORY", "/var/lib/g"}, "/var/lib/g", false},
+		"the first of several from systemd":  {[]string{"GALLERY_CACHE_DIR", "/c", "STATE_DIRECTORY", "/var/lib/g:/var/lib/other"}, "/var/lib/g", false},
+		"the variable wins over systemd":     {[]string{"GALLERY_CACHE_DIR", "/c", "STATE_DIRECTORY", "/var/lib/g", "GALLERY_STATE_DIR", "/srv/state"}, "/srv/state", false},
+		"the variable alone":                 {[]string{"GALLERY_CACHE_DIR", "/c", "GALLERY_STATE_DIR", " /srv/state "}, "/srv/state", false},
+		"named, and the same as the cache":   {[]string{"GALLERY_CACHE_DIR", "/c", "GALLERY_STATE_DIR", "/c"}, "/c", false},
+		"a relative path is made absolute":   {[]string{"GALLERY_CACHE_DIR", "/c", "GALLERY_STATE_DIR", "state"}, mustAbs(t, "state"), false},
+		"blank counts as unset":              {[]string{"GALLERY_CACHE_DIR", "/c", "GALLERY_STATE_DIR", "  ", "STATE_DIRECTORY", " "}, "/c", true},
+		"it does not move the cache":         {[]string{"GALLERY_STATE_DIR", "/srv/state"}, "/srv/state", false},
+		"nor does systemd's state directory": {[]string{"STATE_DIRECTORY", "/var/lib/g"}, "/var/lib/g", false},
+	} {
+		cfg, err := FromEnv(env(c.vars...))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if cfg.StateDir != c.dir || cfg.StateInCache != c.inCache {
+			t.Errorf("%s: StateDir %q (in cache: %v), want %q (%v)", name, cfg.StateDir, cfg.StateInCache, c.dir, c.inCache)
+		}
+		if !strings.Contains(cfg.String(), "state_dir="+c.dir) {
+			t.Errorf("%s: the printed configuration lacks the state directory: %s", name, cfg)
+		}
+	}
+	// The cache stays where it was when only the state directory is named.
+	cfg, err := FromEnv(env("GALLERY_STATE_DIR", "/srv/state"))
+	if err != nil || cfg.CacheDir != mustAbs(t, "./cache") {
+		t.Errorf("cache directory with only GALLERY_STATE_DIR set: %v, %v", cfg, err)
+	}
+	for name, v := range map[string]string{"the root": "/", "a NUL": "/srv/\x00state"} {
+		_, err := FromEnv(env("GALLERY_STATE_DIR", v))
+		if err == nil || !strings.Contains(err.Error(), "GALLERY_STATE_DIR") {
+			t.Errorf("%s: want an error naming GALLERY_STATE_DIR, got %v", name, err)
+		}
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
 }
 
 // GALLERY_SOURCE chooses the reader, and only that reader's settings are read.

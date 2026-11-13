@@ -24,6 +24,7 @@ services:
     environment:
       GALLERY_LISTEN: "0.0.0.0:8080"
       GALLERY_CACHE_DIR: /var/cache/dalibot-gallery
+      GALLERY_STATE_DIR: /var/lib/dalibot-gallery
       # The reverse proxy on the host connects through the published port, and
       # the container sees those connections as coming from the gateway of
       # its network (pinned below). Only from that address is X-Forwarded-For
@@ -46,6 +47,7 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=16m
     volumes:
       - cache:/var/cache/dalibot-gallery
+      - state:/var/lib/dalibot-gallery
     stop_grace_period: 20s
 
 networks:
@@ -60,3 +62,6 @@ networks:
 volumes:
   # Originals and thumbnails. Safe to delete: everything is fetched and made again.
   cache:
+  # The gallery's own state: the list of images an admin has hidden
+  # (docs/admin.md). Keep it, and back it up; deleting it shows them all again.
+  state:

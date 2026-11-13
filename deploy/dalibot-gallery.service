@@ -33,13 +33,19 @@ DynamicUser=yes
 # $CACHE_DIRECTORY, which the gallery uses when GALLERY_CACHE_DIR is unset.
 CacheDirectory=dalibot-gallery
 CacheDirectoryMode=0700
+# /var/lib/dalibot-gallery (really /var/lib/private/dalibot-gallery, as the
+# user is dynamic), passed as $STATE_DIRECTORY, which the gallery uses when
+# GALLERY_STATE_DIR is unset. It holds the list of images an admin has hidden
+# (docs/admin.md). Unlike the cache, keep it.
+StateDirectory=dalibot-gallery
+StateDirectoryMode=0700
 UMask=0077
 
 # A hard cap: libvips' own cache limits do not bound the process.
 MemoryMax=512M
 TasksMax=256
 
-# File system: everything read-only except the cache directory.
+# File system: everything read-only except the cache and state directories.
 ProtectSystem=strict
 ProtectHome=yes
 # For GALLERY_SOURCE=sqlite (docs/sqlite.md): the bot's group, so that the

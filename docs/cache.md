@@ -14,6 +14,13 @@ pipeline version. When the directory exceeds `GALLERY_CACHE_MAX_MB`,
 thumbnails are evicted, least recently used first. Originals are never
 evicted for size: they go only when their record leaves the table.
 
+An image an admin has [hidden](admin.md) keeps its files while its record
+lasts, so that restoring it needs no second download from Telegram (which
+may no longer be possible). The list of hidden images is not in the cache
+but in `GALLERY_STATE_DIR`; only when that is unset does it fall back to
+the cache directory, as `hidden.json`, and then deleting the cache shows
+every hidden image again.
+
 **Size the limit for your originals.** Budget roughly 300 KB per image for
 the original plus 55 KB for its two thumbnails; the default 2048 MB holds
 about 5,700 images in full. Beyond that, thumbnails of the least recently
@@ -35,3 +42,4 @@ old tag get a 404 rather than new bytes under an old URL.
 
 The whole directory can be deleted at any time; everything is fetched and
 generated again on demand (images whose file id has since died are then gone).
+If `GALLERY_STATE_DIR` is not set, keep `hidden.json` when you do.

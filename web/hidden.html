@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-admin="1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#111111">
+<meta name="robots" content="noindex, nofollow">
+<title>Hidden images · Gallery</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/admin.css">
+<script src="/admin.js" defer></script>
+</head>
+<body>
+<main class="hid">
+<h1>Hidden images</h1>
+<p class="back"><a href="/">Back to the gallery</a></p>
+<p>These images are left out of the gallery. Nothing was deleted: the bot still has them.</p>
+<p id="none"{{if .Tiles}} hidden{{end}}>No hidden images to show.</p>
+<ul id="hidden">
+{{range .Tiles}}<li><a href="{{.Full}}"><img src="{{.Src240}}" srcset="{{.Src240}} 240w, {{.Src480}} 480w" sizes="12rem" width="240" height="240" loading="lazy" decoding="async" alt="{{.Alt}}"></a><p>{{.Alt}}</p><p class="cmd">{{.Text}}</p><button type="button" data-restore="{{.Key}}">Restore</button></li>
+{{end}}</ul>
+{{if .Gone}}<p class="gone">Also hidden, but no longer in the bot's records: {{.Gone}}. They cannot be shown here, and stay hidden if they come back.</p>{{end}}
+</main>
+{{if .SignOut}}<footer class="foot">
+<form method="post" action="/logout"><button type="submit">Sign out</button></form>
+</footer>{{end}}
+<p class="sr" id="live" aria-live="polite"></p>
+</body>
+</html>
