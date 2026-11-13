@@ -116,15 +116,20 @@ test('focus returns to the tile that is showing when the lightbox closes', async
   await expect.poll(() => focusKey(page)).toBe(keys[3])
 })
 
-test('arrow right past the last loaded tile loads the next page', async ({ page }) => {
+test('near the end of the loaded tiles, more are fetched and the strip fills in', async ({ page }) => {
   const api = await apiTiles(page.request)
   const keys = await domKeys(page)
   const n = keys.length
   expect(n).toBeLessThan(api.tiles.length)
+  // Open the last loaded tile: the next page is fetched without any key press.
   await page.locator(`.tile[data-key="${keys[n - 1]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[n - 1])
-  await page.keyboard.press('ArrowRight') // asks for more tiles
   await expect.poll(() => page.locator('#grid .tile').count()).toBeGreaterThan(n)
+  // The strip now has the four images that follow, which were not loaded a moment ago.
+  await expect(page.locator('#strip button')).toHaveCount(9)
+  await expect(page.locator('#strip button').nth(4)).toHaveAttribute('aria-current', 'true')
+  // The large image was not reloaded or hidden by that.
+  expect(await page.locator('#full').evaluate(i => getComputedStyle(i).visibility)).toBe('visible')
   await page.keyboard.press('ArrowRight')
   await loaded(page, api.tiles[n].key)
 })

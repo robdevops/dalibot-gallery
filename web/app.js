@@ -10,7 +10,7 @@ const grid = $('grid'), end = $('end'), pill = $('pill'), dlg = $('lb'), full = 
 const SIZES = '(min-width:1600px) 17vw, (min-width:1200px) 20vw, (min-width:768px) 25vw, (min-width:480px) 34vw, 50vw'
 const PER = 60 // tiles per batch: divisible by every column count (2 to 6)
 const LINK = /^#\/p\/([\w-]{22})$/
-const data = new Map() // key -> tile, for every rendered tile: its keys are the de-duplication set
+const data = new Map() // key -> tile, for every rendered tile
 const cols = +getComputedStyle(grid).getPropertyValue('--cols') || 2
 let v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
 
@@ -58,7 +58,7 @@ function place(lis) {
 }
 
 function add(tiles, top) {
-  const lis = [], had = data.has(cur)
+  const lis = []
   for (const t of tiles) {
     if (top) node(t.key)?.remove()
     else if (data.has(t.key)) continue
@@ -71,7 +71,7 @@ function add(tiles, top) {
     tail = null
   }
   place(lis)
-  if (!had && data.has(cur)) show(cur) // the deep-linked tile arrived: fill in its details
+  if (dlg.open && data.has(cur)) show(cur) // its tile or more neighbours arrived
   return lis.length
 }
 
@@ -144,8 +144,9 @@ function show(key) {
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
   $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
-  // Strip: its neighbours in gallery order.
+  // Strip: its neighbours in gallery order; fetch more before they run out.
   const all = keys(), i = all.indexOf(key)
+  if (i > all.length - 6) more()
   strip.replaceChildren(...(i < 0 ? [] : all.slice(Math.max(0, i - 4), i + 5)).map(k => {
     const s = data.get(k), li = el('li'), b = el('button'), img = el('img')
     b.type = 'button'
