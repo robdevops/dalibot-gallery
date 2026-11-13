@@ -128,7 +128,12 @@ the whole table. Raise `GALLERY_REFRESH` if that matters.
 the gallery's log says why. The usual causes:
 
 - `AccessDeniedException`: the policy is not attached to the identity in
-  use, or its `Resource` names the wrong region, account or table.
+  use, or its `Resource` names the wrong region, account or table. The
+  error quotes the table the gallery tried to read, for example
+  `arn:aws:dynamodb:us-east-2:123456789012:table/dalibot`. Compare it with
+  the policy's `Resource` line: they must match exactly. If the region in
+  the error is not where the table is, fix `AWS_REGION` in `.env`; if it
+  is, fix the policy.
 - `ResourceNotFoundException`: `AWS_REGION` or `DALIBOT_TABLE` does not
   match where the bot's table is.
 - `UnrecognizedClientException` or `InvalidSignatureException`: the access
