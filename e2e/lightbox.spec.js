@@ -366,6 +366,50 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await swipe(-1)
   await settledAt(keys[13])
 
+  // A second swipe made straight away, while the first one's momentum is still arriving and with no
+  // pause between them, counts too. (With the next image fetched ahead, this is how people page.)
+  const from = await fullKey(page)
+  const at = keys.indexOf(from)
+  const wheel = async list => {
+    for (const dx of list) {
+      await page.mouse.wheel(dx, 0)
+      await page.waitForTimeout(16)
+    }
+  }
+  const fingers = [4, 14, 32, 48, 44, 36] // on the pad
+  const coasting = [30, 26, 22, 19, 16, 14, 12, 11, 10, 9, 8, 7, 7, 6, 6, 5] // momentum, about a quarter of a second
+  await wheel([...fingers, ...coasting])
+  await wheel([3, 9, 22, 40, 52, 44, 36]) // fingers down again: the momentum stops and a new swipe builds
+  await wheel([30, 24, 19, 15, 12, 9, 7, 5, 4, 3, 2, 1, 1])
+  await settledAt(keys[at + 2])
+  // And one in the other direction, started during the momentum of a forward swipe.
+  await wheel([...fingers, ...coasting])
+  await wheel([-3, -9, -22, -40, -52, -44, -36, -28, -20, -14, -9, -5, -3, -1])
+  await settledAt(keys[at + 2])
+  await wheel([-4, -14, -32, -48, -44, -36, -28, -20, -14, -9, -5, -3, -1])
+  await settledAt(keys[at + 1])
+  await swipe(-1)
+  await settledAt(keys[at])
+
+  // A swipe usually carries a slight pinch with it (the fingers drift together or apart). That must
+  // not zoom the image, and must not stop the swipe.
+  const scale = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).a)
+  const here = keys.indexOf(await fullKey(page))
+  for (const [dx, pinch] of [[4, -1], [14, -2], [32, -1.5], [48, -1], [44, 0], [36, 1], [30, 0.5], [22, 0], [16, 0], [11, 0], [8, 0], [5, 0], [3, 0], [2, 0], [1, 0]]) {
+    await page.mouse.wheel(dx, 0)
+    if (pinch) {
+      await page.keyboard.down('Control')
+      await page.mouse.wheel(0, pinch)
+      await page.keyboard.up('Control')
+    }
+    await page.waitForTimeout(16)
+  }
+  await settledAt(keys[here + 1])
+  expect(await scale()).toBe(1)
+  await swipe(-1)
+  await settledAt(keys[here])
+  expect(await scale()).toBe(1)
+
   // Left alone: vertical scrolling, a pinch (wheel with Ctrl), and a slow drift that never adds up to a swipe.
   await page.mouse.wheel(0, 300)
   await page.keyboard.down('Control')
@@ -393,7 +437,7 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await settledAt(keys[0])
 })
 
-test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan', async ({ page }) => {
+test('zoom with the keyboard and a double click; hold and drag to pan', async ({ page }) => {
   const keys = await domKeys(page)
   await page.locator(`.tile[data-key="${keys[6]}"] a`).click()
   await loaded(page, keys[6])
@@ -408,26 +452,23 @@ test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan',
   const bare = () => dialog(page).evaluate(d => d.classList.contains('bare'))
   expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
 
-  // A pinch (the browser reports it as a wheel with Ctrl) zooms in around the pointer.
+  // A pinch on a trackpad (the browser reports it as a wheel with Ctrl) is the browser's business:
+  // the viewer does not zoom the image for it.
   const px = cx + 120, py = cy - 80
   await page.mouse.move(px, py)
   await page.keyboard.down('Control')
   for (let i = 0; i < 8; i++) await page.mouse.wheel(0, -10)
   await page.keyboard.up('Control')
-  let v = await view()
-  expect(v.z).toBeCloseTo(Math.exp(0.8), 2)
-  // The spot under the pointer stayed where it was: offset = (1 - z) x its distance from the centre.
-  expect(Math.abs(v.x - (1 - v.z) * 120)).toBeLessThan(2)
-  expect(Math.abs(v.y - (1 - v.z) * -80)).toBeLessThan(2)
-  expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('grab')
+  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
 
-  // It stops at 4x, and the image always covers its frame.
-  await page.keyboard.down('Control')
-  for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -100)
-  await page.keyboard.up('Control')
-  v = await view()
-  expect(v.z).toBe(4)
-  expect(Math.abs(v.x)).toBeLessThanOrEqual(Math.ceil(1.5 * stage.width))
+  // + zooms in about the centre, step by step, and stops at 4x.
+  await page.keyboard.press('+')
+  await settled(1.5)
+  expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('grab')
+  for (let i = 0; i < 5; i++) await page.keyboard.press('+')
+  await settled(4)
+  let v = await view()
+  expect([v.x, v.y]).toEqual([0, 0])
 
   // Hold and drag pans it. A drag is not a click: the buttons and caption stay.
   const before = await view()
@@ -509,21 +550,19 @@ test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan',
   await expect.poll(async () => (await view()).x).toBe(Math.round(0.625 * stage.width))
   expect(await fullKey(page)).toBe(keys[6])
 
-  // A pinch all the way back out ends at exactly normal size, and swiping works again.
+  // Zooming in and all the way back out ends at exactly normal size.
   await page.keyboard.press('0')
   await settled(1)
   await page.mouse.move(cx, cy)
-  await page.keyboard.down('Control')
-  for (let i = 0; i < 9; i++) await page.mouse.wheel(0, -10)
-  for (let i = 0; i < 9; i++) await page.mouse.wheel(0, 10)
-  await page.keyboard.up('Control')
+  for (let i = 0; i < 3; i++) await page.keyboard.press('=')
+  for (let i = 0; i < 3; i++) await page.keyboard.press('-')
+  await settled(1)
   expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
   expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('')
 
   // Resizing the window while zoomed keeps the picture covering its frame.
-  await page.keyboard.down('Control')
-  for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -100)
-  await page.keyboard.up('Control')
+  for (let i = 0; i < 6; i++) await page.keyboard.press('+')
+  await settled(4)
   await page.mouse.down()
   await page.mouse.move(cx + 3000, cy + 3000, { steps: 3 })
   await page.mouse.up()
@@ -599,8 +638,15 @@ test('a click on the backdrop closes; a click on the caption does not', async ({
   await loaded(page, keys[1])
   await page.locator('#cap').click()
   await expect(dialog(page)).toBeVisible()
-  const box = await dialog(page).boundingBox()
-  expect(box.x, 'there is a backdrop beside the dialog at 1440 px').toBeGreaterThan(40)
+  // The dialog fills the screen from the top (so it cannot move when a phone's toolbar slides in
+  // or out); its box is centred in it, with the backdrop showing around.
+  expect(await dialog(page).evaluate(d => {
+    const r = d.getBoundingClientRect(), s = getComputedStyle(d)
+    return [r.top, r.left, r.width, r.height, s.marginTop, s.position]
+  })).toEqual([0, 0, 1440, 900, '0px', 'fixed'])
+  const box = await page.locator('dialog#lb .box').boundingBox()
+  expect(box.x, 'there is a backdrop beside the box at 1440 px').toBeGreaterThan(40)
+  expect(Math.abs(box.y - (900 - box.y - box.height))).toBeLessThan(1) // centred
   await page.mouse.click(box.x / 2, 450)
   await expect(dialog(page)).toBeHidden()
   await expect(opener).toBeFocused()
