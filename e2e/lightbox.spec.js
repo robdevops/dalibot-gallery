@@ -566,6 +566,36 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await settled()
     slow = false
 
+    // Zoomed in (as after a pinch), one finger pans the page in every direction, sideways
+    // included, and does not change the image. Back at normal size the swipe works again.
+    const view = () => page.evaluate(() => [Math.round(visualViewport.offsetLeft), Math.round(visualViewport.offsetTop)])
+    const drag = async (x1, y1, x2, y2) => {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x1, y: y1, id: 0 }] })
+      for (let i = 1; i <= 10; i++) {
+        await cdp.send('Input.dispatchTouchEvent', {
+          type: 'touchMove', touchPoints: [{ x: Math.round(x1 + (x2 - x1) * i / 10), y: Math.round(y1 + (y2 - y1) * i / 10), id: 0 }],
+        })
+        await page.waitForTimeout(16)
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      await page.waitForTimeout(500)
+    }
+    const open = await fullKey(page)
+    await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2.5 })
+    await expect.poll(() => page.evaluate(() => visualViewport.scale)).toBeGreaterThan(2)
+    expect(await view()).toEqual([0, 0])
+    await drag(300, 250, 100, 250) // sideways
+    expect((await view())[0]).toBeGreaterThan(100)
+    await drag(200, 300, 200, 150) // upwards
+    expect((await view())[1]).toBeGreaterThan(100)
+    expect(await fullKey(page)).toBe(open)
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+    await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 })
+    await expect.poll(() => page.evaluate(() => visualViewport.scale)).toBe(1)
+    await swipe(300, y, 80, y)
+    await expect.poll(() => fullKey(page)).not.toBe(open)
+    await settled()
+
     expect((await w.done()).problems).toEqual([])
   } finally {
     await context.close()

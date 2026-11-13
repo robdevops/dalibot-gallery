@@ -264,6 +264,9 @@ function release(e) {
   }
 }
 dlg.ontouchend = dlg.ontouchcancel = release
+// Unzoomed, the image only lets the browser pan up and down (see app.css), which leaves
+// sideways drags to the swipe. Zoomed in, the browser must be free to pan every way.
+visualViewport.onresize = () => { full.style.touchAction = visualViewport.scale > 1.01 ? 'auto' : '' }
 
 // A two-finger sideways swipe on a touchpad arrives as wheel events with a
 // horizontal delta (a pinch arrives with ctrlKey set, and phones send touch
