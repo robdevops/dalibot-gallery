@@ -381,15 +381,40 @@ set -a; . ./.env; set +a
 
 ### systemd
 
-```sh
-sudo install -m 0755 dalibot-gallery /usr/local/bin/dalibot-gallery
-sudo install -d -m 0700 /etc/dalibot-gallery
-sudo install -m 0600 .env /etc/dalibot-gallery/env
-sudo install -m 0644 deploy/dalibot-gallery.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dalibot-gallery
-journalctl -u dalibot-gallery -f
-```
+Do these in order, from the repository root. The first step makes the
+`dalibot-gallery` binary that the second one installs; without it `install`
+fails with `cannot stat 'dalibot-gallery'`.
+
+1. Install [libvips](#libvips) with its headers, and Go 1.27 or later, then
+   build and check the binary:
+
+   ```sh
+   go build -trimpath -o dalibot-gallery ./cmd/gallery
+   ./dalibot-gallery -version
+   ```
+
+2. Make sure `.env` exists and is filled in (`cp .env.example .env`, then
+   edit it). Leave `GALLERY_CACHE_DIR` unset.
+
+3. Install the binary, the settings and the unit:
+
+   ```sh
+   sudo install -m 0755 dalibot-gallery /usr/local/bin/dalibot-gallery
+   sudo install -d -m 0700 /etc/dalibot-gallery
+   sudo install -m 0600 .env /etc/dalibot-gallery/env
+   sudo install -m 0644 deploy/dalibot-gallery.service /etc/systemd/system/
+   ```
+
+4. Start it and watch the log:
+
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now dalibot-gallery
+   journalctl -u dalibot-gallery -f
+   ```
+
+If the service was enabled before the binary was in place, finish steps 1
+to 3 and then run `sudo systemctl restart dalibot-gallery`.
 
 The unit runs the gallery as a throw-away user (`DynamicUser`) with
 `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, an
