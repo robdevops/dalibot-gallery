@@ -278,13 +278,15 @@ full.ondblclick = e => {
   }
 }
 dlg.onclick = e => { if (e.target == dlg) dlg.close() }
-// Arrow keys: the next or previous image, or, while zoomed, move the image. + and = zoom in,
-// - zooms out, 0 is normal size.
+// Arrow keys: the next or previous image, or, while zoomed, move the image. Space is the next
+// image (Shift+Space the previous), except on a strip thumbnail, where it picks that one.
+// + and = zoom in, - zooms out, 0 is normal size.
 addEventListener('keydown', e => {
   if (!dlg.open || e.altKey || e.metaKey || e.ctrlKey) return
   const a = { ArrowLeft: [1, 0], ArrowRight: [-1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key]
   const f = { '+': 1.5, '=': 1.5, '-': 1 / 1.5, 0: 0 }[e.key]
-  if (a && z > 1) pan(a[0] * 80, a[1] * 80, 1)
+  if (e.key == ' ' && !strip.contains(document.activeElement)) step(e.shiftKey ? -1 : 1)
+  else if (a && z > 1) pan(a[0] * 80, a[1] * 80, 1)
   else if (a && a[0]) step(-a[0])
   else if (f != null) zoom(z * f, null, null, 1)
   else return
