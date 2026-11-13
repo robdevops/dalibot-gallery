@@ -144,6 +144,32 @@ test('near the end of the loaded tiles, more are fetched and the strip grows', a
   await loaded(page, api.tiles[n].key)
 })
 
+test('Space goes to the next image and Shift+Space to the previous, as the arrow keys do', async ({ page }) => {
+  const keys = await domKeys(page)
+  await page.locator(`.tile[data-key="${keys[5]}"] a`).click()
+  await loaded(page, keys[5])
+  // The close button has the focus when the viewer opens; Space does not press it.
+  await expect(page.locator('#x')).toBeFocused()
+  await page.keyboard.press(' ')
+  await loaded(page, keys[6])
+  await expect(dialog(page)).toBeVisible()
+  await page.keyboard.press(' ')
+  await loaded(page, keys[7])
+  await page.keyboard.press('Shift+ ')
+  await loaded(page, keys[6])
+  // Zoomed in, Space still moves on, and the next image starts at normal size.
+  await page.keyboard.press('+')
+  await page.keyboard.press(' ')
+  await loaded(page, keys[7])
+  expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+  // On a strip thumbnail Space picks that thumbnail, as on any button.
+  await page.locator('#strip button').nth(2).focus()
+  await page.keyboard.press(' ')
+  await loaded(page, keys[2])
+  // The page behind does not scroll.
+  expect(await page.evaluate(() => scrollY)).toBe(0)
+})
+
 test('the strip holds every loaded image in gallery order, whatever their prompt', async ({ page }) => {
   const keys = await domKeys(page)
   const strip = () => page.locator('#strip button')
