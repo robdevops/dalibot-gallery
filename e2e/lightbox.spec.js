@@ -329,6 +329,63 @@ test('a deep link to an image that does not exist closes quietly', async ({ page
   watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/404/.test(p)))
 })
 
+test('on a touch screen, swiping the large image moves to the next or previous one', async ({ browser, baseURL }, testInfo) => {
+  const context = await browser.newContext({
+    baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 },
+    hasTouch: true, isMobile: true,
+  })
+  const page = await context.newPage()
+  try {
+    await page.goto('/')
+    await page.waitForSelector('#grid .tile')
+    const keys = await domKeys(page)
+    await page.locator('#grid .tile a').nth(3).tap()
+    await loaded(page, keys[3])
+    const cdp = await context.newCDPSession(page)
+    const box = await page.locator('#full').boundingBox()
+    const y = box.y + box.height / 2
+    // Real touch input, from (x1, y1) to (x2, y2) in a few moves.
+    const swipe = async (x1, y1, x2, y2, extraFinger) => {
+      const pt = (x, y, id = 0) => ({ x: Math.round(x), y: Math.round(y), id })
+      const extra = extraFinger ? [pt(50, 500, 1)] : []
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pt(x1, y1), ...extra] })
+      for (let i = 1; i <= 4; i++) {
+        await cdp.send('Input.dispatchTouchEvent', {
+          type: 'touchMove', touchPoints: [pt(x1 + (x2 - x1) * i / 4, y1 + (y2 - y1) * i / 4), ...extra],
+        })
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+
+    await swipe(300, y, 80, y + 10) // to the left: the next image
+    await loaded(page, keys[4])
+    await expect(page).toHaveURL(new RegExp(`#/p/${keys[4]}$`))
+    await swipe(80, y, 300, y - 10) // to the right: back again
+    await loaded(page, keys[3])
+    await swipe(80, y, 300, y) // and once more: the one before
+    await loaded(page, keys[2])
+
+    // These do nothing: a short drag, a mostly vertical one, and a two-finger gesture.
+    await swipe(200, y, 170, y)
+    await page.waitForTimeout(200)
+    expect(await fullKey(page), 'after a short drag').toBe(keys[2])
+    await swipe(200, y - 100, 120, y + 150)
+    await page.waitForTimeout(200)
+    expect(await fullKey(page), 'after a vertical drag').toBe(keys[2])
+    await swipe(300, y, 80, y, true)
+    await page.waitForTimeout(200)
+    expect(await fullKey(page), 'after a two-finger gesture').toBe(keys[2])
+    // Nor does a sideways drag that starts on the strip, which scrolls the strip.
+    const st = await page.locator('#strip').boundingBox()
+    await swipe(300, st.y + st.height / 2, 80, st.y + st.height / 2)
+    await page.waitForTimeout(200)
+    expect(await fullKey(page), 'after dragging the strip').toBe(keys[2])
+    await expect(dialog(page)).toBeVisible()
+  } finally {
+    await context.close()
+  }
+})
+
 test('lightbox fits a phone screen', async ({ browser, baseURL }, testInfo) => {
   const context = await browser.newContext({
     baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 },

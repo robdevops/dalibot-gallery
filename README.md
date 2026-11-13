@@ -11,7 +11,7 @@ first, with infinite scroll and a full-size viewer.
 - The browser only ever talks to the gallery. Only the gallery talks to AWS
   (read-only) and to Telegram (`getFile` and the file download, nothing else).
 - The gallery never writes to the table and never changes the bot.
-- One Go binary with the page, script and stylesheet embedded (under 10 KB of
+- One Go binary with the page, script and stylesheet embedded (under 12 KB of
   JavaScript and CSS, no framework, no build step). It links libvips through cgo,
   so libvips must be installed wherever it runs; the container image takes care of that.
 

@@ -206,6 +206,21 @@ addEventListener('keydown', e => {
     step(d)
   }
 })
+// Swipe on the large image: left for the next one, right for the previous.
+// Only a single finger that starts on the image counts, and not while the page
+// is zoomed, so pinching, panning and scrolling the strip still work. The
+// listeners are on the dialog so that a second finger anywhere in it is seen.
+let sx = NaN, sy = 0
+dlg.addEventListener('touchstart', e => {
+  const t = e.touches
+  sx = t[1] || e.target != full || visualViewport.scale > 1 ? NaN : t[0].clientX
+  sy = t[0].clientY
+}, { passive: true })
+dlg.addEventListener('touchend', e => {
+  const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
+  if (!e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy)) step(dx < 0 ? 1 : -1)
+  sx = NaN
+})
 full.onload = () => (full.className = '')
 full.onerror = () => {
   full.dataset.key = full.className = '' // retry next time
