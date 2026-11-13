@@ -366,6 +366,50 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await swipe(-1)
   await settledAt(keys[13])
 
+  // A second swipe made straight away, while the first one's momentum is still arriving and with no
+  // pause between them, counts too. (With the next image fetched ahead, this is how people page.)
+  const from = await fullKey(page)
+  const at = keys.indexOf(from)
+  const wheel = async list => {
+    for (const dx of list) {
+      await page.mouse.wheel(dx, 0)
+      await page.waitForTimeout(16)
+    }
+  }
+  const fingers = [4, 14, 32, 48, 44, 36] // on the pad
+  const coasting = [30, 26, 22, 19, 16, 14, 12, 11, 10, 9, 8, 7, 7, 6, 6, 5] // momentum, about a quarter of a second
+  await wheel([...fingers, ...coasting])
+  await wheel([3, 9, 22, 40, 52, 44, 36]) // fingers down again: the momentum stops and a new swipe builds
+  await wheel([30, 24, 19, 15, 12, 9, 7, 5, 4, 3, 2, 1, 1])
+  await settledAt(keys[at + 2])
+  // And one in the other direction, started during the momentum of a forward swipe.
+  await wheel([...fingers, ...coasting])
+  await wheel([-3, -9, -22, -40, -52, -44, -36, -28, -20, -14, -9, -5, -3, -1])
+  await settledAt(keys[at + 2])
+  await wheel([-4, -14, -32, -48, -44, -36, -28, -20, -14, -9, -5, -3, -1])
+  await settledAt(keys[at + 1])
+  await swipe(-1)
+  await settledAt(keys[at])
+
+  // A swipe usually carries a slight pinch with it (the fingers drift together or apart). That must
+  // not zoom the image, and must not stop the swipe.
+  const scale = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).a)
+  const here = keys.indexOf(await fullKey(page))
+  for (const [dx, pinch] of [[4, -1], [14, -2], [32, -1.5], [48, -1], [44, 0], [36, 1], [30, 0.5], [22, 0], [16, 0], [11, 0], [8, 0], [5, 0], [3, 0], [2, 0], [1, 0]]) {
+    await page.mouse.wheel(dx, 0)
+    if (pinch) {
+      await page.keyboard.down('Control')
+      await page.mouse.wheel(0, pinch)
+      await page.keyboard.up('Control')
+    }
+    await page.waitForTimeout(16)
+  }
+  await settledAt(keys[here + 1])
+  expect(await scale()).toBe(1)
+  await swipe(-1)
+  await settledAt(keys[here])
+  expect(await scale()).toBe(1)
+
   // Left alone: vertical scrolling, a pinch (wheel with Ctrl), and a slow drift that never adds up to a swipe.
   await page.mouse.wheel(0, 300)
   await page.keyboard.down('Control')

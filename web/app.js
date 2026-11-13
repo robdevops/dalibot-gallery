@@ -344,36 +344,61 @@ visualViewport.onresize = touch
 addEventListener('resize', () => { if (z > 1) pan(0, 0) })
 
 // A two-finger sideways swipe on a touchpad arrives as wheel events with a
-// horizontal delta. One swipe moves one image: its deltas are uneven and are
-// followed by momentum, so after a move everything is ignored until the events
-// pause or, after 400 ms, the delta jumps up again (a new swipe).
-let wx = 0, wlast = 0, wtime = 0, wmoved = -1
+// horizontal delta, followed by momentum that dies away. One swipe moves one
+// image: after a move, events are ignored for a quarter of a second, and then
+// until they pause, turn round, or grow again. Momentum only shrinks, so two
+// deltas in a row well above the smallest seen since the move are a new swipe
+// (one alone can be the unevenness of the same swipe).
+let wx = 0, wtime = 0, wmoved = -1, wmin = 0, wdir = 0, wup = 0
+// A pinch must add up to this much before it zooms (as a power of e): a swipe
+// usually carries a little pinch with it, which must neither zoom nor stop the swipe.
+const PINCH = 0.08
+let zacc = 0, ztime = 0
 // A touchpad pinch (a wheel event with ctrlKey) zooms at the pointer; while zoomed, two fingers pan.
 dlg.addEventListener('wheel', e => {
   const x = Math.abs(e.deltaX), t = e.timeStamp
   if (!full.parentNode.contains(e.target)) return
-  if (e.ctrlKey || z > 1) {
+  if (e.ctrlKey) {
     e.preventDefault()
-    if (e.ctrlKey) zoom(z * Math.exp(-Math.max(-30, Math.min(30, e.deltaY)) / 100), e.clientX, e.clientY)
-    else pan(-e.deltaX, -e.deltaY)
+    const k = -Math.max(-30, Math.min(30, e.deltaY)) / 100
+    if (z > 1) zoom(z * Math.exp(k), e.clientX, e.clientY)
+    else {
+      if (t - ztime > 200) zacc = 0
+      ztime = t
+      zacc += k
+      if (zacc < PINCH) return // not a real pinch (yet): the swipe carries on
+      zoom(Math.exp(zacc), e.clientX, e.clientY)
+      zacc = 0
+    }
+  } else if (z > 1) {
+    e.preventDefault()
+    pan(-e.deltaX, -e.deltaY)
+  }
+  if (e.ctrlKey || z > 1) {
     wtime = wmoved = t // what follows is momentum: not a swipe to another image
-    wlast = x
+    wmin = x
+    wdir = Math.sign(e.deltaX)
     return
   }
   if (x <= Math.abs(e.deltaY)) return
   e.preventDefault() // not a scroll, and not the browser's swipe for Back
-  if (t - wtime > 200 || wmoved >= 0 && t - wmoved > 400 && x > wlast * 2 + 8) {
+  if (wmoved >= 0) {
+    wup = x > wmin * 2 + 6 ? wup + 1 : 0
+    wmin = Math.min(wmin, x)
+  }
+  if (t - wtime > 200 || wmoved >= 0 && t - wmoved > 250 && (wup > 1 || x > 3 && Math.sign(e.deltaX) == -wdir)) {
     wx = 0
     wmoved = -1
   }
   wtime = t
-  wlast = x
   if (wmoved >= 0) return
   wx += e.deltaX
   if (Math.abs(wx) > 60) {
     wmoved = t
-    const d = wx > 0 ? 1 : -1
-    sliding || fling(d) || step(d)
+    wmin = x
+    wup = 0
+    wdir = Math.sign(wx)
+    sliding || fling(wdir) || step(wdir)
   }
 }, { passive: false })
 // Safari on a Mac reports a pinch with its own gesture events (ignored on touch devices).
