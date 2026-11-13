@@ -267,21 +267,28 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   }
   await page.locator(`.tile[data-key="${keys[4]}"] a`).click()
   await loaded(page, keys[4])
-  expect(await shown()).toEqual(overlays.map(() => true))
+  await expect.poll(shown).toEqual(overlays.map(() => true))
   const before = await page.locator('#full').boundingBox()
 
   await page.locator('#full').click()
-  expect(await shown()).toEqual(overlays.map(() => false))
+  // They fade over 200 ms: still there, partly faded, a moment after the click, then gone.
+  await page.waitForTimeout(80)
+  const mid = await page.locator('#next').evaluate(b => +getComputedStyle(b).opacity)
+  expect(mid).toBeGreaterThan(0)
+  expect(mid).toBeLessThan(1)
+  expect(await page.locator('#next').isVisible()).toBe(true)
+  await expect.poll(shown).toEqual(overlays.map(() => false))
+  expect(await page.locator('#next').evaluate(b => getComputedStyle(b).transitionDuration)).toContain('0.2s')
   await expect(dialog(page)).toBeVisible()
   await expect(page.locator('#full')).toBeVisible()
   expect(await page.locator('#full').boundingBox()).toEqual(before) // the image does not move
   // The keyboard still works while they are hidden, and they stay hidden from image to image.
   await page.keyboard.press('ArrowRight')
   await loaded(page, keys[5])
-  expect(await shown()).toEqual(overlays.map(() => false))
+  await expect.poll(shown).toEqual(overlays.map(() => false))
 
   await page.locator('#full').click()
-  expect(await shown()).toEqual(overlays.map(() => true))
+  await expect.poll(shown).toEqual(overlays.map(() => true))
 
   // Hidden, then closed with Esc: they are back the next time the viewer opens.
   await page.locator('#full').click()
@@ -289,7 +296,7 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   await expect(dialog(page)).toBeHidden()
   await page.locator(`.tile[data-key="${keys[6]}"] a`).click()
   await loaded(page, keys[6])
-  expect(await shown()).toEqual(overlays.map(() => true))
+  await expect.poll(shown).toEqual(overlays.map(() => true))
 })
 
 test('a two-finger sideways swipe on a touchpad moves one image per swipe', async ({ page }) => {

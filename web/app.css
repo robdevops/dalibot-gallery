@@ -28,7 +28,7 @@ dialog::backdrop{background:#000d}
 .box{width:min(100vw,max(100dvh - 10rem,16rem))}
 .stage{position:relative;overflow:hidden}
 #full{touch-action:pan-y pinch-zoom;display:block;width:100%;aspect-ratio:1/1;object-fit:contain;transition:transform .18s ease-out}
-@media (prefers-reduced-motion:reduce){#full{transition:none}}
+@media (prefers-reduced-motion:reduce){#full,.nav,.meta{transition:none}}
 #full.wait{visibility:hidden}
 .nav{position:absolute;width:2.75rem;height:2.75rem;font-size:1.75rem;line-height:1;background:#111c}
 #x{top:0;right:0}
@@ -37,7 +37,8 @@ dialog::backdrop{background:#000d}
 #next{right:0}
 .meta{padding:.6rem .75rem .75rem}
 .meta p{margin:0;overflow-wrap:anywhere}
-.bare .nav,.bare .meta{visibility:hidden}
+.nav,.meta{transition:opacity .2s,visibility .2s}
+.bare .nav,.bare .meta{opacity:0;visibility:hidden}
 #cap{max-height:4.2em;overflow:auto}
 #cmd{margin-top:.25rem;color:#aaa;font-size:.85rem}
 #strip{position:relative;display:flex;justify-content:safe center;gap:4px;margin:.6rem 0 0;padding:0;overflow-x:auto;list-style:none}
