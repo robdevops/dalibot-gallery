@@ -83,7 +83,7 @@ func (st *Store) Run(ctx context.Context, interval time.Duration) {
 		defer cancel()
 		if err := st.Refresh(rctx); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
 			if st.success.Load() == 0 {
-				st.log.Error("reading the table failed; nothing has been read yet", "error", err)
+				st.log.Error("reading the bot's records failed; nothing has been read yet", "error", err)
 			} else {
 				st.log.Error("snapshot refresh failed; keeping the previous snapshot", "error", err, "age", st.Age().Round(time.Second))
 			}

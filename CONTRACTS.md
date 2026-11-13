@@ -25,6 +25,7 @@ Module: `github.com/robdevops/dalibot-gallery`
   - `(*vips.ImageRef).ExportWebp(*vips.WebpExportParams) ([]byte, *vips.ImageMetadata, error)` with fields
     `StripMetadata bool`, `Quality int`, `ReductionEffort int` (and `Lossless`, `NearLossless`, `IccProfile`, `MinSize`, `MinKeyFrames`, `MaxKeyFrames`).
   - Quiet govips' own logging with `vips.LoggingSettings(handler, vips.LogLevelError)` before `Startup`.
+- `github.com/mattn/go-sqlite3` v1.14.53: the `sqlite3` driver for `database/sql`, used by `internal/source` (read-only) and by `internal/devstack` (to make its own test database). cgo; it compiles its own copy of SQLite.
 - `github.com/aws/aws-sdk-go-v2` `config` v1.33.18, `credentials` v1.21.0, `service/dynamodb` v1.74.0, `feature/dynamodb/attributevalue` v1.21.21.
 - `golang.org/x/sync` **v0.19.0** (`singleflight`, `semaphore`, `errgroup`); newer releases need Go 1.25+.
 - `internal/deps` (a blank-import file that pinned these while the packages were written) has been removed;
@@ -35,7 +36,7 @@ Ownership of directories:
 
 | Directory | Owner |
 |---|---|
-| `internal/config`, `internal/styles`, `internal/source`, `testdata/dynamodb`, `CONTRACTS.md`, `go.mod`, `go.sum`, `internal/deps` | Foundation (done) |
+| `internal/config`, `internal/styles`, `internal/source`, `testdata/dynamodb`, `testdata/sqlite`, `CONTRACTS.md`, `go.mod`, `go.sum`, `internal/deps` | Foundation (done) |
 | `internal/telegram` | Telegram |
 | `internal/imaging`, `testdata/images` (sample JPEGs) | Imaging |
 | `internal/cache` | Cache |
@@ -51,8 +52,10 @@ type Config struct {
 	Public          bool          // GALLERY_PUBLIC=1: viewing needs no login
 	Token           string        // GALLERY_TOKEN (secret): viewing needs it; "" exactly when Public
 	AdminToken      string        // GALLERY_ADMIN_TOKEN (secret); "" means no admin sessions, features or routes
-	Table           string        // DALIBOT_TABLE; default dalibot
-	Region          string        // AWS_REGION, else AWS_DEFAULT_REGION, else ap-southeast-1
+	Source          string        // GALLERY_SOURCE: "dynamodb" (default, config.SourceDynamoDB) or "sqlite" (config.SourceSQLite)
+	Table           string        // DALIBOT_TABLE; default dalibot; "" (not read) when Source is sqlite
+	Region          string        // AWS_REGION, else AWS_DEFAULT_REGION, else ap-southeast-1; "" (not read) when Source is sqlite
+	SQLitePath      string        // GALLERY_SQLITE_PATH made absolute; required when Source is sqlite, an error otherwise
 	TelegramToken   string        // TELEGRAM_BOT_TOKEN (secret); required
 	TelegramAPIBase string        // TELEGRAM_API_BASE without a trailing slash; default https://api.telegram.org
 	StoreDays       int           // GALLERY_STORE_DAYS; default 90; 1..3650
@@ -115,7 +118,7 @@ type Record struct {                  // one stored item, raw
 }
 type RawImage struct{ FileID, Caption string }
 
-type Source interface {               // read-only backend; DynamoDB today, SQLite later
+type Source interface {               // read-only backend: Dynamo or SQLite
 	Records(ctx context.Context) ([]Record, error)
 }
 type Static []Record                  // a Source over a fixed list, for tests
@@ -171,6 +174,17 @@ type ScanAPI = dynamodb.ScanAPIClient
 func NewDynamoFromClient(api ScanAPI, table string, log *slog.Logger) *Dynamo
 func (d *Dynamo) Records(ctx context.Context) ([]Record, error)
 
+// SQLite reader for the bot's self-hosted store (lib/store.py, SqliteStore); never writes.
+// messages(chat_id TEXT, message_id TEXT, data TEXT, updated INTEGER, PRIMARY KEY (chat_id, message_id)); data is the record as JSON.
+type SQLiteOptions struct {
+	Path        string         // the bot's database file; required
+	StoreDays   int            // the bot's DALIBOT_STORE_DAYS; required
+	BusyTimeout time.Duration  // how long to retry while the bot holds a lock; 0 = DefaultSQLiteBusyTimeout (5 s)
+	Logger      *slog.Logger   // may be nil
+}
+func NewSQLite(opt SQLiteOptions) (*SQLite, error)                // does not touch the file
+func (s *SQLite) Records(ctx context.Context) ([]Record, error)
+
 // Snapshot: immutable, safe for concurrent use. Returned slices must not be modified.
 func (s *Snapshot) Len() int                       // number of tiles
 func (s *Snapshot) Records() int
@@ -205,7 +219,8 @@ func (st *Store) Healthy(maxAge time.Duration) bool    // a refresh succeeded le
 - **Liveness**: a key is live exactly when `store.Snapshot().Has(key)`. Pass `snap.Has` (from the snapshot given to the hook) as the `live` function of `cache.Prune`. Never prune from the empty start-up snapshot: only prune inside an `OnSwap` hook, which runs only after a successful scan.
 - **Health**: `/healthz` is `store.Healthy(3 * cfg.Refresh)`.
 - **File ids**: `Snapshot.FileID` is the only way to get one. Do not log it, put it in an error that reaches a response, or send it to a browser.
-- **Test fixtures**: `testdata/dynamodb/items.json` (`{"now", "store_days", "items": [DynamoDB-JSON items]}`) holds 17 items covering every shape in the brief; with `now` from the file it yields 19 tiles from 11 records. Other packages' tests should normally build snapshots from `source.Static`/`source.Build` with their own records rather than parse this file.
+- **SQLite rows (`SQLite.Records`)**: each call opens the file with `file:<escaped path>?mode=ro&_query_only=1&_busy_timeout=0`, runs one `SELECT` (every column cast, so any stored type scans) and closes it; nothing stays open between refreshes. A row maps to `Record{ID: chat_id + ":" + message_id, TTL: updated + StoreDays*86400, Created: data.created (a whole number, else 0), …}`, so `Build` needs no SQLite case: its `ttl < now` rule hides a row older than the store days (the bot purges only at start-up) and `ttl - StoreDays*86400` dates a record from `updated`. `base` and `kind` are not decoded. A row whose `data` is not a JSON object in the bot's shape is skipped and counted in one warning. `SQLITE_BUSY` is retried every 20 ms until `BusyTimeout` or the context ends; every other failure (missing file, no table, hot journal, permissions) is returned at once, and `Store` keeps the previous snapshot. A file whose header says WAL (bytes 18/19 = 2) is refused before SQLite opens it, because a read-only WAL connection creates `-shm`/`-wal` files. Driver: `github.com/mattn/go-sqlite3` (cgo, SQLite compiled in).
+- **Test fixtures**: `testdata/sqlite/dalibot.db` was written by the bot's own `SqliteStore` through `testdata/sqlite/make_fixture.py` with the clock fixed at `now = 1800000000` (store days 90): 12 rows, giving 12 tiles from 9 records. `testdata/dynamodb/items.json` (`{"now", "store_days", "items": [DynamoDB-JSON items]}`) holds 17 items covering every shape in the brief; with `now` from the file it yields 19 tiles from 11 records. Other packages' tests should normally build snapshots from `source.Static`/`source.Build` with their own records rather than parse this file.
 
 ## 4. `internal/telegram` (REQUIRED)
 
@@ -408,7 +423,7 @@ and logs image, asset and health requests only when `GALLERY_DEBUG=1`. JSON bodi
 `internal/devstack` and `scripts/dev-stack.sh` run the whole stack locally (moto, a fake Telegram API, seeded data);
 sample JPEGs are in `testdata/telegram/` (not `testdata/images/`).
 
-`cmd/gallery/main.go` wires, in this order: `config.Load` → logger → `imaging.Startup` → `cache.Open` → `telegram.New` → `source.NewDynamo` → `source.NewStore` → `server.New` → `store.OnSwap(...)` → `go store.Run(ctx, cfg.Refresh)` → `http.Server{ReadHeaderTimeout: 5s, ReadTimeout: 10s, WriteTimeout: 60s, IdleTimeout: 120s, MaxHeaderBytes: 16 << 10}`; on SIGINT/SIGTERM: shut the server down, cancel ctx, `imaging.Shutdown`.
+`cmd/gallery/main.go` wires, in this order: `config.Load` → logger → `imaging.Startup` → `cache.Open` → `telegram.New` → `source.NewSQLite` when `cfg.Source` is sqlite, else `source.NewDynamo` (only the chosen one is constructed) → `source.NewStore` → `server.New` → `store.OnSwap(...)` → `go store.Run(ctx, cfg.Refresh)` → `http.Server{ReadHeaderTimeout: 5s, ReadTimeout: 10s, WriteTimeout: 60s, IdleTimeout: 120s, MaxHeaderBytes: 16 << 10}`; on SIGINT/SIGTERM: shut the server down, cancel ctx, `imaging.Shutdown`.
 
 How an image is produced (server): thumbnail request → `cache.GetThumb` → else original (`cache.GetOriginal` → else `snap.FileID` + `Fetcher.Fetch` + `imaging.Verify` (header check, then a full decode) + `cache.PutOriginal`) → `imaging.Thumbnail` → `cache.PutThumb`. Use singleflight per `key+size` so concurrent requests for one cold tile do the work once.
 
@@ -600,5 +615,6 @@ Fixed values shared by `web/` and the server:
 ## 8. Things no package may do
 
 - Call any Telegram method other than `getFile` and the file download, or any DynamoDB operation other than `Scan` (and `GetItem`). Tests may create and fill tables in moto only.
+- Open the bot's SQLite file in any way but read-only, or run any statement on it but the one `SELECT`. Tests and the dev stack write only to database files they created themselves.
 - Send or log a file_id, the bot token, the gallery token, a cookie value, a Telegram URL or a file_path.
 - Import or run anything from the bot's repository.

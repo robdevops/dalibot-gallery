@@ -6,7 +6,9 @@
 # The gallery is then on http://127.0.0.1:8080 of the host, for a TLS reverse
 # proxy on the same host (deploy/nginx.conf, deploy/Caddyfile). It is not
 # reachable from other machines. For Traefik in Docker, add
-# deploy/traefik-labels.yaml as a second -f file.
+# deploy/traefik-labels.yaml as a second -f file. For a self-hosted bot that
+# keeps its records in SQLite, add deploy/compose.sqlite.yaml as a second -f
+# file (it mounts the bot's database directory read-only; .env then needs no AWS key).
 
 services:
   gallery:

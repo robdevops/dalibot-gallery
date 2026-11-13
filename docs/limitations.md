@@ -1,20 +1,28 @@
 # Limitations and out of scope
 
-- **Images disappear with the bot's TTL.** When DynamoDB expires a record
-  (90 days after its last write by default), its tiles and cached files go too.
-- **Read-only.** No uploads, likes, comments, search, or writing to the table.
+- **Images disappear with the bot's TTL.** When a record expires (90 days
+  after its last write by default), its tiles and cached files go too.
+- **Read-only.** No uploads, likes, comments, search, or writing to the
+  bot's table or database file.
 - **One shared token.** No users or roles, and no per-session sign-out.
   Many addresses failing together can block sign-ins for a while; see
   [Security model](security.md).
-- **DynamoDB only.** The bot's self-hosted SQLite mode is not supported (the
-  listing sits behind an interface so a reader could be added).
+- **One source at a time.** A gallery reads either the DynamoDB table or one
+  SQLite file, not both and not several.
+- **SQLite: same machine, local disk.** The bot's database file must be on
+  the gallery's machine; a network file system is not supported. A database
+  in WAL mode is refused, and after the bot was killed in the middle of a
+  write the gallery keeps its last listing until the bot has opened the
+  database again. Choosing an earlier style in Telegram moves that record to
+  the top of the gallery, which it does not do with DynamoDB. See
+  [SQLite](sqlite.md).
 - **JPEG originals only**, which is what Telegram serves for photos. Anything
   else shows the placeholder. Photo-variation albums appear only once the bot
   records them: bot versions before that change did not store them.
 - **WebP thumbnails only**; no AVIF or JPEG XL.
 - "Newest" means most recently drawn: adding a style to an old message brings
-  its tiles back to the top. The date is derived from the TTL, so it is only
-  right if `GALLERY_STORE_DAYS` matches the bot.
+  its tiles back to the top. With DynamoDB the date is derived from the TTL,
+  so it is only right if `GALLERY_STORE_DAYS` matches the bot.
 - **Older pictures can be imported.** The bot cannot read a chat's history,
   but pictures it made before it kept records can be forwarded to it in a
   private chat (see the bot's README). The bot stores each with a `created`
@@ -36,5 +44,6 @@
   no security headers; see [Security model](security.md).
 - Rebuild the container image often to pick up security updates to Alpine,
   libvips and its codecs.
-- The whole table is scanned on every refresh and the listing is held in
-  memory; this suits a table bounded by a TTL, not an unbounded one.
+- The whole table (or every row of the SQLite database) is read on every
+  refresh and the listing is held in memory; this suits a store bounded by a
+  TTL, not an unbounded one.

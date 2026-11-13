@@ -1,16 +1,19 @@
 # dalibot-gallery
 
 A small, self-hosted web gallery for the images drawn by
-[dalibot](https://github.com/robdevops/dalibot). It reads the bot's DynamoDB
-table and shows every image as an edge-to-edge grid of square tiles, newest
-first, with infinite scroll and a full-size viewer.
+[dalibot](https://github.com/robdevops/dalibot). It reads the bot's records,
+from its DynamoDB table or from the SQLite database of a self-hosted bot,
+and shows every image as an edge-to-edge grid of square tiles, newest first,
+with infinite scroll and a full-size viewer.
 
 - One tile per generated image (every style of every record is its own tile).
 - Thumbnails are WebP, centre-cropped squares at 240 px and 480 px, made with
   libvips and cached on disk. The full-size image is the original Telegram JPEG, unchanged.
-- The browser only ever talks to the gallery. Only the gallery talks to AWS
-  (read-only) and to Telegram (`getFile` and the file download, nothing else).
-- The gallery never writes to the table and never changes the bot.
+- The browser only ever talks to the gallery. Only the gallery reads the
+  bot's records (from AWS, or from the bot's SQLite file) and talks to
+  Telegram (`getFile` and the file download, nothing else).
+- The gallery never writes to the table or to the database file, and never
+  changes the bot.
 - One Go binary with the page, script and stylesheet embedded (under 20 KB of
   JavaScript and CSS, no framework, no build step). It links libvips through cgo,
   so libvips must be installed wherever it runs; the container image takes care of that.
@@ -25,6 +28,7 @@ local stand-in for DynamoDB and Telegram that serves the sample images in
 
 Contents: [Quick start](#quick-start-container) ·
 [Configuration](#configuration) · [AWS access](#aws-access) ·
+[SQLite](#a-self-hosted-bot-sqlite) ·
 [Security model](docs/security.md) · [Reverse proxy](#reverse-proxy) ·
 [Running without a container](#running-without-a-container) ·
 [Cache](docs/cache.md) · [Upgrading](#upgrading) ·
@@ -34,7 +38,10 @@ Contents: [Quick start](#quick-start-container) ·
 ## Quick start (container)
 
 You need Docker with Compose, the bot's Telegram token, and a read-only AWS
-key for the bot's table (see [docs/aws-access.md](docs/aws-access.md)).
+key for the bot's table (see [docs/aws-access.md](docs/aws-access.md)). If
+your bot is self-hosted and keeps its records in SQLite, you need no AWS key:
+follow these steps with the differences under
+[A self-hosted bot (SQLite)](#a-self-hosted-bot-sqlite).
 
 ```sh
 git clone https://github.com/robdevops/dalibot-gallery
@@ -89,6 +96,38 @@ values in `.env` without quotes: `docker run --env-file` and systemd pass quotes
 How the image is built, what has and has not been tested, and the health
 check are described in [docs/container.md](docs/container.md).
 
+### A self-hosted bot (SQLite)
+
+A dalibot that runs on your own machine keeps its records in a SQLite file
+(`var/dalibot.db` in the bot's directory) instead of DynamoDB. To show
+those, on the same machine:
+
+1. In `.env`, leave out every AWS line and add:
+
+   ```sh
+   GALLERY_SOURCE=sqlite
+   ```
+
+2. Let the bot's group read the database (the bot creates it for its own
+   user only):
+
+   ```sh
+   sudo chmod g+rx /opt/dalibot/var
+   sudo chmod g+r /opt/dalibot/var/dalibot.db
+   ```
+
+3. In `deploy/compose.sqlite.yaml`, set the bot's `var` directory and the id
+   of the bot's group, then start with both files:
+
+   ```sh
+   docker compose -f deploy/compose.yaml -f deploy/compose.sqlite.yaml up -d --build
+   ```
+
+The directory is mounted read-only, and the gallery opens the file
+read-only: it never writes to it. [docs/sqlite.md](docs/sqlite.md) has the
+details, `docker run` and systemd, and what happens while the bot is
+writing or the file is missing.
+
 ## Configuration
 
 Everything is an environment variable. Every value is checked at start-up; a
@@ -103,10 +142,12 @@ These are the ones to look at before the first start:
 | `GALLERY_PUBLIC` | (unset) | `1` lets anyone who can reach the gallery view it, with no login. Set this or `GALLERY_TOKEN`, never both. |
 | `GALLERY_ADMIN_TOKEN` | (unset) | Optional. A second token, different from `GALLERY_TOKEN` and at least 16 characters, that signs in as an admin at the same `/login`. Without it there are no admin features. |
 | `TELEGRAM_BOT_TOKEN` | (required) | The bot's token. Used only for `getFile` and the file download. |
-| AWS credentials | standard chain | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on (see [docs/aws-access.md](docs/aws-access.md)). |
-| `AWS_REGION` | `ap-southeast-1` | Falls back to `AWS_DEFAULT_REGION`. |
-| `DALIBOT_TABLE` | `dalibot` | The bot's AWS DynamoDB table. |
-| `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. |
+| `GALLERY_SOURCE` | `dynamodb` | Where the bot's records are: `dynamodb` (the bot's table in AWS) or `sqlite` (the database file of a self-hosted bot). Only the chosen source's settings are read. |
+| AWS credentials | standard chain | With `dynamodb` only. `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on (see [docs/aws-access.md](docs/aws-access.md)). |
+| `AWS_REGION` | `ap-southeast-1` | With `dynamodb` only. Falls back to `AWS_DEFAULT_REGION`. |
+| `DALIBOT_TABLE` | `dalibot` | With `dynamodb` only. The bot's AWS DynamoDB table. |
+| `GALLERY_SQLITE_PATH` | (required with `sqlite`) | With `sqlite` only. The bot's database file (its `DALIBOT_DB`). Opened read-only. See [docs/sqlite.md](docs/sqlite.md). |
+| `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. With `sqlite` the date is the time the row was last written, and this setting only decides when a row counts as expired. |
 | `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
 | `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). It grants no access. `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [docs/reverse-proxy.md](docs/reverse-proxy.md). |
 
@@ -151,6 +192,10 @@ if the gallery is meant to be viewable without a login. See
 [Upgrading](#upgrading).
 
 ## AWS access
+
+This applies to `GALLERY_SOURCE=dynamodb`, the default. With
+`GALLERY_SOURCE=sqlite` the gallery needs no AWS identity and reads no AWS
+setting.
 
 The gallery needs its own read-only AWS identity for the bot's table: an IAM
 policy allowing `dynamodb:Scan` on that one table, attached to a new user
@@ -211,6 +256,9 @@ later required.
 | Alpine | `apk add vips-dev pkgconf build-base` |
 | macOS (Homebrew) | `brew install vips pkg-config` |
 | FreeBSD | `pkg install vips pkgconf` |
+
+The C compiler also builds the SQLite library that is compiled into the
+binary; no SQLite package needs to be installed.
 
 You also need Go 1.27 or later. An older Go (1.21 or later) downloads the
 1.27 toolchain by itself on the first build if it can reach the internet.
@@ -302,9 +350,13 @@ empty capability set, `MemoryMax=512M`,
 unset. The unit does not set `MemoryDenyWriteExecute`, because some libvips
 builds generate code at run time. A configuration error (exit status 2) is not restarted.
 
+For a self-hosted bot's SQLite database, the unit has two commented lines
+that give the gallery's user the bot's group and make the bot's directory
+visible; see [docs/sqlite.md](docs/sqlite.md#systemd).
+
 ## Upgrading
 
-There is no database and nothing to migrate. The cache is kept across
+The gallery has no database of its own and nothing to migrate. The cache is kept across
 upgrades: originals are reused, and thumbnails are regenerated only if the
 pipeline version changed.
 
@@ -323,6 +375,11 @@ so, rather than start with a different meaning. What to do:
   sent a chat id, which the token-holding proxy could not prevent.
 - `GALLERY_AUTH=token` or an empty value: remove the line. `GALLERY_TOKEN`
   alone has always meant that.
+
+**SQLite source.** New: `GALLERY_SOURCE=sqlite` reads a self-hosted bot's
+database file. Nothing changes for an existing installation: the default is
+still DynamoDB, with the same settings. Building from source now also
+compiles SQLite into the binary, with the C compiler the build already needed.
 
 **Pages open during the upgrade.** The cursors in the listing changed form
 (they are now sealed, see [docs/security.md](docs/security.md)). A gallery
@@ -364,6 +421,7 @@ After a system update of libvips, rebuild as well.
 | Document | What it covers |
 |---|---|
 | [docs/aws-access.md](docs/aws-access.md) | The read-only IAM policy, creating the user and key, troubleshooting |
+| [docs/sqlite.md](docs/sqlite.md) | Reading a self-hosted bot's SQLite database: settings, permissions, container and systemd, what the gallery does to the file |
 | [docs/configuration.md](docs/configuration.md) | The settings beyond the essentials above |
 | [docs/container.md](docs/container.md) | How the image is built, what has been tested, the health check |
 | [docs/reverse-proxy.md](docs/reverse-proxy.md) | Rules for any proxy: security headers, caching, client addresses and `GALLERY_TRUSTED_PROXIES` |

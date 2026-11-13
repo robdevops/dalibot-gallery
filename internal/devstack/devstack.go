@@ -1,10 +1,12 @@
-// Package devstack builds a complete local stand-in for the gallery's two
-// upstreams, for the integration test, the browser tests and local
+// Package devstack builds a complete local stand-in for the gallery's
+// upstreams, for the integration tests, the browser tests and local
 // development: a moto DynamoDB server seeded with items in the bot's real
-// shapes, and a fake Telegram Bot API that serves sample JPEGs.
+// shapes, or a SQLite database with the same records as the bot's self-hosted
+// mode stores them, and a fake Telegram Bot API that serves sample JPEGs.
 //
-// Nothing here can reach AWS or Telegram: the seeder refuses any endpoint that
-// is not on the loopback interface, and the fake Telegram server implements
+// Nothing here can reach AWS or Telegram, or a real bot's database: the
+// seeder refuses any endpoint that is not on the loopback interface and any
+// database file that already exists, and the fake Telegram server implements
 // only getFile and the file download. The gallery binary does not import this
 // package.
 package devstack
@@ -379,26 +381,31 @@ func AddNew(ctx context.Context, endpoint, table string, now time.Time, storeDay
 	}
 	var ids []string
 	for range count {
-		addMu.Lock()
-		addSeq++
-		seq := addSeq
-		addMu.Unlock()
-		fileID := fmt.Sprintf("%sNEW%04d-Qz_%032x", FileIDPrefix, seq, uint64(seq)*0xC2B2AE3D27D4EB4F)
-		prompt := prompts[seq%len(prompts)]
-		item := map[string]types.AttributeValue{
-			"id":     s(fmt.Sprintf("%s:%d", Chats[seq%3], 900000+seq)),
-			"prompt": s(prompt), "command": s("dream"), "current": s("_"),
-			"images": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
-				"_": image(fileID, prompt+", freshly drawn", "null"),
-			}},
-			"ttl": n(now.Unix() + int64(seq) + int64(storeDays)*86400),
-		}
+		item, fileID := newItem(now, storeDays)
 		if _, err := c.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(table), Item: item}); err != nil {
 			return ids, fmt.Errorf("adding an item to moto: %w", err)
 		}
 		ids = append(ids, fileID)
 	}
 	return ids, nil
+}
+
+// newItem is the next record AddNew writes, and its file_id.
+func newItem(now time.Time, storeDays int) (map[string]types.AttributeValue, string) {
+	addMu.Lock()
+	addSeq++
+	seq := addSeq
+	addMu.Unlock()
+	fileID := fmt.Sprintf("%sNEW%04d-Qz_%032x", FileIDPrefix, seq, uint64(seq)*0xC2B2AE3D27D4EB4F)
+	prompt := prompts[seq%len(prompts)]
+	return map[string]types.AttributeValue{
+		"id":     s(fmt.Sprintf("%s:%d", Chats[seq%3], 900000+seq)),
+		"prompt": s(prompt), "command": s("dream"), "current": s("_"),
+		"images": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"_": image(fileID, prompt+", freshly drawn", "null"),
+		}},
+		"ttl": n(now.Unix() + int64(seq) + int64(storeDays)*86400),
+	}, fileID
 }
 
 // LoadImages reads every *.jpg in dir, in name order.

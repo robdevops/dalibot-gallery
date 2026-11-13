@@ -33,10 +33,22 @@ development sandbox only (Docker 29, x86-64):
   `GALLERY_TRUSTED_PROXIES` existed; they have not been run again since,
   and the Traefik address in `deploy/traefik-labels.yaml` is a placeholder
   you must change.
-- Not tested: real AWS, the real Telegram API, certificate issuance, any
+- The SQLite source: the image was built again with SQLite compiled in (128
+  MB) and run with the README's `docker run` flags plus `-v <dir>:/bot:ro
+  --group-add <gid>` against `scripts/dev-stack.sh -source sqlite`, whose
+  database was made readable by that group: healthy as uid 10001, listing,
+  thumbnails and originals served, rows the dev stack wrote on the host
+  while the container ran appeared after a refresh, and a write to `/bot`
+  from inside the container was refused. Without the group the container
+  stays unhealthy and logs `permission denied`. `deploy/compose.sqlite.yaml`
+  was checked with `docker compose config` only, not brought up. The
+  SQLite and configuration unit tests also pass inside the build stage
+  (Alpine 3.24, musl).
+- Not tested: real AWS, the real Telegram API, a real bot's database, certificate issuance, any
   other machine or architecture, the unit under a running systemd.
 
-`/healthz` answers 503 until the first read of the table has succeeded, so
-the container is "starting" or "unhealthy" while AWS is unreachable or the
-credentials are wrong; the log says why. Traefik does not route to a
+`/healthz` answers 503 until the first read of the bot's records has
+succeeded, so the container is "starting" or "unhealthy" while AWS is
+unreachable or the credentials are wrong (or, with `GALLERY_SOURCE=sqlite`,
+while the database file cannot be read); the log says why. Traefik does not route to a
 container that is not healthy.

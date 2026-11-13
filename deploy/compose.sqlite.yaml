@@ -1,0 +1,24 @@
+# Compose override: read the bot's SQLite database instead of DynamoDB
+# (for a self-hosted dalibot; see docs/sqlite.md).
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.sqlite.yaml up -d --build
+#
+# Edit the two marked values first. .env needs no AWS settings then.
+
+services:
+  gallery:
+    environment:
+      GALLERY_SOURCE: sqlite
+      GALLERY_SQLITE_PATH: /bot/dalibot.db
+
+    # The directory that holds the bot's database (its var directory), mounted
+    # read-only. Mount the directory, not the file: SQLite keeps its journal
+    # next to the database, and the gallery has to see it.
+    volumes:
+      - /opt/dalibot/var:/bot:ro          # <-- the bot's var directory on the host
+
+    # The bot creates its database readable by its own user only. Give its
+    # group read access once (docs/sqlite.md, "Permissions") and add that
+    # group here by number: getent group dalibot
+    group_add:
+      - "1001"                            # <-- the id of the bot's group

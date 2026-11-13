@@ -3,8 +3,9 @@
 // in-memory snapshot that is rebuilt on a timer and swapped in atomically.
 //
 // A Source only reads raw records. Build applies every listing rule (ttl
-// filter, chat allowlist, de-duplication, ordering), so a second backend
-// (for example the bot's SQLite store) needs to implement nothing but Source.
+// filter, chat allowlist, de-duplication, ordering), so the two backends,
+// Dynamo (the bot's DynamoDB table) and SQLite (the database file of its
+// self-hosted mode), implement nothing but Source.
 //
 // Telegram file_ids never leave the server: they are not part of Tile or
 // Image, and the only way to get one is Snapshot.FileID.
@@ -29,7 +30,7 @@ type Record struct {
 	Prompt  string // the user's original prompt
 	Command string // the command used; may be empty in a malformed item
 	Current string // style key shown in Telegram; may name a missing image
-	TTL     int64  // epoch seconds; 0 when missing
+	TTL     int64  // epoch seconds; 0 when missing. From SQLite: the row's updated column plus the store days
 	// Created is when the picture was first sent, for records the bot imported from
 	// forwarded messages. 0 for ordinary records, which are dated from the ttl.
 	Created int64

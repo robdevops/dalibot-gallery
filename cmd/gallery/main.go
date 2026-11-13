@@ -1,8 +1,10 @@
-// Command gallery serves a web gallery of the images in dalibot's DynamoDB table.
+// Command gallery serves a web gallery of the images dalibot has recorded, in
+// its DynamoDB table or in the SQLite database of its self-hosted mode.
 //
 // It is configured only through environment variables (see internal/config and
-// .env.example). It reads the table with Scan, fetches originals from Telegram
-// with getFile and the file download, and never writes to either.
+// .env.example). It reads the table with Scan, or the database file through a
+// read-only connection, fetches originals from Telegram with getFile and the
+// file download, and never writes to any of them.
 //
 // Usage:
 //
@@ -87,12 +89,27 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dyn, err := source.NewDynamo(ctx, source.DynamoOptions{Table: cfg.Table, Region: cfg.Region, Logger: log})
-	if err != nil {
-		log.Error("setting up DynamoDB failed", "error", err)
-		return 1
+	// Only the chosen source is set up: with SQLite, no AWS setting is read and no AWS client exists.
+	var src source.Source
+	switch cfg.Source {
+	case config.SourceSQLite:
+		src, err = source.NewSQLite(source.SQLiteOptions{Path: cfg.SQLitePath, StoreDays: cfg.StoreDays, Logger: log})
+		if err != nil {
+			log.Error("setting up the SQLite source failed", "error", err)
+			return 1
+		}
+		if _, statErr := os.Stat(cfg.SQLitePath); statErr != nil {
+			log.Warn("the bot's SQLite database cannot be seen yet; the gallery stays empty until it can be read",
+				"path", cfg.SQLitePath, "error", statErr)
+		}
+	default:
+		src, err = source.NewDynamo(ctx, source.DynamoOptions{Table: cfg.Table, Region: cfg.Region, Logger: log})
+		if err != nil {
+			log.Error("setting up DynamoDB failed", "error", err)
+			return 1
+		}
 	}
-	store := source.NewStore(dyn, source.Options{
+	store := source.NewStore(src, source.Options{
 		StoreDays: cfg.StoreDays, Chats: cfg.Chats, DefaultCommand: cfg.DefaultCommand,
 	}, log)
 
@@ -101,7 +118,7 @@ func run() int {
 		log.Error("setting up the server failed", "error", err)
 		return 1
 	}
-	// Runs after every successful scan: warms the newest thumbnails and prunes the cache.
+	// Runs after every successful read of the source: warms the newest thumbnails and prunes the cache.
 	store.OnSwap(srv.OnSwap)
 
 	ln, err := net.Listen("tcp", cfg.Listen)

@@ -23,6 +23,8 @@ import (
 // Defaults and limits.
 const (
 	DefaultListen         = "127.0.0.1:8080"
+	SourceDynamoDB        = "dynamodb" // GALLERY_SOURCE: the bot's DynamoDB table (the default)
+	SourceSQLite          = "sqlite"   // GALLERY_SOURCE: the database file of the bot's self-hosted mode
 	DefaultTable          = "dalibot"
 	DefaultRegion         = "ap-southeast-1"
 	DefaultTelegramAPI    = "https://api.telegram.org"
@@ -60,8 +62,10 @@ type Config struct {
 	Public          bool          // GALLERY_PUBLIC=1: viewing needs no login
 	Token           string        `json:"-"` // GALLERY_TOKEN (secret): viewing needs it; empty exactly when Public
 	AdminToken      string        `json:"-"` // GALLERY_ADMIN_TOKEN (secret); empty means no admin features
-	Table           string        // DALIBOT_TABLE
-	Region          string        // AWS_REGION
+	Source          string        // GALLERY_SOURCE: SourceDynamoDB or SourceSQLite
+	Table           string        // DALIBOT_TABLE; empty when Source is SourceSQLite
+	Region          string        // AWS_REGION; empty when Source is SourceSQLite
+	SQLitePath      string        // GALLERY_SQLITE_PATH, absolute; empty when Source is SourceDynamoDB
 	TelegramToken   string        `json:"-"` // TELEGRAM_BOT_TOKEN (secret)
 	TelegramAPIBase string        // TELEGRAM_API_BASE, no trailing slash
 	StoreDays       int           // GALLERY_STORE_DAYS
@@ -202,14 +206,38 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		}
 	}
 
-	// DynamoDB.
-	c.Table = str("DALIBOT_TABLE", DefaultTable)
-	if !reTable.MatchString(c.Table) {
-		bad("DALIBOT_TABLE", "%q is not a DynamoDB table name (3-255 of letters, digits, '_', '-', '.')", c.Table)
-	}
-	c.Region = str("AWS_REGION", str(envRegionFallback, DefaultRegion))
-	if !reRegion.MatchString(c.Region) {
-		bad("AWS_REGION", "%q is not an AWS region (for example %s)", c.Region, DefaultRegion)
+	// Where the bot's records are read from. Only the chosen source's settings are read.
+	c.Source = strings.ToLower(str("GALLERY_SOURCE", SourceDynamoDB))
+	sqlitePath := get("GALLERY_SQLITE_PATH")
+	switch c.Source {
+	case SourceDynamoDB:
+		c.Table = str("DALIBOT_TABLE", DefaultTable)
+		if !reTable.MatchString(c.Table) {
+			bad("DALIBOT_TABLE", "%q is not a DynamoDB table name (3-255 of letters, digits, '_', '-', '.')", c.Table)
+		}
+		c.Region = str("AWS_REGION", str(envRegionFallback, DefaultRegion))
+		if !reRegion.MatchString(c.Region) {
+			bad("AWS_REGION", "%q is not an AWS region (for example %s)", c.Region, DefaultRegion)
+		}
+		if sqlitePath != "" {
+			// Most likely GALLERY_SOURCE was forgotten; reading DynamoDB instead would surprise.
+			bad("GALLERY_SQLITE_PATH", "is set, but GALLERY_SOURCE is not %s. Set GALLERY_SOURCE=%s to read the bot's SQLite database, or remove GALLERY_SQLITE_PATH to read DynamoDB", SourceSQLite, SourceSQLite)
+		}
+	case SourceSQLite:
+		switch abs, err := filepath.Abs(sqlitePath); {
+		case sqlitePath == "":
+			bad("GALLERY_SQLITE_PATH", "is required when GALLERY_SOURCE=%s: the path of the bot's database file (the bot's DALIBOT_DB, by default var/dalibot.db in the bot's directory)", SourceSQLite)
+		case strings.ContainsRune(sqlitePath, 0):
+			bad("GALLERY_SQLITE_PATH", "is not a valid path")
+		case err != nil:
+			bad("GALLERY_SQLITE_PATH", "cannot be made absolute: %v", err)
+		case strings.HasSuffix(sqlitePath, string(filepath.Separator)):
+			bad("GALLERY_SQLITE_PATH", "must be the database file, not a directory: %q", sqlitePath)
+		default:
+			c.SQLitePath = abs
+		}
+	default:
+		bad("GALLERY_SOURCE", "must be %s or %s, not %q", SourceDynamoDB, SourceSQLite, c.Source)
 	}
 
 	// Telegram. The token is a secret.
@@ -354,13 +382,19 @@ func (c *Config) LogValue() slog.Value {
 	if c.Public {
 		view = "public"
 	}
-	return slog.GroupValue(
+	attrs := []slog.Attr{
 		slog.String("listen", c.Listen),
 		slog.String("view", view),
 		slog.String("token", secretState(c.Token)),
 		slog.String("admin_token", secretState(c.AdminToken)),
-		slog.String("table", c.Table),
-		slog.String("region", c.Region),
+		slog.String("source", c.Source),
+	}
+	if c.Source == SourceSQLite {
+		attrs = append(attrs, slog.String("sqlite_path", c.SQLitePath))
+	} else {
+		attrs = append(attrs, slog.String("table", c.Table), slog.String("region", c.Region))
+	}
+	attrs = append(attrs,
 		slog.String("telegram_token", secretState(c.TelegramToken)),
 		slog.String("telegram_api_base", c.TelegramAPIBase),
 		slog.Int("store_days", c.StoreDays),
@@ -374,6 +408,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Int("warm", c.Warm),
 		slog.String("trusted_proxies", proxies),
 	)
+	return slog.GroupValue(attrs...)
 }
 
 // String prints the configuration with secrets redacted.

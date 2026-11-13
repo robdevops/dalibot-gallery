@@ -9,7 +9,8 @@ token, and for an admin, it also holds the record id
 of a public gallery is never sent it; see "A public gallery and chat ids" below.
 
 **What the browser never receives.** The Telegram bot token, any Telegram
-file id, file path or URL, the AWS credentials, or any other table attribute.
+file id, file path or URL, the AWS credentials, the path of the bot's
+database file, or any other attribute of a record.
 Images are addressed only by key, and only keys in the current listing are
 served, so the gallery cannot be used to fetch arbitrary Telegram files. The
 tests scan every response, headers and body, for the seeded file ids and the tokens.
@@ -159,6 +160,16 @@ with timeouts, at most 4 at a time; failures are remembered (24 h for a file
 Telegram rejects, 5 minutes otherwise) and the tile shows a plain placeholder.
 
 **DynamoDB.** Read-only by policy and by code: the gallery only calls `Scan`.
+
+**SQLite.** With `GALLERY_SOURCE=sqlite` the bot's database file is opened
+read-only for each read (`mode=ro` and `query_only`) and closed again; the
+only statement is one `SELECT`. The gallery never creates the file, writes
+to it or takes a write lock, and it refuses a database in WAL mode, because
+reading one would create files next to it. Mounting the bot's directory
+read-only (as `deploy/compose.sqlite.yaml` does) enforces the same from
+outside. The tests check that the file and its directory are byte for byte
+unchanged after reading, and that write statements fail on the gallery's
+connection. Details are in [SQLite](sqlite.md).
 
 **Image decoding.** Before libvips sees a file it must start with the JPEG
 magic bytes and its header must declare at most 10,000 px per side and 50

@@ -4,6 +4,10 @@ The gallery reads the bot's DynamoDB table and never writes to it. Give it
 its own read-only identity. Do not reuse the bot's user or Lambda role: the
 bot's policy can write, and it has no `Scan`.
 
+None of this is needed for a self-hosted bot that keeps its records in
+SQLite: with `GALLERY_SOURCE=sqlite` the gallery reads no AWS setting. See
+[SQLite](sqlite.md).
+
 Contents: [The policy](#the-policy) · [AWS console](#aws-console) ·
 [AWS CLI](#aws-cli) · [Give the key to the gallery](#give-the-key-to-the-gallery) ·
 [Running on AWS](#running-on-aws) · [Cost](#cost) · [Troubleshooting](#troubleshooting)

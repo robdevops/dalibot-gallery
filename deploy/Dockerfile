@@ -10,6 +10,8 @@
 # runtime stage must share one Alpine release: golang:1.27-alpine and alpine:3
 # both follow the newest Alpine 3.x. Alpine packages libvips' heavier loaders
 # (PDF, ImageMagick, HEIF, JPEG XL) separately; none of them is installed.
+# SQLite (for GALLERY_SOURCE=sqlite) is compiled into the binary from the Go
+# module's own copy of its source, so no SQLite package is needed in either stage.
 # Rebuild regularly (--pull --no-cache) to pick up security updates to
 # libvips, libwebp and libjpeg-turbo.
 

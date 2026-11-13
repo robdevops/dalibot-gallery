@@ -33,7 +33,7 @@ func TestDefaults(t *testing.T) {
 	}
 	abs, _ := filepath.Abs("./cache")
 	want := Config{
-		Listen: "127.0.0.1:8080", Token: testToken, Table: "dalibot", Region: "ap-southeast-1",
+		Listen: "127.0.0.1:8080", Token: testToken, Source: "dynamodb", Table: "dalibot", Region: "ap-southeast-1",
 		TelegramToken: testBotToken, TelegramAPIBase: "https://api.telegram.org", StoreDays: 90,
 		DefaultCommand: "dream", Refresh: 60 * time.Second, CacheDir: abs, CacheMaxMB: 2048,
 		WebPQuality: 76, ImageWorkers: runtime.GOMAXPROCS(0), Warm: 120,
@@ -91,6 +91,71 @@ func TestRegionAndCacheFallbacks(t *testing.T) {
 	}
 	if c.Region != "us-west-2" || c.CacheDir != "/b" {
 		t.Errorf("explicit values must win: %v", c)
+	}
+}
+
+// GALLERY_SOURCE chooses the reader, and only that reader's settings are read.
+func TestSource(t *testing.T) {
+	// The default, and its explicit form, are DynamoDB exactly as before.
+	for _, v := range []string{"", "dynamodb", " DynamoDB "} {
+		c, err := FromEnv(env("GALLERY_SOURCE", v, "DALIBOT_TABLE", "pictures", "AWS_REGION", "eu-west-1"))
+		if err != nil {
+			t.Fatalf("GALLERY_SOURCE=%q: %v", v, err)
+		}
+		if c.Source != SourceDynamoDB || c.Table != "pictures" || c.Region != "eu-west-1" || c.SQLitePath != "" {
+			t.Errorf("GALLERY_SOURCE=%q: %v", v, c)
+		}
+		if out := c.String(); !strings.Contains(out, "source=dynamodb table=pictures region=eu-west-1") || strings.Contains(out, "sqlite_path") {
+			t.Errorf("printed as %q", out)
+		}
+	}
+
+	// SQLite: the path is made absolute, and no AWS or table setting is read, not even to be validated.
+	c, err := FromEnv(env("GALLERY_SOURCE", "sqlite", "GALLERY_SQLITE_PATH", " /srv/dalibot/var/dalibot.db ",
+		"DALIBOT_TABLE", "not a table!", "AWS_REGION", "Not A Region", "AWS_DEFAULT_REGION", "also wrong"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Source != SourceSQLite || c.SQLitePath != "/srv/dalibot/var/dalibot.db" || c.Table != "" || c.Region != "" {
+		t.Errorf("sqlite: %v (table %q, region %q)", c, c.Table, c.Region)
+	}
+	if out := c.String(); !strings.Contains(out, "source=sqlite sqlite_path=/srv/dalibot/var/dalibot.db") ||
+		strings.Contains(out, "table=") || strings.Contains(out, "region=") {
+		t.Errorf("printed as %q", out)
+	}
+	c, err = FromEnv(env("GALLERY_SOURCE", "SQLite", "GALLERY_SQLITE_PATH", "var/dalibot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abs, _ := filepath.Abs("var/dalibot.db"); c.SQLitePath != abs || c.Source != SourceSQLite {
+		t.Errorf("a relative path: %q, want %q", c.SQLitePath, abs)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		kv       []string
+		mentions []string
+	}{
+		{"sqlite without a path", []string{"GALLERY_SOURCE", "sqlite"}, []string{"GALLERY_SQLITE_PATH", "is required"}},
+		{"sqlite with a blank path", []string{"GALLERY_SOURCE", "sqlite", "GALLERY_SQLITE_PATH", "  "}, []string{"GALLERY_SQLITE_PATH", "is required"}},
+		{"sqlite with a directory", []string{"GALLERY_SOURCE", "sqlite", "GALLERY_SQLITE_PATH", "/srv/dalibot/var/"}, []string{"GALLERY_SQLITE_PATH", "not a directory"}},
+		{"sqlite with a NUL", []string{"GALLERY_SOURCE", "sqlite", "GALLERY_SQLITE_PATH", "/srv/a\x00b"}, []string{"GALLERY_SQLITE_PATH"}},
+		{"an unknown source", []string{"GALLERY_SOURCE", "postgres"}, []string{"GALLERY_SOURCE", "dynamodb", "sqlite", "postgres"}},
+		{"an unknown source with a path", []string{"GALLERY_SOURCE", "sqlite3", "GALLERY_SQLITE_PATH", "/x.db"}, []string{"GALLERY_SOURCE", "sqlite3"}},
+		// A path without the switch is most likely a forgotten GALLERY_SOURCE: it must not quietly read DynamoDB.
+		{"a path without the source", []string{"GALLERY_SQLITE_PATH", "/x.db"}, []string{"GALLERY_SQLITE_PATH", "GALLERY_SOURCE=sqlite"}},
+		{"a path with dynamodb", []string{"GALLERY_SOURCE", "dynamodb", "GALLERY_SQLITE_PATH", "/x.db"}, []string{"GALLERY_SQLITE_PATH", "GALLERY_SOURCE=sqlite"}},
+	} {
+		c, err := FromEnv(env(tc.kv...))
+		if err == nil || c != nil {
+			t.Errorf("%s: expected an error, got %v", tc.name, c)
+			continue
+		}
+		for _, want := range tc.mentions {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the error lacks %q: %v", tc.name, want, err)
+			}
+		}
 	}
 }
 

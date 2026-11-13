@@ -42,6 +42,12 @@ TasksMax=256
 # File system: everything read-only except the cache directory.
 ProtectSystem=strict
 ProtectHome=yes
+# For GALLERY_SOURCE=sqlite (docs/sqlite.md): the bot's group, so that the
+# gallery's user may read the bot's database once that group has read access,
+# and, for a bot under /home (hidden by ProtectHome), its database directory
+# made visible read-only at another path, where GALLERY_SQLITE_PATH points.
+#SupplementaryGroups=dalibot
+#BindReadOnlyPaths=/home/dalibot/dalibot/var:/run/dalibot-db
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectProc=invisible
