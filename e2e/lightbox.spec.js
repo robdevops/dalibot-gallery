@@ -638,8 +638,15 @@ test('a click on the backdrop closes; a click on the caption does not', async ({
   await loaded(page, keys[1])
   await page.locator('#cap').click()
   await expect(dialog(page)).toBeVisible()
-  const box = await dialog(page).boundingBox()
-  expect(box.x, 'there is a backdrop beside the dialog at 1440 px').toBeGreaterThan(40)
+  // The dialog fills the screen from the top (so it cannot move when a phone's toolbar slides in
+  // or out); its box is centred in it, with the backdrop showing around.
+  expect(await dialog(page).evaluate(d => {
+    const r = d.getBoundingClientRect(), s = getComputedStyle(d)
+    return [r.top, r.left, r.width, r.height, s.marginTop, s.position]
+  })).toEqual([0, 0, 1440, 900, '0px', 'fixed'])
+  const box = await page.locator('dialog#lb .box').boundingBox()
+  expect(box.x, 'there is a backdrop beside the box at 1440 px').toBeGreaterThan(40)
+  expect(Math.abs(box.y - (900 - box.y - box.height))).toBeLessThan(1) // centred
   await page.mouse.click(box.x / 2, 450)
   await expect(dialog(page)).toBeHidden()
   await expect(opener).toBeFocused()
