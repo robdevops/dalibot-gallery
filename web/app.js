@@ -213,8 +213,8 @@ addEventListener('keydown', e => {
   }
 })
 // Swipe the large image: left for the next, right for the previous. One finger,
-// starting on the image, and not while zoomed (pinch, pan and the strip still
-// work). It follows the finger, then slides away or springs back.
+// starting on the image, not while zoomed. It follows the finger, then slides
+// away or springs back.
 let sx = NaN, sy = 0, sliding = 0
 const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
 dlg.addEventListener('touchstart', e => {
@@ -223,35 +223,36 @@ dlg.addEventListener('touchstart', e => {
   sy = t[0].clientY
 }, { passive: true })
 dlg.ontouchmove = e => {
-  const t = e.touches[0], dx = t.clientX - sx // NaN unless this is a swipe
-  if (dx == dx && (full.style.transform || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
+  const t = e.touches[0], dx = t.clientX - sx // NaN: not a swipe
+  if (dx == dx && (/px/.test(full.style.transform) || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
     if (e.cancelable) e.preventDefault() // or the next tap is eaten
     full.style.transition = 'none'
     slide(dx + 'px')
   }
 }
 function release(e) {
+  if (sliding) return
   const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
   const d = !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
+  const k = d && near(d), c = cur
   sx = NaN
   full.style.transition = ''
-  if (e.type == 'touchend' && d && near(d)) {
+  if (e.type == 'touchend' && k) {
     sliding = 1
     slide(-d * 100 + '%')
     setTimeout(() => {
+      sliding = 0
+      if (cur != c) return slide() // moved on meanwhile
       full.style.transition = 'none'
       slide(d * 100 + '%')
-      sliding = 0
-      if (dlg.open) step(d)
-      else slide()
+      go(k)
     }, still() ? 0 : 180)
   } else {
-    slide() // spring back
-    if (e.type == 'touchend' && d) step(d) // at the end
+    full.className || slide() // spring back, unless it is waiting to one side
+    if (e.type == 'touchend' && d) step(d)
   }
 }
 dlg.ontouchend = dlg.ontouchcancel = release
-// Loaded or failed: show it in place.
 function settle() {
   full.className = ''
   if (full.style.transform) {

@@ -1,5 +1,5 @@
 // The lightbox: open, arrow keys, strip of neighbours, Esc, backdrop, focus, deep links.
-const { test, expect, apiTiles, domKeys } = require('./helpers')
+const { test, expect, apiTiles, domKeys, watch } = require('./helpers')
 
 const dialog = page => page.locator('dialog#lb')
 const fullKey = page => page.locator('#full').evaluate(i => i.dataset.key)
@@ -335,6 +335,7 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     hasTouch: true, isMobile: true,
   })
   const page = await context.newPage()
+  const w = await watch(page) // console errors, page errors and CSP violations on this page too
   try {
     await page.goto('/')
     await page.waitForSelector('#grid .tile')
@@ -388,19 +389,19 @@ test('on a touch screen, swiping the large image moves to the next or previous o
 
     // These do nothing: a short drag, a mostly vertical one, and a two-finger gesture.
     await swipe(200, y, 170, y)
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(500)
     expect(await fullKey(page), 'after a short drag').toBe(keys[2])
     await settled() // it sprang back
     await swipe(200, y - 100, 120, y + 150)
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(500)
     expect(await fullKey(page), 'after a vertical drag').toBe(keys[2])
     await swipe(300, y, 80, y, true)
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(500)
     expect(await fullKey(page), 'after a two-finger gesture').toBe(keys[2])
     // Nor does a sideways drag that starts on the strip, which scrolls the strip.
     const st = await page.locator('#strip').boundingBox()
     await swipe(300, st.y + st.height / 2, 80, st.y + st.height / 2)
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(500)
     expect(await fullKey(page), 'after dragging the strip').toBe(keys[2])
     await settled()
 
@@ -424,6 +425,33 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await loaded(page, keys[1])
     await settled()
     await expect(dialog(page)).toBeVisible()
+
+    // A swipe and, while the image is still sliding away, a tap on Next: one step, not two.
+    await swipe(300, y, 80, y)
+    await page.waitForTimeout(30)
+    await page.locator('#next').evaluate(b => b.click())
+    await loaded(page, keys[2])
+    await page.waitForTimeout(500)
+    expect(await fullKey(page)).toBe(keys[2])
+    await settled()
+
+    // While the next image is still loading it waits to one side. A vertical drag then is
+    // left to the browser (it scrolls the viewer on a short screen) and does not move the image.
+    let slow = true
+    await page.route('**/img/*.jpg', async route => {
+      if (slow) await new Promise(r => setTimeout(r, 1200))
+      await route.continue()
+    })
+    await swipe(300, y, 80, y)
+    await page.waitForTimeout(350) // slid away; the new image is waiting
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('translateX(100%)')
+    await swipe(200, y - 80, 205, y + 80)
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('translateX(100%)')
+    await loaded(page, keys[3])
+    await settled()
+    slow = false
+
+    expect((await w.done()).problems).toEqual([])
   } finally {
     await context.close()
   }
