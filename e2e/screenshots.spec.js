@@ -43,7 +43,15 @@ for (const [name, profile, [w, h]] of PROFILES) {
       await page.locator(`.tile[data-key="${key}"] a`).evaluate(a => a.click())
       await expect(page.locator('dialog#lb')).toBeVisible()
       await expect.poll(() => page.locator('#full').evaluate(i => i.complete && i.naturalWidth)).toBe(1024)
-      await expect.poll(() => page.locator('#strip img').evaluateAll(is => is.length > 0 && is.every(i => i.complete && i.naturalWidth > 0))).toBe(true)
+      // The strip's thumbnails load lazily: wait for the ones in view.
+      await expect.poll(() => page.locator('#strip').evaluate(st => {
+        const box = st.getBoundingClientRect()
+        const seen = [...st.querySelectorAll('img')].filter(i => {
+          const r = i.getBoundingClientRect()
+          return r.right > box.left && r.left < box.right
+        })
+        return seen.length > 0 && seen.every(i => i.complete && i.naturalWidth > 0)
+      })).toBe(true)
       await save(`${name}-lightbox.jpg`)
       expect(errors).toEqual([])
     } finally {

@@ -14,6 +14,7 @@ const data = new Map() // key -> tile
 const cols = +getComputedStyle(grid).getPropertyValue('--cols') || 2
 let v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
 
+const enc = encodeURIComponent
 const say = s => { $('live').textContent = s }
 const src = (key, size) => '/img/' + key + (size ? '-' + size + '.webp?v=' + v : '.jpg')
 const node = key => grid.querySelector('[data-key="' + key + '"]')
@@ -42,27 +43,40 @@ function tile(t, i) { // i: place in the first row, else -1
   return li
 }
 
-// Append tiles: top up the last batch, then add whole batches.
+// Top up the last batch, then add whole batches.
 function place(lis) {
-  const frag = document.createDocumentFragment()
+  const pages = []
   for (let i = 0; i < lis.length;) {
     if (!tail || tail.childElementCount >= PER) {
       const page = el('li', 'page')
       tail = el('ul', 'sub')
       page.append(tail)
-      frag.append(page)
+      pages.push(page)
     }
     tail.append(...lis.slice(i, i += PER - tail.childElementCount))
   }
-  grid.append(frag)
+  grid.append(...pages)
+}
+
+// Strip thumbnail: one per loaded tile.
+function thumb(t) {
+  const li = el('li'), b = el('button'), img = el('img')
+  b.title = img.alt = t.caption || t.prompt || t.label
+  b.onclick = () => go(t.key)
+  img.loading = 'lazy'
+  img.src = src(t.key, 240)
+  b.append(img)
+  li.append(b)
+  return li
 }
 
 function add(tiles, top) {
-  const lis = []
+  const lis = [], ths = [], had = data.has(cur)
   for (const t of tiles) {
     if (top) node(t.key)?.remove()
     else if (data.has(t.key)) continue
     lis.push(tile(t, !top && data.size < cols ? data.size : -1))
+    ths.push(thumb(t))
     data.set(t.key, t)
   }
   if (top) { // new tiles go first; re-batch
@@ -71,7 +85,9 @@ function add(tiles, top) {
     tail = null
   }
   place(lis)
-  if (dlg.open && data.has(cur)) show(cur) // its tile or neighbours arrived
+  if (top) strip.replaceChildren(...keys().map(k => thumb(data.get(k))))
+  else strip.append(...ths)
+  if (dlg.open && (top || !had) && data.has(cur)) show(cur) // strip rebuilt, or its tile arrived
   return lis.length
 }
 
@@ -79,7 +95,7 @@ async function more() {
   if (busy || done) return
   busy = 1
   try {
-    const j = await get('/api/tiles?limit=' + PER + (next ? '&cursor=' + encodeURIComponent(next) : ''))
+    const j = await get('/api/tiles?limit=' + PER + (next ? '&cursor=' + enc(next) : ''))
     if (!next) since = j.newest || ''
     v = j.v
     const first = !data.size, n = add(j.tiles)
@@ -106,7 +122,7 @@ const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) 
 async function poll() {
   if (!v) return
   try {
-    const n = (await get('/api/tiles/new?since=' + encodeURIComponent(since))).count
+    const n = (await get('/api/tiles/new?since=' + enc(since))).count
     if (n && pill.hidden) say(n + ' new images')
     pill.textContent = n + ' new'
     pill.hidden = !n
@@ -121,7 +137,7 @@ function watch() {
 }
 pill.onclick = async () => {
   try {
-    const j = await get('/api/tiles/new?tiles=1&since=' + encodeURIComponent(since))
+    const j = await get('/api/tiles/new?tiles=1&since=' + enc(since))
     if (j.count > j.tiles.length || j.v != v) return location.reload()
     add(j.tiles, 1)
     since = j.newest || since
@@ -144,27 +160,18 @@ function show(key) {
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
   $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
-  // Strip: neighbours in gallery order.
-  const all = keys(), i = all.indexOf(key), f = strip.contains(document.activeElement)
+  // Mark and centre it in the strip.
+  const all = keys(), i = all.indexOf(key), c = strip.children[i]?.firstChild
   if (i > all.length - 10) more()
-  strip.replaceChildren(...(i < 0 ? [] : all.slice(Math.max(0, i - 8), i + 9)).map(k => {
-    const s = data.get(k), li = el('li'), b = el('button'), img = el('img')
-    b.type = 'button'
-    b.title = img.alt = s.caption || s.prompt || s.label
-    if (k == key) b.setAttribute('aria-current', 'true')
-    b.onclick = () => go(k)
-    img.width = img.height = 56
-    img.src = src(k, 240)
-    b.append(img)
-    li.append(b)
-    return li
-  }))
+  strip.querySelector('[aria-current]')?.removeAttribute('aria-current')
   if (!dlg.open) dlg.showModal()
-  const c = strip.querySelector('[aria-current]')
   if (c) {
-    strip.scrollLeft = c.offsetLeft - strip.clientWidth / 2 + 28 // centre it
-    if (f) c.focus() // it was in the old strip
+    c.setAttribute('aria-current', 'true')
+    strip.scrollLeft = c.offsetLeft - strip.clientWidth / 2 + 28
   }
+}
+strip.onscroll = () => { // near its end: load more
+  if (strip.scrollLeft + strip.clientWidth > strip.scrollWidth - 900) more()
 }
 function go(key) {
   history.replaceState(null, '', '#/p/' + key)
@@ -180,7 +187,7 @@ function route() {
   if (m) show(m[1])
   else if (dlg.open) dlg.close()
 }
-dlg.addEventListener('close', () => {
+dlg.onclose = () => {
   if (dlg.open) return // reopened already (Back then Forward)
   if (LINK.test(location.hash)) {
     if (pushed) history.back()
@@ -190,8 +197,8 @@ dlg.addEventListener('close', () => {
   cur = ''
   pushed = 0
   a?.focus()
-})
-dlg.addEventListener('click', e => { if (e.target == dlg) dlg.close() })
+}
+dlg.onclick = e => { if (e.target == dlg) dlg.close() }
 addEventListener('keydown', e => {
   const d = dlg.open && !e.altKey && !e.metaKey && !e.ctrlKey && { ArrowLeft: -1, ArrowRight: 1 }[e.key]
   if (d) {
@@ -210,10 +217,10 @@ full.onerror = () => {
 $('x').onclick = () => dlg.close()
 $('prev').onclick = () => step(-1)
 $('next').onclick = () => step(1)
-grid.addEventListener('click', e => { if (e.target.closest('a')) pushed = 1 })
+grid.onclick = e => { if (e.target.closest('a')) pushed = 1 }
 addEventListener('hashchange', route)
 addEventListener('popstate', route)
-document.addEventListener('visibilitychange', watch)
+document.onvisibilitychange = watch
 
 route()
 io.observe(end)

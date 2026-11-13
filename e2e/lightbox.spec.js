@@ -116,7 +116,17 @@ test('focus returns to the tile that is showing when the lightbox closes', async
   await expect.poll(() => focusKey(page)).toBe(keys[3])
 })
 
-test('near the end of the loaded tiles, more are fetched and the strip fills in', async ({ page }) => {
+// Whether every strip thumbnail that is in view has loaded (the others load lazily).
+const visibleThumbsLoaded = page => page.locator('#strip').evaluate(s => {
+  const box = s.getBoundingClientRect()
+  const seen = [...s.querySelectorAll('img')].filter(i => {
+    const r = i.getBoundingClientRect()
+    return r.right > box.left && r.left < box.right
+  })
+  return seen.length > 0 && seen.every(i => i.complete && i.naturalWidth > 0)
+})
+
+test('near the end of the loaded tiles, more are fetched and the strip grows', async ({ page }) => {
   const api = await apiTiles(page.request)
   const keys = await domKeys(page)
   const n = keys.length
@@ -125,44 +135,42 @@ test('near the end of the loaded tiles, more are fetched and the strip fills in'
   await page.locator(`.tile[data-key="${keys[n - 1]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[n - 1])
   await expect.poll(() => page.locator('#grid .tile').count()).toBeGreaterThan(n)
-  // The strip now has the eight images that follow, which were not loaded a moment ago.
-  await expect(page.locator('#strip button')).toHaveCount(17)
-  await expect(page.locator('#strip button').nth(8)).toHaveAttribute('aria-current', 'true')
+  // The strip has a thumbnail for every loaded tile, so it grew too; the open image is still marked.
+  await expect.poll(() => page.locator('#strip button').count()).toBeGreaterThan(n)
+  await expect(page.locator('#strip button').nth(n - 1)).toHaveAttribute('aria-current', 'true')
   // The large image was not reloaded or hidden by that.
   expect(await page.locator('#full').evaluate(i => getComputedStyle(i).visibility)).toBe('visible')
   await page.keyboard.press('ArrowRight')
   await loaded(page, api.tiles[n].key)
 })
 
-test('the strip shows the neighbouring images in gallery order, whatever their prompt', async ({ page }) => {
+test('the strip holds every loaded image in gallery order, whatever their prompt', async ({ page }) => {
   const keys = await domKeys(page)
   const strip = () => page.locator('#strip button')
   const stripKeys = () => page.locator('#strip img').evaluateAll(is => is.map(i => i.getAttribute('src').match(/\/img\/(.+)-240\.webp/)[1]))
 
-  // In the middle of the page: eight before, the image itself, eight after.
   const i = 20
   await page.locator(`.tile[data-key="${keys[i]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[i])
-  await expect(strip()).toHaveCount(17)
-  expect(await stripKeys()).toEqual(keys.slice(i - 8, i + 9))
-  await expect(strip().nth(8)).toHaveAttribute('aria-current', 'true')
+  expect(await stripKeys()).toEqual(await domKeys(page))
+  await expect(strip().nth(i)).toHaveAttribute('aria-current', 'true')
   await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
-  await expect.poll(() => page.locator('#strip img').evaluateAll(is => is.every(i => i.complete && i.naturalWidth > 0))).toBe(true)
+  // Thumbnails in view have loaded; those far along the strip have not been fetched yet.
+  await expect.poll(() => visibleThumbsLoaded(page)).toBe(true)
+  expect(await page.locator('#strip img').evaluateAll(is => is.every(x => x.loading === 'lazy'))).toBe(true)
 
-  // Selecting a neighbour moves there, and the strip moves with it.
-  await strip().nth(10).click()
+  // Selecting a neighbour moves there; the strip is not rebuilt, so the focus stays on that thumbnail.
+  await strip().nth(i + 2).click()
   await loaded(page, keys[i + 2])
   await expect(page).toHaveURL(new RegExp(`#/p/${keys[i + 2]}$`))
-  expect(await stripKeys()).toEqual(keys.slice(i - 6, i + 11))
-  await expect(strip().nth(8)).toHaveAttribute('aria-current', 'true')
-
-  // The keyboard focus stays in the strip, on the image now showing, although the strip was rebuilt.
+  await expect(strip().nth(i + 2)).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
   expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-current'))).toBe('true')
 
-  // The arrow keys move the strip too. With Alt held they are left to the browser (Back and Forward).
+  // The arrow keys move the mark too. With Alt held they are left to the browser (Back and Forward).
   await page.keyboard.press('ArrowLeft')
   await loaded(page, keys[i + 1])
-  expect(await stripKeys()).toEqual(keys.slice(i - 7, i + 10))
+  await expect(strip().nth(i + 1)).toHaveAttribute('aria-current', 'true')
   expect(await page.evaluate(() => {
     const e = new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, cancelable: true })
     document.activeElement.dispatchEvent(e)
@@ -175,11 +183,34 @@ test('the strip shows the neighbouring images in gallery order, whatever their p
   await expect(dialog(page)).toBeHidden()
   await expect.poll(() => focusKey(page)).toBe(keys[i + 1])
 
-  // At the very start there is nothing before the first image.
+  // The first image is the first thumbnail.
   await page.locator(`.tile[data-key="${keys[0]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[0])
-  expect(await stripKeys()).toEqual(keys.slice(0, 9))
   await expect(strip().nth(0)).toHaveAttribute('aria-current', 'true')
+})
+
+test('scrolling the strip to its end loads more, without moving the strip or the large image', async ({ page }) => {
+  const keys = await domKeys(page)
+  const n = keys.length
+  await page.locator(`.tile[data-key="${keys[3]}"] a`).evaluate(a => a.click())
+  await loaded(page, keys[3])
+  await expect(page.locator('#strip button')).toHaveCount(n)
+
+  // Scroll the strip all the way along, twice: each time more thumbnails arrive.
+  let count = n
+  for (let round = 0; round < 2; round++) {
+    const at = await page.locator('#strip').evaluate(s => (s.scrollLeft = s.scrollWidth - s.clientWidth))
+    await expect.poll(() => page.locator('#strip button').count()).toBeGreaterThan(count)
+    count = await page.locator('#strip button').count()
+    // Not thrown back to the open image.
+    expect(await page.locator('#strip').evaluate(s => s.scrollLeft)).toBeGreaterThanOrEqual(at - 1)
+  }
+  expect(await page.locator('#grid .tile').count()).toBe(count)
+  expect(await fullKey(page)).toBe(keys[3])
+  await expect(page.locator('#strip button').nth(3)).toHaveAttribute('aria-current', 'true')
+  // A thumbnail far along the strip opens that image.
+  await page.locator('#strip button').nth(count - 1).click()
+  await loaded(page, (await domKeys(page))[count - 1])
 })
 
 test('on a narrow screen the strip is scrolled so the open image is in view', async ({ browser, baseURL }) => {
