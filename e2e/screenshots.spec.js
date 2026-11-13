@@ -23,20 +23,24 @@ const PROFILES = [
   ['iphone', phone, phone.viewport, phone.viewport, 3],
 ]
 
-// The listing reduced to the first tile of each distinct picture, told apart by
-// the bytes of the 240 px thumbnail.
+// The sample pictures in the order they are shown: the four birds in the top
+// row on a desktop, then the fifth bird, the fish and the two flies.
+const ORDER = [4, 6, 7, 8, 5, 3, 2, 1].map(n => `telegram-0${n}.jpg`)
+const sha = buf => crypto.createHash('sha256').update(buf).digest('hex')
+const samples = path.join(__dirname, '..', 'testdata', 'telegram')
+const fileOf = new Map(fs.readdirSync(samples).map(f => [sha(fs.readFileSync(path.join(samples, f))), f]))
+
+// The listing reduced to one tile per sample picture, in ORDER. A tile's
+// picture is recognised by its original, which the gallery serves unchanged.
 async function distinctTiles(request) {
   const listing = await (await request.get('/api/tiles?limit=120', { headers: basic() })).json()
-  const seen = new Set()
-  const tiles = []
+  const byFile = new Map()
   for (const t of listing.tiles) {
-    const body = await (await request.get(`/img/${t.key}-240.webp?v=${listing.v}`, { headers: basic() })).body()
-    const hash = crypto.createHash('sha256').update(body).digest('hex')
-    if (seen.has(hash)) continue
-    seen.add(hash)
-    tiles.push({ ...t, styles: [t.styles.find(x => x.key === t.key)] })
+    if (byFile.size === fileOf.size) break
+    const file = fileOf.get(sha(await (await request.get(`/img/${t.key}.jpg`, { headers: basic() })).body()))
+    if (file && !byFile.has(file)) byFile.set(file, { ...t, styles: [t.styles.find(x => x.key === t.key)] })
   }
-  return { ...listing, tiles, next: null }
+  return { ...listing, tiles: ORDER.map(f => byFile.get(f)).filter(Boolean), next: null }
 }
 
 for (const [name, profile, gridView, viewerView, scale] of PROFILES) {

@@ -193,14 +193,14 @@ func TestStartupTwice(t *testing.T) {
 
 // The brief's target for a 480 px thumbnail of a 1024x1024 Telegram image at
 // quality 76 is 60 KB. Seven of the eight real samples meet it. The known
-// exception is telegram-04.jpg, a pop-art picture covered in halftone dots,
-// at 99,882 bytes with libvips 8.15.1; quality and effort are fixed
-// decisions, so it is named here with its own ceiling instead of loosening
-// the target for every sample.
+// exception is telegram-07.jpg, a finely detailed pattern of birds, at 64,170
+// bytes with libvips 8.15.1; quality and effort are fixed decisions, so it is
+// named here with its own ceiling instead of loosening the target for every
+// sample.
 const (
 	target480      = 60 << 10
-	exception480   = "telegram-04.jpg"
-	exceptionLimit = 100 << 10
+	exception480   = "telegram-07.jpg"
+	exceptionLimit = 65 << 10
 )
 
 func TestTelegramSamples(t *testing.T) {

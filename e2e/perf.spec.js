@@ -32,7 +32,8 @@ async function warmServer(request, n = 120) {
 // the tiles in view. On top of those the browser fetches lazy images within
 // its own margin below the viewport (1250 px in Chromium); with them the
 // first visit still fits in 2 MB at 1440x900 and on a phone, and that is
-// asserted. At 1920x1080 it measured 2.08 MB (48 tiles at 480 px, 24 of them
+// asserted. At 1920x1080 it measured 1.56 MB with the current samples and 2.13 MB with an
+// earlier, heavier set (48 tiles at 480 px, 24 of them
 // in view), so there the total is reported and not asserted.
 const PROFILES = [
   ['desktop 1440x900 @1x', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, true],
