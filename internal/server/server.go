@@ -61,7 +61,7 @@ type Deps struct {
 	Store   *source.Store
 	Fetcher Fetcher
 	Cache   *cache.Cache
-	Web     fs.FS // web.Files: index.html, login.html, app.js, app.css at its root
+	Web     fs.FS // web.Files: index.html, login.html, app.js, app.css, favicon.png at its root
 	Log     *slog.Logger
 }
 
@@ -137,15 +137,16 @@ func New(d Deps) (*Server, error) {
 		return nil, fmt.Errorf("server: login.html: %w", err)
 	}
 	for name, ctype := range map[string]string{
-		"app.js":  "text/javascript; charset=utf-8",
-		"app.css": "text/css; charset=utf-8",
+		"app.js":      "text/javascript; charset=utf-8",
+		"app.css":     "text/css; charset=utf-8",
+		"favicon.png": "image/png",
 	} {
 		data, err := fs.ReadFile(d.Web, name)
 		if err != nil {
 			return nil, fmt.Errorf("server: %s: %w", name, err)
 		}
 		sum := sha256.Sum256(data)
-		s.assets["/"+name] = asset{data: data, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:12]) + `"`, open: name == "app.css"}
+		s.assets["/"+name] = asset{data: data, ctype: ctype, etag: `"` + hex.EncodeToString(sum[:12]) + `"`, open: name != "app.js"}
 	}
 	s.handler = s.middleware(http.HandlerFunc(s.route))
 	return s, nil

@@ -191,8 +191,8 @@ browser's `Sec-Fetch-Site` header is checked, or, when it is absent, the
 through). Requests with neither header, such as curl, are not affected.
 
 Comparisons are constant-time. Everything needs authentication except
-`/healthz`, `/login` and the stylesheet `/app.css`, which the login page
-uses. There are no accounts or roles: whoever has the token sees everything,
+`/healthz`, `/login`, and the stylesheet `/app.css` and icon `/favicon.png`,
+which the login page uses. There are no accounts or roles: whoever has the token sees everything,
 and the only way to sign everyone out is to change the token.
 
 **Guessing the token is rate-limited.** A wrong token counts the same

@@ -322,8 +322,8 @@ func TestAuthRequired(t *testing.T) {
 		}
 	}
 
-	// Open routes: the health check, the login page and its stylesheet. Nothing else.
-	for _, target := range []string{"/healthz", "/app.css", "/login"} {
+	// Open routes: the health check, the login page, its stylesheet and the icon. Nothing else.
+	for _, target := range []string{"/healthz", "/app.css", "/favicon.png", "/login"} {
 		if resp, _ := e.get(target); resp.StatusCode != 200 {
 			t.Errorf("%s without auth: %d", target, resp.StatusCode)
 		}
@@ -834,7 +834,7 @@ func TestHealthz(t *testing.T) {
 
 func TestStaticAssets(t *testing.T) {
 	e := newEnv(t, records(1), nil)
-	for target, ctype := range map[string]string{"/app.js": "text/javascript; charset=utf-8", "/app.css": "text/css; charset=utf-8"} {
+	for target, ctype := range map[string]string{"/app.js": "text/javascript; charset=utf-8", "/app.css": "text/css; charset=utf-8", "/favicon.png": "image/png"} {
 		resp, body := e.get(target, basic, gzipped)
 		etag := resp.Header.Get("ETag")
 		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctype || resp.Header.Get("Cache-Control") != "no-cache" ||

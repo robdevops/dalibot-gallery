@@ -11,7 +11,7 @@ import (
 type indexTile struct{ Key, Alt, Src240, Src480, Full string }
 
 func TestFilesPresent(t *testing.T) {
-	for _, name := range []string{"index.html", "login.html", "app.js", "app.css"} {
+	for _, name := range []string{"index.html", "login.html", "app.js", "app.css", "favicon.png"} {
 		if b, err := fs.ReadFile(Files, name); err != nil || len(b) == 0 {
 			t.Errorf("%s: missing or empty (%v)", name, err)
 		}

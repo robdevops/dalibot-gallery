@@ -377,7 +377,7 @@ type Deps struct {
 	Store   *source.Store
 	Fetcher Fetcher
 	Cache   *cache.Cache
-	Web     fs.FS            // web.Files: index.html, login.html, app.js, app.css at its root
+	Web     fs.FS            // web.Files: index.html, login.html, app.js, app.css, favicon.png at its root
 	Log     *slog.Logger
 }
 
@@ -525,7 +525,7 @@ package web
 
 import "embed"
 
-//go:embed index.html login.html app.js app.css
+//go:embed index.html login.html app.js app.css favicon.png
 var Files embed.FS
 ```
 

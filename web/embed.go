@@ -5,7 +5,7 @@ package web
 
 import "embed"
 
-// Files contains index.html, login.html, app.js and app.css at its root.
+// Files contains index.html, login.html, app.js, app.css and favicon.png at its root.
 //
-//go:embed index.html login.html app.js app.css
+//go:embed index.html login.html app.js app.css favicon.png
 var Files embed.FS
