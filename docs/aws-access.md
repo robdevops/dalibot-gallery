@@ -49,8 +49,10 @@ Sign in as someone who may manage IAM.
    `dalibot-gallery-read`, and finish creating the user.
 6. Open the new user and go to **Security credentials → Create access key**.
    Choose "Application running outside AWS".
-7. Copy the access key ID and the secret access key. The secret is shown
-   only once.
+7. AWS now shows two values. Copy both, or download the CSV:
+   - **Access key ID** (starts with `AKIA`): this is `AWS_ACCESS_KEY_ID`.
+   - **Secret access key**: this is `AWS_SECRET_ACCESS_KEY`. It is shown
+     only once; if you lose it, delete the key and create another.
 
 ## AWS CLI
 
@@ -63,27 +65,48 @@ aws iam put-user-policy --user-name dalibot-gallery \
 aws iam create-access-key --user-name dalibot-gallery
 ```
 
-The last command prints `AccessKeyId` and `SecretAccessKey`. This attaches
+The last command prints `AccessKeyId`, which is `AWS_ACCESS_KEY_ID`, and
+`SecretAccessKey`, which is `AWS_SECRET_ACCESS_KEY`. This attaches
 the policy inline to the user, where the console steps create a separate
 managed policy; the permissions are the same.
 
 ## Give the key to the gallery
 
-Put the two values in the gallery's `.env`, without quotes:
+1. On the machine that runs the gallery, open the gallery's `.env`, the same
+   file that holds `GALLERY_TOKEN` and `TELEGRAM_BOT_TOKEN` (copy
+   `.env.example` if you have not made one yet).
+2. Add the two values, with no quotes and no spaces around `=`:
 
-```sh
-AWS_ACCESS_KEY_ID=AKIA...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=ap-southeast-1
-```
+   ```sh
+   AWS_ACCESS_KEY_ID=AKIA...
+   AWS_SECRET_ACCESS_KEY=...
+   ```
 
-`AWS_REGION` and `DALIBOT_TABLE` only need setting when the bot does not use
-the defaults (`ap-southeast-1` and `dalibot`). The gallery uses the standard AWS
-credential chain, so `AWS_PROFILE` works as well when it does not run in a
-container.
+3. Set `AWS_REGION` and `DALIBOT_TABLE` only if the bot's table is not in
+   `ap-southeast-1` or is not called `dalibot`.
+4. Make the file readable only by the account that runs the gallery, and
+   never commit it:
 
-Keep `.env` readable only by the account that runs the gallery
-(`chmod 600 .env`), and never commit it.
+   ```sh
+   chmod 600 .env
+   ```
+
+5. Start or restart the gallery, then check it:
+
+   ```sh
+   curl -i http://127.0.0.1:8080/healthz
+   ```
+
+   It answers 200 once the first read of the table has succeeded. If it
+   stays at 503, the gallery's log names the AWS error; see
+   [Troubleshooting](#troubleshooting).
+
+The secret access key belongs only in `.env`. Do not paste it into chats,
+tickets or commit messages; if it leaks, delete the key in IAM and create a
+new one.
+
+The gallery uses the standard AWS credential chain, so `AWS_PROFILE` works
+as well when it does not run in a container.
 
 ## Running on AWS
 
