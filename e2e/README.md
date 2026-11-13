@@ -21,7 +21,7 @@ npx playwright test --trace off   # or: npm test
 
 The run starts the main dev stack on port 18480 (control server on 18481) and
 the public one on 18482 (18483), signs in once through `/login` of the main
-one, runs every `*.spec.js` with one worker, and stops the stacks. It takes
+one, runs every `*.spec.js` (grid, lightbox, noscript and screenshots with 4 workers side by side, set by `E2E_WORKERS`; then perf, login, access, admin and zz-new one after another, because they change the stack's state or measure time), and stops the stacks. It takes
 about three and a half minutes. Other options:
 
 | Setting | Effect |

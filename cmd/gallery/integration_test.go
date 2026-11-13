@@ -214,6 +214,7 @@ func (s *stack) all(limit int) (tiles []source.Tile, first tilesPage) {
 // server seeded with about 150 items in the bot's shapes and a fake Telegram
 // API that records any request other than getFile and the file download.
 func TestIntegration(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("integration test skipped in -short mode")
 	}
@@ -256,11 +257,7 @@ func TestIntegration(t *testing.T) {
 	})
 
 	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "gallery")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the gallery: %v\n%s", err, out)
-	}
+	bin := gallery(t)
 
 	// A missing configuration is reported and exits with status 2, before anything else.
 	bare := exec.Command(bin)

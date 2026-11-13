@@ -318,6 +318,8 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   await page.keyboard.press('ArrowRight')
   await loaded(page, keys[5])
   await expect.poll(shown).toEqual(overlays.map(() => false))
+  // No focus ring is drawn round the window when a key is pressed with the buttons hidden.
+  expect(await dialog(page).evaluate(d => getComputedStyle(d).outlineStyle)).toBe('none')
 
   await page.locator('#full').click()
   await expect.poll(shown).toEqual(overlays.map(() => true))

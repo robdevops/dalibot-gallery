@@ -51,6 +51,7 @@ func dirState(t *testing.T, dir string) string {
 // Telegram API. No AWS setting is given, and the ones that are present are
 // wrong on purpose: nothing may read them.
 func TestIntegrationSQLite(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("integration test skipped in -short mode")
 	}
@@ -92,11 +93,7 @@ func TestIntegrationSQLite(t *testing.T) {
 		}
 	})
 
-	bin := filepath.Join(tmp, "gallery")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the gallery: %v\n%s", err, out)
-	}
+	bin := gallery(t)
 
 	port, err := devstack.FreePort()
 	if err != nil {

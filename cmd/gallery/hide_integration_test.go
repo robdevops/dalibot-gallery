@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -77,23 +78,16 @@ func hideAcrossRestarts(t *testing.T, st *stack, viewAuth bool, cacheDir, stateD
 	}
 	hiddenKeys := func() []string {
 		t.Helper()
-		resp, body := admin("GET", "/api/admin/hidden")
+		resp, body := admin("GET", "/admin/hidden")
 		if resp.StatusCode != 200 {
-			t.Fatalf("GET /api/admin/hidden: %d %s", resp.StatusCode, body)
+			t.Fatalf("GET /admin/hidden: %d %s", resp.StatusCode, body)
 		}
-		var l struct {
-			Hidden []struct{ Key string }
-			Gone   int
-		}
-		if err := json.Unmarshal(body, &l); err != nil {
-			t.Fatal(err)
-		}
-		if l.Gone != 0 {
-			t.Errorf("%d hidden images are reported gone", l.Gone)
+		if strings.Contains(string(body), "no longer in the bot's records") {
+			t.Errorf("hidden images are reported gone")
 		}
 		var keys []string
-		for _, h := range l.Hidden {
-			keys = append(keys, h.Key)
+		for _, m := range regexp.MustCompile(`data-restore="([\w-]{22})"`).FindAllSubmatch(body, -1) {
+			keys = append(keys, string(m[1]))
 		}
 		slices.Sort(keys)
 		return keys

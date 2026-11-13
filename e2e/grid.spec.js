@@ -185,11 +185,12 @@ for (const how of ['scrolling', 'polling']) {
       route.fulfill({ response: r, json: { ...j, next: stale, newest: stale } })
     })
     page.on('response', r => { if (r.status() === 400 && new URL(r.url()).pathname.startsWith('/api/tiles')) refused++ })
+    // The page counts its first five seconds from its start: let it think they have passed.
+    await page.addInitScript(() => { const now = performance.now.bind(performance); performance.now = () => now() + 6e3 })
     await page.goto('/')
     await page.waitForSelector('#grid .tile')
     const first = await page.locator('#grid .tile').count()
     await page.evaluate(() => { window.__before = 1 })
-    await page.waitForTimeout(5500)
     const reloaded = page.waitForEvent('load')
     if (how === 'scrolling') await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight))
     else await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
