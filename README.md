@@ -364,6 +364,17 @@ fails with `cannot stat 'dalibot-gallery'`.
 If the service was enabled before the binary was in place, finish steps 1
 to 3 and then run `sudo systemctl restart dalibot-gallery`.
 
+**The service reads `/etc/dalibot-gallery/env`, not the `.env` in your
+checkout.** Step 3 copies `.env` there once; later edits to `.env` change
+nothing. From then on, edit the live file and restart:
+
+```sh
+sudoedit /etc/dalibot-gallery/env
+sudo systemctl restart dalibot-gallery
+```
+
+You can delete the checkout's `.env` afterwards so there is only one copy.
+
 The unit runs the gallery as a throw-away user (`DynamicUser`) with
 `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, an
 empty capability set, `MemoryMax=512M`,
@@ -456,7 +467,7 @@ journalctl -u dalibot-gallery -n 20
 The first log line prints the settings in effect (secrets are redacted), so
 you can check a changed default there. If `deploy/dalibot-gallery.service`
 changed, install it again and run `sudo systemctl daemon-reload` before the
-restart. If you changed `.env`, install it again as `/etc/dalibot-gallery/env`.
+restart. Settings live in `/etc/dalibot-gallery/env`; edit that file, not the checkout's `.env`.
 After a system update of libvips, rebuild as well.
 
 ## More documentation
