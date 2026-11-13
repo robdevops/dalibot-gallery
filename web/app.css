@@ -37,6 +37,7 @@ dialog::backdrop{background:#000d}
 #next{right:0}
 .meta{padding:.6rem .75rem .75rem}
 .meta p{margin:0;overflow-wrap:anywhere}
+.bare .nav,.bare .meta{visibility:hidden}
 #cap{max-height:4.2em;overflow:auto}
 #cmd{margin-top:.25rem;color:#aaa;font-size:.85rem}
 #strip{position:relative;display:flex;justify-content:safe center;gap:4px;margin:.6rem 0 0;padding:0;overflow-x:auto;list-style:none}

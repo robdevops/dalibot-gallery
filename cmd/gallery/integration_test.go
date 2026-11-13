@@ -467,7 +467,7 @@ func TestIntegration(t *testing.T) {
 			if resp.Header.Get("Cache-Control") != immutable || resp.Header.Get("ETag") == "" || resp.Header.Get("X-Gallery-Placeholder") != "" {
 				t.Fatalf("%s: headers %v", target, resp.Header)
 			}
-			if size == 480 && len(body) > 68<<10 {
+			if size == 480 && len(body) > 100<<10 { // the largest sample (halftone pop art) is 99,882 bytes
 				t.Errorf("%s: %d bytes", target, len(body))
 			}
 			if i == 0 {

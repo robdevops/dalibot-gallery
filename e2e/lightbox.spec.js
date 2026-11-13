@@ -257,12 +257,46 @@ test('a large image that fails to load shows its description and is retried next
   watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/ERR_FAILED/.test(p)))
 })
 
-test('a click on the backdrop closes; a click on the image does not', async ({ page }) => {
+test('a click on the image hides the buttons, caption and strip, and the next one shows them again', async ({ page }) => {
+  const keys = await domKeys(page)
+  const overlays = ['#x', '#prev', '#next', '#cap', '#cmd', '#strip']
+  const shown = async () => {
+    const out = []
+    for (const sel of overlays) out.push(await page.locator(sel).isVisible())
+    return out
+  }
+  await page.locator(`.tile[data-key="${keys[4]}"] a`).click()
+  await loaded(page, keys[4])
+  expect(await shown()).toEqual(overlays.map(() => true))
+  const before = await page.locator('#full').boundingBox()
+
+  await page.locator('#full').click()
+  expect(await shown()).toEqual(overlays.map(() => false))
+  await expect(dialog(page)).toBeVisible()
+  await expect(page.locator('#full')).toBeVisible()
+  expect(await page.locator('#full').boundingBox()).toEqual(before) // the image does not move
+  // The keyboard still works while they are hidden, and they stay hidden from image to image.
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[5])
+  expect(await shown()).toEqual(overlays.map(() => false))
+
+  await page.locator('#full').click()
+  expect(await shown()).toEqual(overlays.map(() => true))
+
+  // Hidden, then closed with Esc: they are back the next time the viewer opens.
+  await page.locator('#full').click()
+  await page.keyboard.press('Escape')
+  await expect(dialog(page)).toBeHidden()
+  await page.locator(`.tile[data-key="${keys[6]}"] a`).click()
+  await loaded(page, keys[6])
+  expect(await shown()).toEqual(overlays.map(() => true))
+})
+
+test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
   const keys = await domKeys(page)
   const opener = page.locator(`.tile[data-key="${keys[1]}"] a`)
   await opener.click()
   await loaded(page, keys[1])
-  await page.locator('#full').click()
   await page.locator('#cap').click()
   await expect(dialog(page)).toBeVisible()
   const box = await dialog(page).boundingBox()
@@ -425,6 +459,22 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await loaded(page, keys[1])
     await settled()
     await expect(dialog(page)).toBeVisible()
+
+    // A tap on the image hides the buttons and caption; a swipe leaves them as they are; a tap shows them.
+    const bare = () => dialog(page).evaluate(d => d.classList.contains('bare'))
+    await page.locator('#full').tap()
+    expect(await bare()).toBe(true)
+    await expect(page.locator('#next')).toBeHidden()
+    await swipe(300, y, 80, y)
+    await loaded(page, keys[2])
+    await settled()
+    expect(await bare()).toBe(true)
+    await swipe(80, y, 300, y)
+    await loaded(page, keys[1])
+    await settled()
+    await page.locator('#full').tap()
+    expect(await bare()).toBe(false)
+    await expect(page.locator('#next')).toBeVisible()
 
     // A swipe and, while the image is still sliding away, a tap on Next: one step, not two.
     await swipe(300, y, 80, y)

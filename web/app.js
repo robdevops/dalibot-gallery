@@ -202,8 +202,12 @@ dlg.onclose = () => {
   const a = node(cur)?.firstChild
   cur = ''
   pushed = 0
+  dlg.className = '' // the buttons and caption are shown again next time
   a?.focus()
 }
+// A tap or click on the large image hides the buttons, the caption and the strip, and the
+// next one shows them again. A swipe is not a tap, so it does not get here.
+full.onclick = () => dlg.classList.toggle('bare')
 dlg.onclick = e => { if (e.target == dlg) dlg.close() }
 addEventListener('keydown', e => {
   const d = dlg.open && !e.altKey && !e.metaKey && !e.ctrlKey && { ArrowLeft: -1, ArrowRight: 1 }[e.key]
@@ -219,7 +223,7 @@ let sx = NaN, sy = 0, sliding = 0
 const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
-  sx = t[1] || sliding || !full.parentNode.contains(e.target) || visualViewport.scale > 1 ? NaN : t[0].clientX
+  sx = t[1] || sliding || !full.parentNode.contains(e.target) || visualViewport.scale > 1.01 ? NaN : t[0].clientX
   sy = t[0].clientY
 }, { passive: true })
 dlg.ontouchmove = e => {
