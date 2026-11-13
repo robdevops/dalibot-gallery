@@ -47,8 +47,9 @@ Sign in as someone who may manage IAM.
    console access off.
 5. On the permissions step choose **Attach policies directly**, search for
    and tick `dalibot-gallery-read`, and finish creating the user.
-6. Open the new user and go to **Security credentials → Create access key**.
-   Choose "Application running outside AWS".
+6. Open the new user and choose **Create access key** in the **Summary**
+   panel at the top (the same button is on the **Security credentials**
+   tab). Choose "Application running outside AWS".
 7. AWS now shows two values. Copy both, or download the CSV:
    - **Access key ID** (starts with `AKIA`): this is `AWS_ACCESS_KEY_ID`.
    - **Secret access key**: this is `AWS_SECRET_ACCESS_KEY`. It is shown
