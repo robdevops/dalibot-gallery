@@ -45,8 +45,8 @@ Sign in as someone who may manage IAM.
 3. Choose **Next**, name it `dalibot-gallery-read` and create it.
 4. Open **IAM → Users → Create user**. Name it `dalibot-gallery` and leave
    console access off.
-5. On the permissions step choose **Attach policies directly**, tick
-   `dalibot-gallery-read`, and finish creating the user.
+5. On the permissions step choose **Attach policies directly**, search for
+   and tick `dalibot-gallery-read`, and finish creating the user.
 6. Open the new user and go to **Security credentials → Create access key**.
    Choose "Application running outside AWS".
 7. AWS now shows two values. Copy both, or download the CSV:
