@@ -146,8 +146,8 @@ function show(key) {
   $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
   // Strip: neighbours in gallery order.
   const all = keys(), i = all.indexOf(key), f = strip.contains(document.activeElement)
-  if (i > all.length - 6) more()
-  strip.replaceChildren(...(i < 0 ? [] : all.slice(Math.max(0, i - 4), i + 5)).map(k => {
+  if (i > all.length - 10) more()
+  strip.replaceChildren(...(i < 0 ? [] : all.slice(Math.max(0, i - 8), i + 9)).map(k => {
     const s = data.get(k), li = el('li'), b = el('button'), img = el('img')
     b.type = 'button'
     b.title = img.alt = s.caption || s.prompt || s.label

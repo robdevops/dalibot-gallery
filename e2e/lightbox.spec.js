@@ -125,9 +125,9 @@ test('near the end of the loaded tiles, more are fetched and the strip fills in'
   await page.locator(`.tile[data-key="${keys[n - 1]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[n - 1])
   await expect.poll(() => page.locator('#grid .tile').count()).toBeGreaterThan(n)
-  // The strip now has the four images that follow, which were not loaded a moment ago.
-  await expect(page.locator('#strip button')).toHaveCount(9)
-  await expect(page.locator('#strip button').nth(4)).toHaveAttribute('aria-current', 'true')
+  // The strip now has the eight images that follow, which were not loaded a moment ago.
+  await expect(page.locator('#strip button')).toHaveCount(17)
+  await expect(page.locator('#strip button').nth(8)).toHaveAttribute('aria-current', 'true')
   // The large image was not reloaded or hidden by that.
   expect(await page.locator('#full').evaluate(i => getComputedStyle(i).visibility)).toBe('visible')
   await page.keyboard.press('ArrowRight')
@@ -139,22 +139,22 @@ test('the strip shows the neighbouring images in gallery order, whatever their p
   const strip = () => page.locator('#strip button')
   const stripKeys = () => page.locator('#strip img').evaluateAll(is => is.map(i => i.getAttribute('src').match(/\/img\/(.+)-240\.webp/)[1]))
 
-  // In the middle of the page: four before, the image itself, four after.
-  const i = 10
+  // In the middle of the page: eight before, the image itself, eight after.
+  const i = 20
   await page.locator(`.tile[data-key="${keys[i]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[i])
-  await expect(strip()).toHaveCount(9)
-  expect(await stripKeys()).toEqual(keys.slice(i - 4, i + 5))
-  await expect(strip().nth(4)).toHaveAttribute('aria-current', 'true')
+  await expect(strip()).toHaveCount(17)
+  expect(await stripKeys()).toEqual(keys.slice(i - 8, i + 9))
+  await expect(strip().nth(8)).toHaveAttribute('aria-current', 'true')
   await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
   await expect.poll(() => page.locator('#strip img').evaluateAll(is => is.every(i => i.complete && i.naturalWidth > 0))).toBe(true)
 
   // Selecting a neighbour moves there, and the strip moves with it.
-  await strip().nth(6).click()
+  await strip().nth(10).click()
   await loaded(page, keys[i + 2])
   await expect(page).toHaveURL(new RegExp(`#/p/${keys[i + 2]}$`))
-  expect(await stripKeys()).toEqual(keys.slice(i - 2, i + 7))
-  await expect(strip().nth(4)).toHaveAttribute('aria-current', 'true')
+  expect(await stripKeys()).toEqual(keys.slice(i - 6, i + 11))
+  await expect(strip().nth(8)).toHaveAttribute('aria-current', 'true')
 
   // The keyboard focus stays in the strip, on the image now showing, although the strip was rebuilt.
   expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-current'))).toBe('true')
@@ -162,7 +162,7 @@ test('the strip shows the neighbouring images in gallery order, whatever their p
   // The arrow keys move the strip too. With Alt held they are left to the browser (Back and Forward).
   await page.keyboard.press('ArrowLeft')
   await loaded(page, keys[i + 1])
-  expect(await stripKeys()).toEqual(keys.slice(i - 3, i + 6))
+  expect(await stripKeys()).toEqual(keys.slice(i - 7, i + 10))
   expect(await page.evaluate(() => {
     const e = new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, cancelable: true })
     document.activeElement.dispatchEvent(e)
@@ -178,7 +178,7 @@ test('the strip shows the neighbouring images in gallery order, whatever their p
   // At the very start there is nothing before the first image.
   await page.locator(`.tile[data-key="${keys[0]}"] a`).evaluate(a => a.click())
   await loaded(page, keys[0])
-  expect(await stripKeys()).toEqual(keys.slice(0, 5))
+  expect(await stripKeys()).toEqual(keys.slice(0, 9))
   await expect(strip().nth(0)).toHaveAttribute('aria-current', 'true')
 })
 
