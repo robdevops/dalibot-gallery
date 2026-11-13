@@ -48,12 +48,18 @@ const (
 	maxDefaultCommandSize = 32
 )
 
-// Config is the validated configuration. Token and TelegramToken are secrets:
-// print a Config only through String, GoString or LogValue, which redact them.
+// Config is the validated configuration. Token, AdminToken and TelegramToken
+// are secrets: print a Config only through String, GoString or LogValue,
+// which redact them.
+//
+// Who may view: everyone when Public, otherwise whoever presents Token.
+// Exactly one of the two is set. Who may administer: whoever presents
+// AdminToken, which is optional and always differs from Token.
 type Config struct {
 	Listen          string        // GALLERY_LISTEN, host:port
-	Token           string        `json:"-"` // GALLERY_TOKEN (secret); empty only when AuthOff
-	AuthOff         bool          // GALLERY_AUTH=off: no auth in the gallery (proxy auth in front)
+	Public          bool          // GALLERY_PUBLIC=1: viewing needs no login
+	Token           string        `json:"-"` // GALLERY_TOKEN (secret): viewing needs it; empty exactly when Public
+	AdminToken      string        `json:"-"` // GALLERY_ADMIN_TOKEN (secret); empty means no admin features
 	Table           string        // DALIBOT_TABLE
 	Region          string        // AWS_REGION
 	TelegramToken   string        `json:"-"` // TELEGRAM_BOT_TOKEN (secret)
@@ -157,27 +163,42 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		}
 	}
 
-	// Auth. The token is a secret: messages must not echo it.
-	c.Token = getenv("GALLERY_TOKEN") // not trimmed: compared byte for byte
-	switch auth := strings.ToLower(get("GALLERY_AUTH")); auth {
-	case "", "token":
-		if c.Token == "" {
-			bad("GALLERY_TOKEN", "is required. Set it to a long random string (for example `openssl rand -base64 32`), or set GALLERY_AUTH=off if a reverse proxy in front already authenticates every request")
-		}
-	case "off":
-		c.AuthOff = true
-		if c.Token != "" {
-			bad("GALLERY_AUTH", "is off but GALLERY_TOKEN is also set; unset one of them")
-		}
+	// Access. The tokens are secrets: messages must not echo them.
+	c.Token = getenv("GALLERY_TOKEN")            // not trimmed: compared byte for byte
+	c.AdminToken = getenv("GALLERY_ADMIN_TOKEN") // likewise
+	switch v := get("GALLERY_PUBLIC"); v {
+	case "1":
+		c.Public = true
+	case "", "0":
 	default:
-		bad("GALLERY_AUTH", "must be \"off\" or unset, not %q", auth)
+		bad("GALLERY_PUBLIC", "must be 1 to let anyone view the gallery, or unset; not %q", v)
+	}
+	if get("GALLERY_AUTH") != "" {
+		// Removed. Its value is not echoed and not interpreted: a gallery that
+		// used to rely on it must not start with a different meaning.
+		bad("GALLERY_AUTH", "is no longer supported; remove it. To let anyone view the gallery without a login (what GALLERY_AUTH=off did), set GALLERY_PUBLIC=1 and leave GALLERY_TOKEN unset. To keep the login, GALLERY_TOKEN alone is enough")
+	}
+	switch {
+	case c.Public && c.Token != "":
+		bad("GALLERY_PUBLIC", "is 1 but GALLERY_TOKEN is also set, which contradicts it. Unset GALLERY_TOKEN for a gallery anyone can view, or unset GALLERY_PUBLIC to require the token (GALLERY_ADMIN_TOKEN is the separate, optional token for administering)")
+	case !c.Public && c.Token == "":
+		bad("GALLERY_TOKEN", "is required. Set it to a long random string (for example `openssl rand -base64 32`), or set GALLERY_PUBLIC=1 to let anyone who can reach the gallery view it without a login")
+	}
+	tokenShape := func(name, v string) {
+		switch {
+		case len(v) < MinTokenLength:
+			bad(name, "must be at least %d characters (it has %d)", MinTokenLength, len(v))
+		case strings.TrimSpace(v) != v || strings.ContainsAny(v, "\r\n\t\x00"):
+			bad(name, "must not start or end with a space or contain control characters")
+		}
 	}
 	if c.Token != "" {
-		switch {
-		case len(c.Token) < MinTokenLength:
-			bad("GALLERY_TOKEN", "must be at least %d characters (it has %d)", MinTokenLength, len(c.Token))
-		case strings.TrimSpace(c.Token) != c.Token || strings.ContainsAny(c.Token, "\r\n\t\x00"):
-			bad("GALLERY_TOKEN", "must not start or end with a space or contain control characters")
+		tokenShape("GALLERY_TOKEN", c.Token)
+	}
+	if c.AdminToken != "" {
+		tokenShape("GALLERY_ADMIN_TOKEN", c.AdminToken)
+		if c.AdminToken == c.Token {
+			bad("GALLERY_ADMIN_TOKEN", "must differ from GALLERY_TOKEN: everyone who can view would be an admin")
 		}
 	}
 
@@ -289,13 +310,18 @@ func joinLines(errs []error) error {
 // CacheMaxBytes is GALLERY_CACHE_MAX_MB in bytes.
 func (c *Config) CacheMaxBytes() int64 { return int64(c.CacheMaxMB) << 20 }
 
-// AuthRequired reports whether requests must present the token.
-func (c *Config) AuthRequired() bool { return !c.AuthOff }
+// AdminEnabled reports whether an admin token is configured. Without one
+// there are no admin sessions, features or routes.
+func (c *Config) AdminEnabled() bool { return c.AdminToken != "" }
+
+// LoginEnabled reports whether there is anything to sign in to: viewing
+// needs the token, or an admin token is configured.
+func (c *Config) LoginEnabled() bool { return !c.Public || c.AdminEnabled() }
 
 // Secrets returns the secret values in the configuration, for log redaction.
 func (c *Config) Secrets() []string {
 	var s []string
-	for _, v := range []string{c.Token, c.TelegramToken} {
+	for _, v := range []string{c.Token, c.AdminToken, c.TelegramToken} {
 		if v != "" {
 			s = append(s, v)
 		}
@@ -324,14 +350,15 @@ func (c *Config) LogValue() slog.Value {
 		}
 		proxies = strings.Join(parts, ",")
 	}
-	auth := "token"
-	if c.AuthOff {
-		auth = "off"
+	view := "token"
+	if c.Public {
+		view = "public"
 	}
 	return slog.GroupValue(
 		slog.String("listen", c.Listen),
-		slog.String("auth", auth),
+		slog.String("view", view),
 		slog.String("token", secretState(c.Token)),
+		slog.String("admin_token", secretState(c.AdminToken)),
 		slog.String("table", c.Table),
 		slog.String("region", c.Region),
 		slog.String("telegram_token", secretState(c.TelegramToken)),

@@ -11,7 +11,9 @@
 # loopback by default (Caddy on the same host as a gallery without a
 # container); deploy/compose.yaml sets it to the address the container sees
 # Caddy connect from.
-# There is no cache: /img/ responses are behind the login and must stay there.
+# There is no cache: when viewing needs GALLERY_TOKEN, /img/ responses are
+# behind the login and must stay there. (In a public gallery, GALLERY_PUBLIC=1,
+# they are marked "public" and may be cached; pages and /api/ never.)
 
 gallery.example.com {
 	header Strict-Transport-Security "max-age=31536000"

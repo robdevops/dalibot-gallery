@@ -23,7 +23,15 @@
   like any other record, is labelled with the bot's default command whatever
   model made it, and appears twice if the bot also has an ordinary
   record of the same picture under a different Telegram file id.
-- With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](reverse-proxy.md).
+- With `GALLERY_PUBLIC=1`, image responses are cacheable as `public`; see [Reverse proxy](reverse-proxy.md).
+- There is one view token and one admin token, no accounts. Signing in as
+  admin replaces a view session in the same browser, and signing out drops
+  whichever session there is.
+- The "Admin" and "Sign out" links are at the foot of the page, below the
+  last image, so in a long gallery they are a long scroll away. `/login` can
+  be opened directly.
+- Nothing an admin can do exists yet beyond signing in: the admin session is
+  the base for admin features.
 - Responses that Go's HTTP server writes itself for malformed requests carry
   no security headers; see [Security model](security.md).
 - Rebuild the container image often to pick up security updates to Alpine,

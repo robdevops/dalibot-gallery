@@ -24,16 +24,16 @@ type Image struct {
 // Tile is one generated image in the listing. Its JSON form is exactly what
 // GET /api/tiles returns for a tile; it contains no file_id.
 type Tile struct {
-	Key     string  `json:"key"`     // this image's key; unique per tile
-	ID      string  `json:"id"`      // the record's id, "<chat_id>:<message_id>"
-	Style   string  `json:"style"`   // this image's style key
-	Label   string  `json:"label"`   // this image's style label
-	Caption string  `json:"caption"` // this image's caption
-	Updated int64   `json:"updated"` // epoch seconds the record was last drawn to (ttl - store days)
-	Prompt  string  `json:"prompt"`  // the record's original prompt
-	Command string  `json:"command"` // the record's command, without a slash
-	Current string  `json:"current"` // style key of the record's current image; always one of Styles
-	Styles  []Image `json:"styles"`  // every image of the record, this one included, in display order
+	Key     string  `json:"key"`          // this image's key; unique per tile
+	ID      string  `json:"id,omitempty"` // the record's id, "<chat_id>:<message_id>"; left out by WithoutIDs
+	Style   string  `json:"style"`        // this image's style key
+	Label   string  `json:"label"`        // this image's style label
+	Caption string  `json:"caption"`      // this image's caption
+	Updated int64   `json:"updated"`      // epoch seconds the record was last drawn to (ttl - store days)
+	Prompt  string  `json:"prompt"`       // the record's original prompt
+	Command string  `json:"command"`      // the record's command, without a slash
+	Current string  `json:"current"`      // style key of the record's current image; always one of Styles
+	Styles  []Image `json:"styles"`       // every image of the record, this one included, in display order
 
 	pos int // index of this image in Styles: the last part of the sort position
 }
@@ -46,7 +46,22 @@ func (t Tile) Alt() string {
 	return t.Prompt
 }
 
-// Cursor is the opaque keyset cursor that names this tile's sort position.
+// WithoutIDs returns a copy of tiles in which no tile has its record id, so
+// that their JSON has no "id" at all. The id contains the Telegram chat id;
+// the server uses this for visitors who must not learn it. Such a copy is
+// for encoding only: a tile's Cursor needs the id.
+func WithoutIDs(tiles []Tile) []Tile {
+	out := make([]Tile, len(tiles))
+	for i, t := range tiles {
+		t.ID = ""
+		out[i] = t
+	}
+	return out
+}
+
+// Cursor is the keyset cursor that names this tile's sort position. It is
+// opaque but not secret-safe: it holds the record id, so the server seals
+// it before it reaches a browser.
 func (t Tile) Cursor() string {
 	return position{t.Updated, t.ID, t.pos}.encode()
 }

@@ -2,57 +2,130 @@
 
 **What the browser receives.** The page, one script, one stylesheet, the JSON
 listing, and images. For each tile the listing holds: a 22-character key
-(the start of a SHA-256 of the file id), the record id
-(`<chat_id>:<message_id>`), the style key and label, the caption, the prompt,
-the command, and the date. Note that the record id contains the chat id.
+(the start of a SHA-256 of the file id), the style key and label, the
+caption, the prompt, the command, and the date. When viewing needs the
+token, and for an admin, it also holds the record id
+(`<chat_id>:<message_id>`), which contains the Telegram chat id. A visitor
+of a public gallery is never sent it; see "A public gallery and chat ids" below.
 
 **What the browser never receives.** The Telegram bot token, any Telegram
 file id, file path or URL, the AWS credentials, or any other table attribute.
 Images are addressed only by key, and only keys in the current listing are
 served, so the gallery cannot be used to fetch arbitrary Telegram files. The
-tests scan every response, headers and body, for the seeded file ids and both tokens.
+tests scan every response, headers and body, for the seeded file ids and the tokens.
 
-**Authentication.** One shared token, `GALLERY_TOKEN`:
+**Who can view, who can administer.** Two separate settings:
+
+- Viewing is either open to everyone who can reach the gallery
+  (`GALLERY_PUBLIC=1`) or needs the shared token `GALLERY_TOKEN`. Exactly
+  one of the two must be set: with neither the gallery refuses to start, so
+  it is never open by accident, and with both as well, because they contradict.
+- Administering needs `GALLERY_ADMIN_TOKEN`, which is optional, must differ
+  from `GALLERY_TOKEN` and has the same minimum length. Without it there is
+  no admin session and no admin route. An admin can also view.
+
+A token is presented in one of two ways:
 
 - at `/login`, which sets a cookie (`HttpOnly`, `Secure`, `SameSite=Strict`,
-  one year) holding an HMAC-SHA256 derived from the token, not the token itself; or
-- as the password of HTTP Basic auth (any user name), for scripts.
+  one year). One form takes either token and gives the matching session; or
+- as the password of HTTP Basic auth (any user name), for scripts. The admin
+  token as the password counts as admin.
 
-A sign-in form posted from another site's page is refused with 403: the
-browser's `Sec-Fetch-Site` header is checked, or, when it is absent, the
+Nothing else grants anything. In particular `GALLERY_TRUSTED_PROXIES` only
+says whose `X-Forwarded-For` to believe for the limiter and the log; a
+request from a trusted proxy is treated like any other.
+
+**Sessions.** The cookie `gallery_session` holds an HMAC-SHA256, never a
+token: for a view session the message `dalibot-gallery session v1` keyed
+with `GALLERY_TOKEN`, for an admin session the message
+`dalibot-gallery admin session v1` keyed with `GALLERY_ADMIN_TOKEN`. The two
+differ in key and in message, so a view session cannot act as admin, and
+knowing the view token or a view cookie does not help to make an admin
+cookie. Comparisons are constant-time, and a presented token is always
+compared with both. There is one cookie: signing in as admin replaces a view
+session. `POST /logout` ("Sign out" at the foot of the page) drops it. There
+are no accounts: whoever has a token has what it gives, and the only way to
+sign everyone out is to change the token.
+
+A sign-in or sign-out posted from another site's page is refused with 403:
+the browser's `Sec-Fetch-Site` header is checked, or, when it is absent, the
 `Origin` header against `Host` (so the reverse proxy must pass `Host`
 through). Requests with neither header, such as curl, are not affected.
 
-Comparisons are constant-time. Everything needs authentication except
-`/healthz`, `/login`, and the stylesheet `/app.css` and icon `/favicon.png`,
-which the login page uses. There are no accounts or roles: whoever has the token sees everything,
-and the only way to sign everyone out is to change the token.
+**Open routes.** `/healthz` always. `/login`, `/logout`, the stylesheet
+`/app.css` and the icon `/favicon.png` whenever there is something to sign
+in to. When viewing needs the token, everything else needs a session or the
+Basic password. In a public gallery everything is open, and `/login` and
+`/logout` exist only if an admin token is set (otherwise they are 404).
 
-**Guessing the token is rate-limited.** A wrong token counts the same
-whether it is posted to `/login` or sent as a Basic password to any route:
+**The page knows whether the visitor is an admin.** The server renders
+`<html data-admin="1">` for an admin and no such attribute for anyone else.
+That is a hint for the page only; the server checks the session on every
+request and never relies on it.
+
+**Guessing a token is rate-limited.** A wrong token counts the same whether
+it is posted to `/login` or sent as a Basic password to any route, and one
+guess is a guess at both tokens, counted once:
 
 - One client may present 5 wrong tokens per minute. After that it gets 429
   with `Retry-After` on `/login` and on every request that carries a Basic
-  password, right or wrong, until the minute has passed. A client is an IPv4
-  address or an IPv6 /64. Checking and counting are one step, so parallel
-  requests cannot slip past the limit.
+  password, right or wrong, view token or admin token, until the minute has
+  passed. A client is an IPv4 address or an IPv6 /64. Checking and counting
+  are one step, so parallel requests cannot slip past the limit.
+- In a public gallery, and for a client that already has a view session, a
+  wrong or blocked Basic password does not stop viewing: the request is
+  served as an ordinary visitor's. It is still counted, and while the client
+  is blocked the admin token is not evaluated, so nothing in the response
+  tells a blocked guesser whether a guess was right.
 - All clients together may present 300 wrong tokens per minute. Above that,
   every sign-in and every Basic request gets 429 for up to a minute. This
   ceiling only matters against a guesser with many addresses. The price is
   that such an attacker (at least 60 addresses, each failing at full rate)
   can keep others from signing in for as long as the attack lasts.
 - A valid session cookie is never limited or blocked, and requests without
-  credentials do not count.
+  credentials do not count. A Basic password is only looked at when it could
+  raise what the request may do, so in a public gallery without an admin
+  token it is ignored altogether.
 - The limit is only as good as the client address. Behind a reverse proxy
   that is not listed in `GALLERY_TRUSTED_PROXIES`, every visitor has the
   proxy's address and shares one allowance of 5; see [Reverse proxy](reverse-proxy.md).
-- The limiter slows guessing; it does not make a weak token safe. Use a long
-  random one (`openssl rand -base64 32`). The 16-character minimum checks
+- The limiter slows guessing; it does not make a weak token safe. Use long
+  random ones (`openssl rand -base64 32`). The 16-character minimum checks
   length, not randomness.
 
-With `GALLERY_AUTH=off` the gallery has no login at all and relies entirely
-on the proxy in front of it. It refuses to start with neither a token nor
-`GALLERY_AUTH=off`.
+**A public gallery and chat ids.** A record's id is
+`<chat_id>:<message_id>`. With `GALLERY_PUBLIC=1` nothing a visitor receives
+holds it:
+
+- The JSON listing has no `id` field for anyone but an admin.
+- Cursors (`next`, `newest`, the `since` parameter, the "Load more" link of
+  the page without JavaScript) name a place in the listing, and that place
+  includes the record id. The server therefore encrypts every cursor before
+  sending it (AES-256-GCM, keys derived from the Telegram bot token, which
+  never leaves the server except towards Telegram) and accepts only cursors
+  it sealed itself. Hiding the id is one reason; the other is that a visitor
+  who could make a cursor could find an id by bisection, asking for the page
+  after "this tile's date, a guessed id" and watching whether the tile is on
+  it. A keyed hash of the id was the alternative, but positions are ordered
+  by the id itself, so paging could then no longer find the place of a
+  record that has left the listing. The seal is deterministic: the same
+  place always gives the same cursor, and cursors stay valid across restarts.
+  Cursors are sealed in every mode, so a copied "Load more" link never
+  carries a chat id either.
+- Deep links (`#/p/<key>`), image URLs and ETags hold only the image key, a
+  hash of the Telegram file id.
+- Records with the same date to the second are listed in the order of their
+  ids. That order is visible; the ids are not.
+
+Captions and prompts are shown as people wrote them. If someone typed a chat
+id, a name or a phone number into a prompt, a public gallery shows it.
+`GALLERY_CHATS` limits a gallery to chosen chats.
+
+**Caching.** Image responses are `Cache-Control: private, max-age=31536000,
+immutable` when viewing needs the token, so that no shared cache keeps what
+is behind the login, and `public, …` in a public gallery. Pages and the JSON
+listing are `no-store` in every mode: they differ between a visitor and an
+admin.
 
 **Headers** on every response the gallery's handler writes (every route and status, including 401, 404, 405 and 429):
 
@@ -108,8 +181,9 @@ under a hard memory cap (512 MB in the Compose file and the systemd unit):
 that one file is the only large input measured, and a 50-megapixel image
 with full-resolution colour would need roughly twice as much (an estimate, not measured).
 
-**Logs.** Every log line passes through a filter that removes both tokens.
-File ids, file paths, Telegram URLs and cookie values are not logged.
+**Logs.** Every log line passes through a filter that removes the gallery's
+tokens and the bot token. File ids, file paths, Telegram URLs and cookie
+values are not logged. An admin sign-in is logged with the client address.
 
 **Process.** The gallery listens on `127.0.0.1` by default, sets request
 timeouts (header 5 s, read 10 s, write 60 s, idle 120 s) and a 16 KB header

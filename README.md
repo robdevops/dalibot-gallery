@@ -41,18 +41,19 @@ git clone https://github.com/robdevops/dalibot-gallery
 cd dalibot-gallery
 cp .env.example .env
 chmod 600 .env
-# Edit .env: GALLERY_TOKEN (openssl rand -base64 32), TELEGRAM_BOT_TOKEN,
-# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION / DALIBOT_TABLE /
-# GALLERY_STORE_DAYS if the bot does not use the defaults.
+# Edit .env: GALLERY_TOKEN (openssl rand -base64 32) or GALLERY_PUBLIC=1,
+# TELEGRAM_BOT_TOKEN, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION /
+# DALIBOT_TABLE / GALLERY_STORE_DAYS if the bot does not use the defaults.
 docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml logs -f
 ```
 
 The gallery is now on `http://127.0.0.1:8080` of the host, and only there.
-Open it and sign in with `GALLERY_TOKEN`. To reach it from anywhere else, put
-a TLS [reverse proxy](#reverse-proxy) in front. The session cookie is marked
-`Secure`, so the login page works over HTTPS, and over plain HTTP only on
-`localhost` / `127.0.0.1`.
+Open it and sign in with `GALLERY_TOKEN` (with `GALLERY_PUBLIC=1` there is
+nothing to sign in to; see [Who can view](#who-can-view-and-who-can-administer)).
+To reach it from anywhere else, put a TLS [reverse proxy](#reverse-proxy) in
+front. The session cookie is marked `Secure`, so the login page works over
+HTTPS, and over plain HTTP only on `localhost` / `127.0.0.1`.
 
 What `deploy/compose.yaml` sets up:
 
@@ -98,24 +99,56 @@ These are the ones to look at before the first start:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GALLERY_TOKEN` | (required) | The shared access token, at least 16 characters. Not needed only with `GALLERY_AUTH=off` (see note below). |
+| `GALLERY_TOKEN` | (this or `GALLERY_PUBLIC=1`) | The shared token for viewing, at least 16 characters. With it set, nobody sees anything without signing in. |
+| `GALLERY_PUBLIC` | (unset) | `1` lets anyone who can reach the gallery view it, with no login. Set this or `GALLERY_TOKEN`, never both. |
+| `GALLERY_ADMIN_TOKEN` | (unset) | Optional. A second token, different from `GALLERY_TOKEN` and at least 16 characters, that signs in as an admin at the same `/login`. Without it there are no admin features. |
 | `TELEGRAM_BOT_TOKEN` | (required) | The bot's token. Used only for `getFile` and the file download. |
 | AWS credentials | standard chain | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on (see [docs/aws-access.md](docs/aws-access.md)). |
 | `AWS_REGION` | `ap-southeast-1` | Falls back to `AWS_DEFAULT_REGION`. |
 | `DALIBOT_TABLE` | `dalibot` | The bot's AWS DynamoDB table. |
 | `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. |
 | `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
-| `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [docs/reverse-proxy.md](docs/reverse-proxy.md). |
+| `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). It grants no access. `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [docs/reverse-proxy.md](docs/reverse-proxy.md). |
 
-Note on `GALLERY_AUTH=off`: it turns the gallery's own login off, so anything
-that can reach the gallery's port sees every image. It is meant for a
-reverse proxy that does its own sign-in in front. Without `GALLERY_TOKEN` the
-gallery refuses to start unless this is set, so that it is never left open
-by accident. It is described in [docs/configuration.md](docs/configuration.md).
+The rest have defaults that suit most installations: which chats to show,
+the refresh interval, cache size, thumbnail quality and workers, and
+debugging. They are in [docs/configuration.md](docs/configuration.md).
 
-The rest have defaults that suit most installations: turning the login off,
-which chats to show, the refresh interval, cache size, thumbnail quality and
-workers, and debugging. They are in [docs/configuration.md](docs/configuration.md).
+### Who can view and who can administer
+
+These are two separate questions, each answered by one setting.
+
+**Who can view.** Choose one:
+
+- `GALLERY_TOKEN=<a long random string>`: only people who have the token.
+  They sign in at `/login`; scripts can send it as the HTTP Basic password.
+- `GALLERY_PUBLIC=1`: anyone who can reach the gallery, with no login.
+
+The gallery refuses to start with neither, so it is never left open by
+accident, and with both, because they contradict each other.
+
+**Who can administer.** Nobody, unless you set `GALLERY_ADMIN_TOKEN`. It is a
+second token, used at the same `/login` page (or as the Basic password); the
+session it gives can view as well. In a public gallery the page has a small
+"Admin" link at its foot that leads there, and "Sign out" next to it once
+signed in.
+
+A public gallery with an admin:
+
+```sh
+GALLERY_PUBLIC=1
+GALLERY_ADMIN_TOKEN=<openssl rand -base64 32>
+```
+
+In a public gallery a visitor is never sent a Telegram chat id, and image
+responses may be stored by shared caches (`Cache-Control: public`). Details
+are in [docs/security.md](docs/security.md).
+
+**`GALLERY_AUTH` is gone.** Earlier versions had `GALLERY_AUTH=off` for a
+gallery behind a proxy. If the variable is still set, to anything, the
+gallery stops at start-up and says so. Remove it, and set `GALLERY_PUBLIC=1`
+if the gallery is meant to be viewable without a login. See
+[Upgrading](#upgrading).
 
 ## AWS access
 
@@ -143,47 +176,22 @@ security headers alone, do not cache at the proxy, and tell the gallery
 which proxies to believe for the client address. They are in
 [docs/reverse-proxy.md](docs/reverse-proxy.md).
 
-### No password for visitors (nginx)
+### A public gallery behind a proxy
 
-To let visitors in without a token while the gallery still refuses anyone
-who does not come through nginx, keep `GALLERY_TOKEN` set and have nginx
-present it on every request. The gallery accepts the token as the password
-of HTTP Basic auth with any user name.
+To let visitors in without a password, set `GALLERY_PUBLIC=1` (and leave
+`GALLERY_TOKEN` unset). The proxy needs nothing special: the example files
+work as they are. The gallery then serves everyone who can reach it, so:
 
-1. Encode `nginx:` followed by the token:
-
-   ```sh
-   printf 'nginx:%s' 'YOUR_GALLERY_TOKEN' | openssl base64 -A
-   ```
-
-2. Put the result in a file only root can read, for example
-   `/etc/nginx/gallery-auth.conf` (`chmod 600`):
-
-   ```nginx
-   proxy_set_header Authorization "Basic PASTE_THE_BASE64_HERE";
-   ```
-
-3. In `deploy/nginx.conf`, inside `location /`, add
-   `include /etc/nginx/gallery-auth.conf;`, and next to that location add
-   `location = /login { return 302 /; }` so the unused login page is not shown.
-4. `sudo nginx -t && sudo systemctl reload nginx`.
-
-The separate file is only there to keep the token private: site files under
-`sites-available` are usually world-readable, and base64 is an encoding, not
-encryption. You can put the `proxy_set_header Authorization` line straight
-into your site file's `location /` instead, as long as you then make that
-file readable by root only (`sudo chmod 600`); nginx reads its configuration
-as root.
-
-Visitors now see the gallery straight away; a request that reaches port 8080
-without passing through nginx still gets 401. nginx replaces any
-`Authorization` header a visitor sends.
-
-This makes the gallery public to everyone who can reach nginx. To limit
-that, restrict the `server` block with `allow` / `deny`, or put nginx's own
-`auth_basic` or SSO in front. `GALLERY_AUTH=off` also removes the password,
-but then nothing protects the gallery's port itself, and images are sent as
-`Cache-Control: public`.
+- Keep the gallery's own port away from anyone who should not see it. The
+  default `GALLERY_LISTEN` is loopback, and the Compose file publishes the
+  port on `127.0.0.1` only.
+- To limit who can view, do it at the proxy (`allow` / `deny`, its own
+  password or SSO), or use `GALLERY_TOKEN` instead of `GALLERY_PUBLIC`.
+- The proxy must not present a token on visitors' behalf, and listing it in
+  `GALLERY_TRUSTED_PROXIES` gives it no access: that setting only says whose
+  `X-Forwarded-For` to believe.
+- Image responses are `Cache-Control: public` in this mode, so a caching
+  proxy or CDN may store them. Pages and the listing are always `no-store`.
 
 ## Running without a container
 
@@ -299,6 +307,27 @@ builds generate code at run time. A configuration error (exit status 2) is not r
 There is no database and nothing to migrate. The cache is kept across
 upgrades: originals are reused, and thumbnails are regenerated only if the
 pipeline version changed.
+
+**If you used `GALLERY_AUTH`.** The variable has been removed, and a gallery
+that still has it set, to any value, stops at start-up with a message saying
+so, rather than start with a different meaning. What to do:
+
+- `GALLERY_AUTH=off` (no login in the gallery, a proxy in front): remove the
+  line and add `GALLERY_PUBLIC=1`. Viewing still needs no login. If your
+  proxy did its own sign-in, it still does; the gallery itself is open to
+  whatever can reach its port, as it was.
+- nginx presenting `GALLERY_TOKEN` for every visitor (the old "no password
+  for visitors" recipe): that still works, but is no longer the way. Remove
+  the `Authorization` line (and `/etc/nginx/gallery-auth.conf`) from nginx,
+  unset `GALLERY_TOKEN` and set `GALLERY_PUBLIC=1`. A visitor is then never
+  sent a chat id, which the token-holding proxy could not prevent.
+- `GALLERY_AUTH=token` or an empty value: remove the line. `GALLERY_TOKEN`
+  alone has always meant that.
+
+**Pages open during the upgrade.** The cursors in the listing changed form
+(they are now sealed, see [docs/security.md](docs/security.md)). A gallery
+page that was open in a browser before the upgrade stops loading more images
+until it is reloaded.
 
 **Container:**
 

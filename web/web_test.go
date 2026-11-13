@@ -55,9 +55,10 @@ func TestNoInlineCode(t *testing.T) {
 func TestIndexTemplate(t *testing.T) {
 	tpl := template.Must(template.ParseFS(Files, "index.html"))
 	data := struct {
-		V     string
-		Tiles []indexTile
-		Next  string
+		V                          string
+		Tiles                      []indexTile
+		Next                       string
+		Admin, AdminLogin, SignOut bool
 	}{
 		V: "1",
 		Tiles: []indexTile{{
@@ -83,6 +84,12 @@ func TestIndexTemplate(t *testing.T) {
 			t.Errorf("index.html output lacks %q", want)
 		}
 	}
+	// An ordinary visitor's page says nothing about admins or sessions.
+	for _, not := range []string{"data-admin", "/login", "/logout", "<footer", "Admin", "Sign out"} {
+		if strings.Contains(s, not) {
+			t.Errorf("index.html for an ordinary visitor contains %q", not)
+		}
+	}
 	data.Next, data.Tiles = "", nil
 	out.Reset()
 	if err := tpl.Execute(&out, data); err != nil {
@@ -91,16 +98,47 @@ func TestIndexTemplate(t *testing.T) {
 	if strings.Contains(out.String(), "Load more") {
 		t.Error("Load more shown on the last page")
 	}
+
+	// The admin flag, the link to the admin sign-in and the sign-out form.
+	const (
+		flag    = `<html lang="en" data-admin="1">`
+		link    = `<a href="/login">Admin</a>`
+		signOut = `<form method="post" action="/logout"><button type="submit">Sign out</button></form>`
+	)
+	for _, c := range []struct {
+		admin, adminLogin, signOut bool
+	}{{true, false, true}, {false, true, false}, {false, true, true}, {false, false, true}, {true, false, false}} {
+		data.Admin, data.AdminLogin, data.SignOut = c.admin, c.adminLogin, c.signOut
+		out.Reset()
+		if err := tpl.Execute(&out, data); err != nil {
+			t.Fatal(err)
+		}
+		s := out.String()
+		for want, on := range map[string]bool{flag: c.admin, link: c.adminLogin, signOut: c.signOut, `<footer class="foot">`: c.adminLogin || c.signOut} {
+			if strings.Contains(s, want) != on {
+				t.Errorf("index.html with %+v: %q present = %v", c, want, !on)
+			}
+		}
+	}
 }
 
 func TestLoginTemplate(t *testing.T) {
 	tpl := template.Must(template.ParseFS(Files, "login.html"))
-	for _, failed := range []bool{false, true} {
+	for _, c := range [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}} {
+		failed, adminOnly := c[0], c[1]
 		var out bytes.Buffer
-		if err := tpl.Execute(&out, struct{ Error bool }{failed}); err != nil {
+		if err := tpl.Execute(&out, struct{ Error, AdminOnly bool }{failed, adminOnly}); err != nil {
 			t.Fatal(err)
 		}
 		s := out.String()
+		// In a public gallery the form is the admin's sign-in and says so.
+		label, back := `<label for="token">Access token</label>`, `<a href="/">Back to the gallery</a>`
+		if adminOnly {
+			label = `<label for="token">Admin token</label>`
+		}
+		if !strings.Contains(s, label) || strings.Contains(s, back) != adminOnly {
+			t.Errorf("login.html (AdminOnly=%v): wrong label or link back", adminOnly)
+		}
 		for _, want := range []string{`<form method="post" action="/login">`, `name="token" autocomplete="current-password" required autofocus`, `<button type="submit">`} {
 			if !strings.Contains(s, want) {
 				t.Errorf("login.html (Error=%v) lacks %q", failed, want)

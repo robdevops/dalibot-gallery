@@ -8,6 +8,7 @@ import (
 	"maps"
 	"math/rand"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -609,5 +610,49 @@ func TestNoDuplicatesWhenItemsExpireOrMoveBetweenPages(t *testing.T) {
 				t.Fatalf("round %d: gap, %s %s was skipped", round, tl.ID, tl.Style)
 			}
 		}
+	}
+}
+
+// WithoutIDs gives copies whose JSON has no "id" at all, and leaves the
+// snapshot's own tiles as they were.
+func TestWithoutIDs(t *testing.T) {
+	snap := Build([]Record{
+		{ID: "-1001234567890:7", Prompt: "p", TTL: time.Now().Unix() + 86400, Images: map[string]RawImage{
+			"_": {FileID: "file-a", Caption: "a"}, "monet": {FileID: "file-b", Caption: "b"}}},
+		{ID: "42:fAQADabc", Prompt: "q", TTL: time.Now().Unix() + 86400, Images: map[string]RawImage{"_": {FileID: "file-c"}}},
+	}, Options{StoreDays: 90, DefaultCommand: "dream"})
+	tiles := snap.Newest(10)
+	if len(tiles) != 3 {
+		t.Fatalf("%d tiles", len(tiles))
+	}
+	full, err := json.Marshal(tiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(full), `"id":"`); n != 3 || !strings.Contains(string(full), "-1001234567890:7") {
+		t.Fatalf("the tiles' own JSON must keep the id: %s", full)
+	}
+	bare := WithoutIDs(tiles)
+	out, err := json.Marshal(bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, not := range []string{`"id"`, "1001234567890", "fAQADabc", `"42`} {
+		if strings.Contains(string(out), not) {
+			t.Errorf("WithoutIDs: the JSON contains %s: %s", not, out)
+		}
+	}
+	// Everything else is the same, field for field.
+	if want := regexp.MustCompile(`"id":"[^"]*",`).ReplaceAllString(string(full), ""); string(out) != want {
+		t.Errorf("WithoutIDs changed more than the id:\n got %s\nwant %s", out, want)
+	}
+	// The originals are untouched and still give their cursors.
+	for i, tile := range snap.Newest(10) {
+		if tile.ID == "" || bare[i].ID != "" || bare[i].Key != tile.Key {
+			t.Errorf("tile %d: id %q, copy id %q", i, tile.ID, bare[i].ID)
+		}
+	}
+	if got := WithoutIDs(nil); len(got) != 0 {
+		t.Errorf("WithoutIDs(nil) = %v", got)
 	}
 }

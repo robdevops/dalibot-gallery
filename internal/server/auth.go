@@ -16,13 +16,18 @@ import (
 
 // Session cookie and limits on token guesses.
 const (
-	CookieName     = "gallery_session"
-	sessionMessage = "dalibot-gallery session v1"
-	cookieMaxAge   = 31536000
-	maxLoginBody   = 4 << 10
-	loginWindow    = time.Minute
+	CookieName = "gallery_session"
+	// The two kinds of session are HMACs of different messages under
+	// different keys (the view token and the admin token), so neither can be
+	// computed from the other, nor from the cookie of the other kind.
+	sessionMessage      = "dalibot-gallery session v1"
+	adminSessionMessage = "dalibot-gallery admin session v1"
+	cookieMaxAge        = 31536000
+	maxLoginBody        = 4 << 10
+	loginWindow         = time.Minute
 	// loginPerClient is how many wrong tokens one client (an IPv4 address or
 	// an IPv6 /64) may present per window, at /login and as a Basic password.
+	// A guess is a guess at both tokens at once and is counted once.
 	loginPerClient = 5
 	// loginOverall is the ceiling on wrong tokens from all clients together.
 	// It only matters against a guesser with many addresses. It is far above
@@ -32,14 +37,30 @@ const (
 	maxLimiterClient = 10000
 )
 
-// sessionValue is the cookie value for a token: lower-case hex of
-// HMAC-SHA256(key = token, message = sessionMessage). The token itself never
-// leaves the server.
-func sessionValue(token string) string {
+// access is what a request may do. The levels are ordered: an admin can
+// also view.
+type access int
+
+const (
+	accessNone  access = iota // must sign in first
+	accessView                // may see the gallery
+	accessAdmin               // may also administer it
+)
+
+func sessionMAC(token, message string) string {
 	m := hmac.New(sha256.New, []byte(token))
-	m.Write([]byte(sessionMessage))
+	m.Write([]byte(message))
 	return hex.EncodeToString(m.Sum(nil))
 }
+
+// sessionValue is the cookie value of a view session: lower-case hex of
+// HMAC-SHA256(key = GALLERY_TOKEN, message = sessionMessage). The token
+// itself never leaves the server.
+func sessionValue(token string) string { return sessionMAC(token, sessionMessage) }
+
+// adminSessionValue is the cookie value of an admin session: lower-case hex
+// of HMAC-SHA256(key = GALLERY_ADMIN_TOKEN, message = adminSessionMessage).
+func adminSessionValue(token string) string { return sessionMAC(token, adminSessionMessage) }
 
 // equal compares two strings in constant time, whatever their lengths.
 func equal(a, b string) bool {
@@ -47,27 +68,80 @@ func equal(a, b string) bool {
 	return hmac.Equal(x[:], y[:])
 }
 
-// authorize reports whether the request may use the protected routes. A
-// wrong Basic password counts against the same limiter as a failed login, so
-// the token cannot be guessed faster through Basic than through /login. When
-// the client is over the limit, wait is how long it must stay away, and the
-// request is refused whatever password it carries.
-func (s *Server) authorize(r *http.Request) (ok bool, wait time.Duration) {
-	if s.cfg.AuthOff {
-		return true, 0
+// cookieAccess is the level the request's session cookie gives: admin, view
+// or none. It never looks at a Basic password and never counts as a guess.
+// A session that is not configured has the value "" and matches nothing.
+func (s *Server) cookieAccess(r *http.Request) access {
+	c, err := r.Cookie(CookieName)
+	if err != nil {
+		return accessNone
 	}
-	if c, err := r.Cookie(CookieName); err == nil && equal(c.Value, s.session) {
-		return true, 0
+	// Both comparisons are always made.
+	admin := equal(c.Value, s.adminSession) && s.adminSession != ""
+	view := equal(c.Value, s.viewSession) && s.viewSession != ""
+	switch {
+	case admin:
+		return accessAdmin
+	case view:
+		return accessView
 	}
-	if _, pass, has := r.BasicAuth(); has {
-		client := s.clientAddr(r)
-		wait, ok := s.limiter.attempt(limiterKey(client), equal(pass, s.cfg.Token))
-		if !ok && wait == 0 {
-			s.log.Warn("basic auth failed", "remote", client)
-		}
-		return ok, wait
+	return accessNone
+}
+
+// tokenAccess is the level a presented token gives. Both tokens are always
+// compared, in constant time. A token that is not configured matches nothing.
+func (s *Server) tokenAccess(token string) access {
+	admin := equal(token, s.cfg.AdminToken) && s.cfg.AdminToken != ""
+	view := equal(token, s.cfg.Token) && s.cfg.Token != ""
+	switch {
+	case admin:
+		return accessAdmin
+	case view:
+		return accessView
 	}
-	return false, 0
+	return accessNone
+}
+
+// authorize reports what the request may do: accessNone, accessView or
+// accessAdmin. Viewing is open to everyone in public mode; otherwise it
+// needs a session cookie or the token as the Basic password. Admin needs the
+// admin session cookie or the admin token as the Basic password, in either
+// mode. Nothing else grants anything: not the peer address, not a header a
+// proxy sets.
+//
+// A Basic password is a guess at both tokens and goes through the limiter,
+// like a sign-in at /login, so neither token can be guessed faster through
+// Basic. It is only looked at when it could raise the level (so never in a
+// public gallery without an admin token, and not for an admin session).
+//
+// wait > 0 means the client is over the limit and its password was not
+// evaluated, right or wrong. The level is then whatever the request has
+// without the password: none (the caller answers 429) or, for a public
+// visitor or a view session, view. Callers that need admin must treat
+// wait > 0 as a refusal.
+func (s *Server) authorize(r *http.Request) (level access, wait time.Duration) {
+	level = s.cookieAccess(r)
+	if s.cfg.Public && level < accessView {
+		level = accessView
+	}
+	if level == accessAdmin || (level == accessView && !s.cfg.AdminEnabled()) {
+		return level, 0
+	}
+	_, pass, has := r.BasicAuth()
+	if !has {
+		return level, 0
+	}
+	client := s.clientAddr(r)
+	got := s.tokenAccess(pass)
+	wait, ok := s.limiter.attempt(limiterKey(client), got > accessNone)
+	if wait > 0 {
+		return level, wait
+	}
+	if !ok {
+		s.log.Warn("basic auth failed", "remote", client)
+		return level, 0
+	}
+	return max(level, got), 0
 }
 
 // tooMany answers 429 with Retry-After.
@@ -81,15 +155,16 @@ func tooMany(w http.ResponseWriter, wait time.Duration) {
 // Requests with neither header, such as curl, are allowed.
 var crossOrigin http.CrossOriginProtection
 
-// handleLogin serves GET and POST /login.
+// handleLogin serves GET and POST /login. The route exists only when there
+// is something to sign in to (cfg.LoginEnabled). One form takes either
+// token: the view token gives a view session, the admin token an admin
+// session.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.AuthOff {
-		redirect(w, "/")
-		return
-	}
 	if r.Method != http.MethodPost {
-		// Only the cookie counts here: a Basic password is not evaluated on this open page.
-		if c, err := r.Cookie(CookieName); err == nil && equal(c.Value, s.session) {
+		// Only the cookie counts here: a Basic password is not evaluated on
+		// this open page. A view session still sees the form when there is an
+		// admin token, since signing in again is how it becomes an admin session.
+		if have := s.cookieAccess(r); have == accessAdmin || (have == accessView && !s.cfg.AdminEnabled()) {
 			redirect(w, "/")
 			return
 		}
@@ -111,7 +186,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := s.clientAddr(r)
-	wait, ok := s.limiter.attempt(limiterKey(client), equal(r.PostForm.Get("token"), s.cfg.Token))
+	got := s.tokenAccess(r.PostForm.Get("token"))
+	wait, ok := s.limiter.attempt(limiterKey(client), got > accessNone)
 	if wait > 0 {
 		tooMany(w, wait)
 		return
@@ -121,15 +197,42 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.loginPage(w, http.StatusUnauthorized, true)
 		return
 	}
+	value := s.viewSession
+	if got == accessAdmin {
+		value = s.adminSession
+		s.log.Info("admin signed in", "remote", client)
+	}
 	http.SetCookie(w, &http.Cookie{
-		Name: CookieName, Value: s.session, Path: "/", MaxAge: cookieMaxAge,
+		Name: CookieName, Value: value, Path: "/", MaxAge: cookieMaxAge,
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
 	})
 	redirect(w, "/")
 }
 
+// handleLogout serves POST /logout: it drops the session cookie, view or
+// admin, and goes back to the gallery (which, when viewing needs the token,
+// leads to the login page). Like /login it exists only when cfg.LoginEnabled.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if err := crossOrigin.Check(r); err != nil {
+		plain(w, http.StatusForbidden, "cross-origin request refused\n")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: CookieName, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
+	redirect(w, "/")
+}
+
+// loginData is what login.html is executed with.
+type loginData struct {
+	Error bool // the token just posted was wrong
+	// AdminOnly: the gallery is public, so the only thing to sign in for is admin.
+	AdminOnly bool
+}
+
 func (s *Server) loginPage(w http.ResponseWriter, status int, failed bool) {
-	s.html(w, status, s.login, struct{ Error bool }{failed})
+	s.html(w, status, s.login, loginData{Error: failed, AdminOnly: s.cfg.Public})
 }
 
 // clientAddr is the address a request is counted under by the limiter and

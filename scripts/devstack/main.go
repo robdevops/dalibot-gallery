@@ -6,7 +6,8 @@
 // Run it from the repository root, usually through scripts/dev-stack.sh:
 //
 //	scripts/dev-stack.sh                      # gallery on http://127.0.0.1:8080
-//	scripts/dev-stack.sh -port 9000 -auth=false
+//	scripts/dev-stack.sh -port 9000 -auth=false   # public: no login to view (GALLERY_PUBLIC=1)
+//	scripts/dev-stack.sh -admin-token dev-admin-token-0123456789   # also an admin (GALLERY_ADMIN_TOKEN)
 //	scripts/dev-stack.sh -port 9000 -control 9001 -refresh 5s
 //
 // When everything is up it prints one line of JSON to stdout and keeps running
@@ -15,6 +16,9 @@
 //	{"ready":true,"url":"http://127.0.0.1:8080","token":"dev-gallery-token-0123456789","control":"http://127.0.0.1:8081","tiles":193,"records":145}
 //
 // Sign in at <url>/login with the token (or use it as the HTTP Basic password).
+// With -auth=false the line has "public":true and no "token"; with
+// -admin-token it also has "admin_token", which signs in as an admin at the
+// same /login.
 //
 // The control server (loopback only) is for tests:
 //
@@ -59,7 +63,8 @@ func run() error {
 	port := flag.Int("port", 8080, "port for the gallery on 127.0.0.1")
 	control := flag.Int("control", -1, "port for the control server; -1 means port+1, 0 means none")
 	token := flag.String("token", devstack.GalleryToken, "the gallery's access token (at least 16 characters)")
-	auth := flag.Bool("auth", true, "require the token; -auth=false runs with GALLERY_AUTH=off")
+	auth := flag.Bool("auth", true, "require the token to view; -auth=false runs a public gallery (GALLERY_PUBLIC=1)")
+	adminToken := flag.String("admin-token", "", "an admin token (GALLERY_ADMIN_TOKEN), for example "+devstack.AdminToken+"; empty means no admin")
 	refresh := flag.Duration("refresh", 5*time.Second, "how often the gallery re-reads the table (GALLERY_REFRESH)")
 	warm := flag.Int("warm", 120, "how many of the newest tiles to pre-generate (GALLERY_WARM)")
 	delay := flag.Duration("telegram-delay", 0, "delay added to every fake Telegram answer")
@@ -131,11 +136,13 @@ func run() error {
 		"GALLERY_CACHE_DIR="+*cacheDir,
 		"GALLERY_CHATS=",
 	)
+	// Every access variable is set, so that nothing is inherited from the caller's environment.
 	if *auth {
-		env = append(env, "GALLERY_TOKEN="+*token, "GALLERY_AUTH=")
+		env = append(env, "GALLERY_TOKEN="+*token, "GALLERY_PUBLIC=")
 	} else {
-		env = append(env, "GALLERY_TOKEN=", "GALLERY_AUTH=off")
+		env = append(env, "GALLERY_TOKEN=", "GALLERY_PUBLIC=1")
 	}
+	env = append(env, "GALLERY_ADMIN_TOKEN="+*adminToken, "GALLERY_AUTH=")
 	if *debug {
 		env = append(env, "GALLERY_DEBUG=1")
 	}
@@ -236,6 +243,11 @@ func run() error {
 	ready := map[string]any{"ready": true, "url": url, "control": controlURL, "tiles": seeded.Tiles, "records": seeded.Records}
 	if *auth {
 		ready["token"] = *token
+	} else {
+		ready["public"] = true
+	}
+	if *adminToken != "" {
+		ready["admin_token"] = *adminToken
 	}
 	line, _ := json.Marshal(ready)
 	fmt.Println(string(line))

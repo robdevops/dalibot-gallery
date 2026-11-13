@@ -27,8 +27,10 @@
 # Content-Security-Policy, X-Content-Type-Options, Referrer-Policy,
 # Permissions-Policy and X-Frame-Options, and they must reach the browser
 # unchanged. The one header added here is HSTS, which the gallery does not send.
-# Do not add a caching plugin for /img/: those responses are behind the login
-# (the gallery marks them "private").
+# Do not add a caching plugin for /img/ when viewing needs GALLERY_TOKEN: those
+# responses are behind the login (the gallery marks them "private"). In a
+# public gallery (GALLERY_PUBLIC=1) they are "public"; pages and /api/ are
+# "no-store" in every mode.
 
 services:
   gallery:

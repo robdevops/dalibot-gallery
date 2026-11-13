@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	// Images never change under their URL. With the gallery's own auth on they
+	// Images never change under their URL. When viewing needs the token they
 	// are "private": only the browser may keep them, never a shared cache,
-	// which could hand them to someone who is not signed in. With
-	// GALLERY_AUTH=off the gallery has no login of its own and sends "public".
+	// which could hand them to someone who is not signed in. In public mode
+	// (GALLERY_PUBLIC=1) anyone may see them and they are sent as "public".
 	immutablePrivate = "private, max-age=31536000, immutable"
 	immutablePublic  = "public, max-age=31536000, immutable"
 	// jobTimeout bounds one shared image job (Telegram fetch plus thumbnail); it is under WriteTimeout.
@@ -123,7 +123,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request, name string
 
 // immutable is the Cache-Control of an image response.
 func (s *Server) immutable() string {
-	if s.cfg.AuthOff {
+	if s.cfg.Public {
 		return immutablePublic
 	}
 	return immutablePrivate

@@ -23,11 +23,12 @@
 <main class="login">
 <h1>Gallery</h1>
 <form method="post" action="/login">
-  <label for="token">Access token</label>
+  <label for="token">{{if .AdminOnly}}Admin token{{else}}Access token{{end}}</label>
   <input type="password" id="token" name="token" autocomplete="current-password" required autofocus{{if .Error}} aria-describedby="err"{{end}}>
   <button type="submit">Sign in</button>
 </form>
 {{if .Error}}<p class="err" id="err" role="alert">That token is not right. Try again.</p>{{end}}
+{{if .AdminOnly}}<p class="back"><a href="/">Back to the gallery</a></p>{{end}}
 </main>
 </body>
 </html>

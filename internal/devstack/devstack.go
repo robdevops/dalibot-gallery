@@ -39,6 +39,7 @@ const (
 	Region       = "us-east-2"
 	StoreDays    = 90
 	GalleryToken = "dev-gallery-token-0123456789"
+	AdminToken   = "dev-admin-token-0123456789" // for stacks started with an admin token
 	BotToken     = "123456:DEV-fake_bot_token_abcdef"
 	// MotoServer is where the moto server is installed in the build environment; $MOTO_SERVER overrides it.
 	MotoServer = "/opt/moto/bin/moto_server"

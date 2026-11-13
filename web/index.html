@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{{if .Admin}} data-admin="1"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -33,6 +33,10 @@
 </noscript>
 <p class="end" id="end"></p>
 </main>
+{{if or .SignOut .AdminLogin}}<footer class="foot">
+{{if .AdminLogin}}<a href="/login">Admin</a>{{end}}
+{{if .SignOut}}<form method="post" action="/logout"><button type="submit">Sign out</button></form>{{end}}
+</footer>{{end}}
 <p class="sr" id="live" aria-live="polite"></p>
 <dialog id="lb" aria-label="Image viewer">
 <div class="box">

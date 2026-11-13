@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -613,6 +616,211 @@ func TestIntegration(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Errorf("the gallery's log lacks %q", want)
 		}
+	}
+
+	// --- access rules at start-up --------------------------------------------
+	// Each of these must stop the real binary with status 2 and a message that
+	// says what to do, before it listens or touches the cache.
+	withEnv := func(change ...string) []string {
+		env := append([]string(nil), s.env...)
+		return append(env, change...) // a later value wins
+	}
+	for name, c := range map[string]struct {
+		env  []string
+		want []string
+	}{
+		"GALLERY_AUTH=off, as an old proxy set-up had it": {
+			withEnv("GALLERY_TOKEN=", "GALLERY_AUTH=off"), []string{"GALLERY_AUTH: is no longer supported", "GALLERY_PUBLIC=1"}},
+		"GALLERY_AUTH=off next to the new setting": {
+			withEnv("GALLERY_TOKEN=", "GALLERY_AUTH=off", "GALLERY_PUBLIC=1"), []string{"GALLERY_AUTH: is no longer supported", "GALLERY_PUBLIC=1"}},
+		"GALLERY_AUTH=token": {
+			withEnv("GALLERY_AUTH=token"), []string{"GALLERY_AUTH: is no longer supported", "GALLERY_PUBLIC=1"}},
+		"neither a token nor public": {
+			withEnv("GALLERY_TOKEN="), []string{"GALLERY_TOKEN: is required", "GALLERY_PUBLIC=1"}},
+		"only an admin token": {
+			withEnv("GALLERY_TOKEN=", "GALLERY_ADMIN_TOKEN="+devstack.AdminToken), []string{"GALLERY_TOKEN: is required", "GALLERY_PUBLIC=1"}},
+		"public and a token": {
+			withEnv("GALLERY_PUBLIC=1"), []string{"GALLERY_PUBLIC: is 1 but GALLERY_TOKEN is also set"}},
+		"the admin token equal to the token": {
+			withEnv("GALLERY_ADMIN_TOKEN=" + devstack.GalleryToken), []string{"GALLERY_ADMIN_TOKEN: must differ from GALLERY_TOKEN"}},
+		"a short admin token": {
+			withEnv("GALLERY_ADMIN_TOKEN=short"), []string{"GALLERY_ADMIN_TOKEN: must be at least 16 characters"}},
+	} {
+		cmd := exec.Command(bin)
+		cmd.Env = c.env
+		out, err := cmd.CombinedOutput()
+		if exit, ok := errors.AsType[*exec.ExitError](err); !ok || exit.ExitCode() != 2 {
+			t.Errorf("%s: the gallery did not refuse to start with status 2: %v\n%s", name, err, out)
+			continue
+		}
+		for _, want := range c.want {
+			if !strings.Contains(string(out), want) {
+				t.Errorf("%s: the message lacks %q:\n%s", name, want, out)
+			}
+		}
+		for _, secret := range []string{devstack.GalleryToken, devstack.AdminToken, devstack.BotToken} {
+			if strings.Contains(string(out), secret) {
+				t.Errorf("%s: the message contains a token:\n%s", name, out)
+			}
+		}
+	}
+
+	// --- a public gallery with an admin --------------------------------------
+	// The same binary, table and cache, now with GALLERY_PUBLIC=1 and an admin token.
+	port2, err := devstack.FreePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen2 := fmt.Sprintf("127.0.0.1:%d", port2)
+	pub := &stack{
+		t: t, base: "http://" + listen2, bin: bin, logs: &lockedBuffer{},
+		env: withEnv("GALLERY_LISTEN="+listen2, "GALLERY_TOKEN=", "GALLERY_PUBLIC=1", "GALLERY_ADMIN_TOKEN="+devstack.AdminToken),
+		// Nothing a public visitor receives may hold a chat id, on top of everything else.
+		secrets: append(append([]string{devstack.AdminToken}, s.secrets...), "1001111111111", "1002222222222", "424242"),
+		client:  s.client,
+	}
+	pub.start()
+	t.Cleanup(func() {
+		if pub.cmd != nil {
+			_ = pub.cmd.Process.Kill()
+			_, _ = pub.cmd.Process.Wait()
+		}
+		if t.Failed() {
+			t.Logf("public gallery log (last 4000 bytes):\n%s", tail(pub.logs.String(), 4000))
+		}
+	})
+	// No login: the page, the script, the whole listing and the images, to anyone.
+	anon := func(target string) (*http.Response, []byte) {
+		t.Helper()
+		resp, body := pub.get(target, false)
+		if resp.StatusCode != 200 {
+			t.Fatalf("public %s: %d %s", target, resp.StatusCode, body)
+		}
+		return resp, body
+	}
+	anon("/app.js")
+	var pubKeys []string
+	target := "/api/tiles?limit=60"
+	for pages := 0; target != ""; pages++ {
+		_, body := anon(target)
+		var raw struct {
+			Tiles []map[string]any `json:"tiles"`
+			Next  *string          `json:"next"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, tile := range raw.Tiles {
+			if _, has := tile["id"]; has {
+				t.Fatalf("a public visitor was sent a record id: %v", tile)
+			}
+			pubKeys = append(pubKeys, tile["key"].(string))
+		}
+		target = ""
+		if raw.Next != nil && pages < 100 {
+			target = "/api/tiles?limit=60&cursor=" + url.QueryEscape(*raw.Next)
+			dec, err := base64.RawURLEncoding.DecodeString(*raw.Next)
+			if err != nil {
+				t.Fatalf("cursor is not base64url: %q", *raw.Next)
+			}
+			for _, chat := range devstack.Chats {
+				if bytes.Contains(dec, []byte(strings.TrimPrefix(chat, "-"))) {
+					t.Fatalf("a public cursor holds chat id %s", chat)
+				}
+			}
+		}
+	}
+	if len(pubKeys) != seeded.Tiles+3 {
+		t.Errorf("a public visitor sees %d tiles, want %d", len(pubKeys), seeded.Tiles+3)
+	}
+	// The no-script page and every "Load more" page after it.
+	target = "/"
+	for pages := 0; target != "" && pages < 100; pages++ {
+		_, body := anon(target)
+		target = ""
+		if m := regexp.MustCompile(`href="(/\?cursor=[^"]+)"`).FindSubmatch(body); m != nil {
+			target = string(m[1])
+		}
+	}
+	// A cursor from before the restart still works (the seal does not depend on
+	// the process or the mode); one a visitor makes does not.
+	anon("/api/tiles/new?since=" + since)
+	forged := base64.RawURLEncoding.EncodeToString([]byte("1|" + strconv.FormatInt(tiles[0].Updated, 10) + "|0|" + devstack.Chats[0] + ":1"))
+	for _, target := range []string{"/api/tiles?cursor=", "/api/tiles/new?since=", "/?cursor="} {
+		if resp, _ := pub.get(target+forged, false); resp.StatusCode != 400 {
+			t.Errorf("public %s<a cursor the visitor made>: %d, want 400", target, resp.StatusCode)
+		}
+	}
+	// Images are cacheable by anyone, and so say "public".
+	for _, target := range []string{"/img/" + pubKeys[0] + ".jpg", fmt.Sprintf("/img/%s-240.webp?v=%s", pubKeys[0], first.V)} {
+		resp, _ := anon(target)
+		if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+			t.Errorf("public %s: Cache-Control %q", target, cc)
+		}
+	}
+	// The visitor's page links to the admin sign-in and is not an admin's page.
+	_, body = anon("/")
+	if !strings.Contains(string(body), `<a href="/login">Admin</a>`) || strings.Contains(string(body), "data-admin") {
+		t.Errorf("the public page: admin link %v, admin flag %v", strings.Contains(string(body), `<a href="/login">Admin</a>`), strings.Contains(string(body), "data-admin"))
+	}
+	// The admin signs in at the same form and gets an admin's page, with record ids in the listing.
+	postTo := func(st *stack, path, token string) *http.Response {
+		req, _ := http.NewRequest("POST", st.base+path, strings.NewReader(url.Values{"token": {token}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, _ := st.send(req)
+		return resp
+	}
+	if resp := postTo(pub, "/login", devstack.GalleryToken); resp.StatusCode != 401 || len(resp.Cookies()) != 0 {
+		t.Errorf("the old view token at a public gallery's login: %d", resp.StatusCode)
+	}
+	resp = postTo(pub, "/login", devstack.AdminToken)
+	if resp.StatusCode != 303 || len(resp.Cookies()) != 1 {
+		t.Fatalf("admin login: %d", resp.StatusCode)
+	}
+	adminCookie := resp.Cookies()[0]
+	if !adminCookie.HttpOnly || !adminCookie.Secure || adminCookie.SameSite != http.SameSiteStrictMode ||
+		adminCookie.Value == devstack.AdminToken || adminCookie.Value == c.Value {
+		t.Errorf("admin session cookie: %+v", adminCookie)
+	}
+	// As an admin. The chat ids are expected here, so these are read without the scan for them.
+	asAdmin := func(target string) (int, string) {
+		req, _ := http.NewRequest("GET", pub.base+target, nil)
+		req.AddCookie(&http.Cookie{Name: adminCookie.Name, Value: adminCookie.Value})
+		resp, err := pub.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, html := asAdmin("/"); code != 200 || !strings.Contains(html, `<html lang="en" data-admin="1">`) || !strings.Contains(html, `action="/logout"`) {
+		t.Errorf("the admin's page: %d, admin flag %v", code, strings.Contains(html, "data-admin"))
+	}
+	if code, js := asAdmin("/api/tiles?limit=1"); code != 200 || !strings.Contains(js, `"id":"`) {
+		t.Errorf("the admin's listing: %d %s", code, js)
+	}
+	// The view session of the token-protected run is no session here.
+	req, _ = http.NewRequest("GET", pub.base+"/", nil)
+	req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	if _, body := pub.send(req); strings.Contains(string(body), "data-admin") || strings.Contains(string(body), `action="/logout"`) {
+		t.Errorf("a view session of another configuration counts for something in the public gallery")
+	}
+	// Signing out drops the cookie.
+	req, _ = http.NewRequest("POST", pub.base+"/logout", nil)
+	req.AddCookie(&http.Cookie{Name: adminCookie.Name, Value: adminCookie.Value})
+	if resp, _ := pub.send(req); resp.StatusCode != 303 || len(resp.Cookies()) != 1 || resp.Cookies()[0].MaxAge >= 0 {
+		t.Errorf("POST /logout: %d %v", resp.StatusCode, resp.Cookies())
+	}
+	pub.stop()
+	publog := pub.logs.String()
+	for _, secret := range []string{devstack.AdminToken, adminCookie.Value, devstack.BotToken, devstack.FileIDPrefix} {
+		if strings.Contains(publog, secret) {
+			t.Errorf("the public gallery's log contains %q", secret)
+		}
+	}
+	if !strings.Contains(publog, "GALLERY_PUBLIC=1: anyone who can reach this gallery can view it") || !strings.Contains(publog, "view=public") {
+		t.Errorf("the public gallery's log does not say that it is public")
 	}
 }
 

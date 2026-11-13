@@ -1,6 +1,6 @@
 # dalibot-gallery with Docker Compose.
 #
-#   cp .env.example .env        # then fill in the token, the AWS key and the bot token
+#   cp .env.example .env        # then fill in the token (or GALLERY_PUBLIC=1), the AWS key and the bot token
 #   docker compose -f deploy/compose.yaml up -d --build
 #
 # The gallery is then on http://127.0.0.1:8080 of the host, for a TLS reverse

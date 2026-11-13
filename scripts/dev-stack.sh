@@ -8,14 +8,18 @@
 #
 #   scripts/dev-stack.sh                          gallery on http://127.0.0.1:8080
 #   scripts/dev-stack.sh -port 9000               another port (control server on 9001)
-#   scripts/dev-stack.sh -auth=false              no login (GALLERY_AUTH=off)
+#   scripts/dev-stack.sh -auth=false              public: no login to view (GALLERY_PUBLIC=1)
+#   scripts/dev-stack.sh -admin-token dev-admin-token-0123456789
+#                                                 also an admin, who signs in at /login
 #   scripts/dev-stack.sh -telegram-delay 300ms    imitate a slow Telegram
 #   scripts/dev-stack.sh -h                       every option
 #
 # When ready it prints one line of JSON on stdout (logs go to stderr), e.g.
 #   {"control":"http://127.0.0.1:8081","ready":true,"records":145,"tiles":193,
 #    "token":"dev-gallery-token-0123456789","url":"http://127.0.0.1:8080"}
-# Open the url and sign in with the token. Stop with Ctrl-C.
+# Open the url and sign in with the token. Stop with Ctrl-C. With -auth=false
+# the line has "public":true and no token; with -admin-token it also has
+# "admin_token".
 #
 # For tests, the control server adds images and reports what Telegram saw:
 #   curl -X POST 'http://127.0.0.1:8081/add?n=3'   three new records; they show

@@ -124,7 +124,10 @@ func run() int {
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(ln) }()
-	log.Info("listening", "listen", ln.Addr().String(), "auth", cfg.AuthRequired())
+	log.Info("listening", "listen", ln.Addr().String(), "public", cfg.Public, "admin", cfg.AdminEnabled())
+	if cfg.Public {
+		log.Warn("GALLERY_PUBLIC=1: anyone who can reach this gallery can view it, without a login")
+	}
 
 	code := 0
 	select {

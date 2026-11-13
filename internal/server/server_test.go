@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	testToken    = "unit-test-gallery-token-xyz"
-	testBotToken = "123456:TEST-token_abc"
-	fileIDMark   = "AgACAgUAAxkBAAIUNITTEST"
+	testToken      = "unit-test-gallery-token-xyz"
+	testAdminToken = "unit-test-admin-token-0123456789"
+	testBotToken   = "123456:TEST-token_abc"
+	fileIDMark     = "AgACAgUAAxkBAAIUNITTEST"
 )
 
 var sampleJPEG []byte
@@ -187,7 +188,7 @@ func newEnv(t *testing.T, recs []source.Record, vars map[string]string) *env {
 	}
 	t.Cleanup(srv.Close)
 	e := &env{t: t, srv: srv, h: srv.Handler(), store: store, fetcher: ff, cache: ca, cfg: cfg, logs: logs,
-		secrets: []string{testToken, testBotToken, fileIDMark, "api.telegram.org", "file_path", "file_id"}}
+		secrets: []string{testToken, testAdminToken, testBotToken, fileIDMark, "api.telegram.org", "file_path", "file_id"}}
 	return e
 }
 
@@ -772,44 +773,12 @@ func TestForwardedForCannotEvadeLimit(t *testing.T) {
 	}
 }
 
-func TestAuthOff(t *testing.T) {
-	e := newEnv(t, records(4), map[string]string{"GALLERY_TOKEN": "", "GALLERY_AUTH": "off"})
-	key := e.store.Snapshot().Keys()[0]
-	for _, target := range []string{"/", "/api/tiles", "/api/tiles/new", "/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag()} {
-		if resp, _ := e.get(target); resp.StatusCode != 200 {
-			t.Errorf("%s with auth off: %d", target, resp.StatusCode)
-		}
-	}
-	// With no login of its own the gallery sends the brief's "public"; with auth on, "private".
-	for _, target := range []string{"/img/" + key + ".jpg", "/img/" + key + "-240.webp?v=" + imaging.Tag()} {
-		resp, _ := e.get(target)
-		if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
-			t.Errorf("%s with auth off: Cache-Control %q", target, cc)
-		}
-		resp, _ = e.get(target, header("If-None-Match", resp.Header.Get("ETag")))
-		if cc := resp.Header.Get("Cache-Control"); resp.StatusCode != 304 || cc != "public, max-age=31536000, immutable" {
-			t.Errorf("%s revalidated with auth off: %d, Cache-Control %q", target, resp.StatusCode, cc)
-		}
-	}
-	// A Basic header is ignored, never counted as a guess.
-	for range 3 * loginPerClient {
-		if resp, _ := e.get("/api/tiles", func(r *http.Request) { r.SetBasicAuth("u", "whatever") }); resp.StatusCode != 200 {
-			t.Fatalf("auth off with a Basic header: %d", resp.StatusCode)
-		}
-	}
-	if resp, _ := e.get("/login"); resp.StatusCode != 303 || resp.Header.Get("Location") != "/" {
-		t.Errorf("GET /login with auth off: %d", resp.StatusCode)
-	}
-	if resp, _ := e.do("POST", "/login", strings.NewReader("token=x")); resp.StatusCode != 303 || len(resp.Cookies()) != 0 {
-		t.Errorf("POST /login with auth off: %d", resp.StatusCode)
-	}
-}
-
 func TestMethodsAndNotFound(t *testing.T) {
 	e := newEnv(t, records(2), nil)
 	for _, c := range []struct{ method, target, allow string }{
 		{"POST", "/", "GET, HEAD"}, {"DELETE", "/api/tiles", "GET, HEAD"}, {"PUT", "/login", "GET, HEAD, POST"},
 		{"POST", "/img/x.jpg", "GET, HEAD"}, {"POST", "/healthz", "GET, HEAD"}, {"PATCH", "/app.js", "GET, HEAD"},
+		{"GET", "/logout", "POST"}, {"HEAD", "/logout", "POST"}, {"DELETE", "/logout", "POST"}, {"GE", "/", "GET, HEAD"},
 	} {
 		resp, _ := e.do(c.method, c.target, nil, basic)
 		if resp.StatusCode != 405 || resp.Header.Get("Allow") != c.allow {
@@ -883,7 +852,7 @@ func TestTilesPaging(t *testing.T) {
 	if n := len(first.Tiles); n < 59 || n > 60 { // pages hold whole records
 		t.Errorf("default page: %d tiles", n)
 	}
-	if first.V != imaging.Tag() || first.Newest == nil || *first.Newest != snap.Newest(1)[0].Cursor() || first.Next == nil {
+	if first.V != imaging.Tag() || first.Newest == nil || *first.Newest != e.srv.cursors.seal(snap.Newest(1)[0].Cursor()) || first.Next == nil {
 		t.Errorf("first page: v %q newest %v next %v", first.V, first.Newest, first.Next)
 	}
 	// The cap: anything above 120 is 120.
@@ -893,7 +862,15 @@ func TestTilesPaging(t *testing.T) {
 			t.Errorf("limit=%s: %d tiles", limit, n)
 		}
 	}
-	for _, bad := range []string{"limit=0", "limit=-1", "limit=abc", "limit=1.5", "cursor=%21%21", "cursor=AAAA"} {
+	// Only cursors this server sealed are accepted: not the source package's own, not an altered one.
+	sealed := *first.Next
+	other := byte('A')
+	if sealed[20] == other {
+		other = 'B'
+	}
+	flipped := sealed[:20] + string(other) + sealed[21:]
+	for _, bad := range []string{"limit=0", "limit=-1", "limit=abc", "limit=1.5", "cursor=%21%21", "cursor=AAAA",
+		"cursor=" + snap.Newest(1)[0].Cursor(), "cursor=" + flipped, "cursor=" + sealed[1:], "cursor=" + sealed + "A", "cursor=" + strings.Repeat("A", 2000)} {
 		resp, p := e.page("/api/tiles?" + bad)
 		if resp.StatusCode != 400 || p.Error == "" {
 			t.Errorf("%s: %d %+v", bad, resp.StatusCode, p)
@@ -1402,7 +1379,7 @@ func TestIndexNoscript(t *testing.T) {
 		`src="/img/` + first.Key + `-240.webp?v=` + tag + `"`,
 		`/img/` + first.Key + `-480.webp?v=` + tag + ` 480w`,
 		`href="/img/` + first.Key + `.jpg"`,
-		`href="/?cursor=` + next + `"`,
+		`href="/?cursor=` + e.srv.cursors.seal(next) + `"`,
 		`alt="caption 0 &#34;q&#34;"`, // escaped
 	} {
 		if !strings.Contains(html, want) {
@@ -1418,7 +1395,7 @@ func TestIndexNoscript(t *testing.T) {
 	for {
 		target := "/"
 		if cursor != "" {
-			target = "/?cursor=" + url.QueryEscape(cursor)
+			target = "/?cursor=" + url.QueryEscape(e.srv.cursors.seal(cursor))
 		}
 		_, body := e.get(target, basic)
 		page, n, _ := snap.Page(cursor, DefaultLimit)
@@ -1440,8 +1417,10 @@ func TestIndexNoscript(t *testing.T) {
 	if len(seen) != snap.Len() {
 		t.Errorf("the no-script pages show %d of %d tiles", len(seen), snap.Len())
 	}
-	if resp, _ := e.get("/?cursor=%21%21", basic); resp.StatusCode != 400 {
-		t.Errorf("bad cursor on /: %d", resp.StatusCode)
+	for _, bad := range []string{"%21%21", next, e.srv.cursors.seal(next) + "A"} {
+		if resp, _ := e.get("/?cursor="+bad, basic); resp.StatusCode != 400 {
+			t.Errorf("bad cursor %q on /: %d", bad, resp.StatusCode)
+		}
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -84,7 +85,9 @@ type Server struct {
 	index, login *template.Template
 	assets       map[string]asset // by URL path
 	tag          string           // imaging.Tag()
-	session      string           // the session cookie's value; "" when auth is off
+	viewSession  string           // the view session cookie's value; "" in public mode
+	adminSession string           // the admin session cookie's value; "" without an admin token
+	cursors      *cursorBox       // seals the cursors sent to browsers
 	limiter      *loginLimiter
 	handler      http.Handler
 
@@ -123,13 +126,26 @@ func New(d Deps) (*Server, error) {
 		limiter: newLoginLimiter(),
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
-	if d.Config.AuthRequired() {
-		if d.Config.Token == "" {
-			return nil, errors.New("server: auth is required but no token is configured")
-		}
-		s.session = sessionValue(d.Config.Token)
+	// config.FromEnv guarantees all of this; a Config built by hand must not
+	// be able to open the gallery by accident.
+	switch cfg := d.Config; {
+	case !cfg.Public && cfg.Token == "":
+		return nil, errors.New("server: viewing is not public but no token is configured")
+	case cfg.Public && cfg.Token != "":
+		return nil, errors.New("server: viewing is public but a token is also configured")
+	case cfg.AdminToken != "" && cfg.AdminToken == cfg.Token:
+		return nil, errors.New("server: the admin token must differ from the token")
+	}
+	if d.Config.Token != "" {
+		s.viewSession = sessionValue(d.Config.Token)
+	}
+	if d.Config.AdminToken != "" {
+		s.adminSession = adminSessionValue(d.Config.AdminToken)
 	}
 	var err error
+	if s.cursors, err = newCursorBox(d.Config.TelegramToken); err != nil {
+		return nil, fmt.Errorf("server: cursor keys: %w", err)
+	}
 	if s.index, err = template.ParseFS(d.Web, "index.html"); err != nil {
 		return nil, fmt.Errorf("server: index.html: %w", err)
 	}
@@ -196,12 +212,18 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	api := strings.HasPrefix(p, "/api/")
 
-	// Methods: GET and HEAD everywhere, plus POST on /login.
+	// Methods: GET and HEAD everywhere; POST on /login as well, and only
+	// POST on /logout. Those two exist only when there is something to sign
+	// in to; in a public gallery without an admin token they are unknown paths.
+	login := s.cfg.LoginEnabled()
 	allow := "GET, HEAD"
-	if p == "/login" {
+	switch {
+	case login && p == "/login":
 		allow = "GET, HEAD, POST"
+	case login && p == "/logout":
+		allow = "POST"
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead && (r.Method != http.MethodPost || p != "/login") {
+	if !slices.Contains(strings.Split(allow, ", "), r.Method) {
 		w.Header().Set("Allow", allow)
 		if api {
 			s.jsonError(w, r, http.StatusMethodNotAllowed, "method not allowed")
@@ -212,12 +234,15 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Open routes.
-	switch p {
-	case "/healthz":
+	switch {
+	case p == "/healthz":
 		s.healthz(w)
 		return
-	case "/login":
+	case login && p == "/login":
 		s.handleLogin(w, r)
+		return
+	case login && p == "/logout":
+		s.handleLogout(w, r)
 		return
 	}
 	// The stylesheet is open because the login page needs it. It holds no data.
@@ -226,8 +251,9 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Everything else needs auth.
-	if ok, wait := s.authorize(r); !ok {
+	// Everything else needs at least view access.
+	level, wait := s.authorize(r)
+	if level < accessView {
 		switch {
 		case wait > 0 && api:
 			w.Header().Set("Retry-After", fmt.Sprint(int(wait/time.Second)+1))
@@ -251,13 +277,16 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.serveAsset(w, r, a)
 		return
 	}
+	// Handlers that answer differently to an admin are given the level.
+	// Routes only an admin may use belong here too: check level == accessAdmin
+	// (and wait == 0) and answer everyone else as for an unknown path.
 	switch {
 	case p == "/":
-		s.handleIndex(w, r)
+		s.handleIndex(w, r, level)
 	case p == "/api/tiles":
-		s.handleTiles(w, r)
+		s.handleTiles(w, r, level)
 	case p == "/api/tiles/new":
-		s.handleNew(w, r)
+		s.handleNew(w, r, level)
 	case strings.HasPrefix(p, "/img/"):
 		s.handleImage(w, r, p[len("/img/"):])
 	case api:

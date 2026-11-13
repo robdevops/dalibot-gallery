@@ -42,8 +42,8 @@ func TestDefaults(t *testing.T) {
 	if fmt.Sprintf("%#v|%q|%q", *c, c.Token, c.TelegramToken) != fmt.Sprintf("%#v|%q|%q", want, want.Token, want.TelegramToken) {
 		t.Errorf("defaults:\n got %#v\nwant %#v", *c, want)
 	}
-	if c.Chats != nil || c.AuthOff || !c.AuthRequired() {
-		t.Errorf("chats/auth defaults wrong: %v %v", c.Chats, c.AuthOff)
+	if c.Chats != nil || c.Public || c.AdminToken != "" || c.AdminEnabled() || !c.LoginEnabled() {
+		t.Errorf("chats/access defaults wrong: %v public=%v admin=%v", c.Chats, c.Public, c.AdminEnabled())
 	}
 	if c.CacheMaxBytes() != 2048<<20 {
 		t.Errorf("CacheMaxBytes = %d", c.CacheMaxBytes())
@@ -94,38 +94,100 @@ func TestRegionAndCacheFallbacks(t *testing.T) {
 	}
 }
 
-func TestAuthRules(t *testing.T) {
-	// No token and no GALLERY_AUTH=off: refuse to start.
-	_, err := FromEnv(env("GALLERY_TOKEN", ""))
-	if err == nil || !strings.Contains(err.Error(), "GALLERY_TOKEN") || !strings.Contains(err.Error(), "GALLERY_AUTH=off") {
-		t.Errorf("missing token: %v", err)
-	}
-	// Explicit off without a token is allowed.
-	c, err := FromEnv(env("GALLERY_TOKEN", "", "GALLERY_AUTH", "OFF"))
-	if err != nil || !c.AuthOff || c.AuthRequired() || c.Token != "" {
-		t.Errorf("auth off: %v %v", c, err)
-	}
-	// Off together with a token is contradictory.
-	if _, err := FromEnv(env("GALLERY_AUTH", "off")); err == nil || !strings.Contains(err.Error(), "GALLERY_AUTH") {
-		t.Errorf("off+token: %v", err)
-	}
-	// Anything else is not silently treated as off.
-	for _, v := range []string{"none", "false", "0", "no"} {
-		if _, err := FromEnv(env("GALLERY_TOKEN", "", "GALLERY_AUTH", v)); err == nil {
-			t.Errorf("GALLERY_AUTH=%s without a token must fail", v)
+const testAdminToken = "unit-test-admin-token-0123456789"
+
+// Who may view and who may administer: every combination of GALLERY_PUBLIC,
+// GALLERY_TOKEN and GALLERY_ADMIN_TOKEN.
+func TestAccessRules(t *testing.T) {
+	for _, c := range []struct {
+		name                 string
+		public, token, admin string
+		ok                   bool
+		wantPublic           bool
+		wantLogin, wantAdmin bool
+		mentions             []string // in the error
+	}{
+		{name: "token only", token: testToken, ok: true, wantLogin: true},
+		{name: "token and admin token", token: testToken, admin: testAdminToken, ok: true, wantLogin: true, wantAdmin: true},
+		{name: "public only", public: "1", ok: true, wantPublic: true},
+		{name: "public with an admin token", public: "1", admin: testAdminToken, ok: true, wantPublic: true, wantLogin: true, wantAdmin: true},
+		{name: "GALLERY_PUBLIC=0 is unset", public: "0", token: testToken, ok: true, wantLogin: true},
+		// Never open by accident.
+		{name: "nothing", mentions: []string{"GALLERY_TOKEN", "is required", "GALLERY_PUBLIC=1"}},
+		{name: "admin token alone", admin: testAdminToken, mentions: []string{"GALLERY_TOKEN", "is required", "GALLERY_PUBLIC=1"}},
+		{name: "GALLERY_PUBLIC=0 alone", public: "0", mentions: []string{"GALLERY_TOKEN", "is required"}},
+		// Contradictory.
+		{name: "public and token", public: "1", token: testToken, mentions: []string{"GALLERY_PUBLIC", "GALLERY_TOKEN", "contradicts"}},
+		{name: "public, token and admin token", public: "1", token: testToken, admin: testAdminToken, mentions: []string{"GALLERY_PUBLIC", "contradicts"}},
+		// The admin token is a different, equally long token.
+		{name: "admin token equal to the token", token: testToken, admin: testToken, mentions: []string{"GALLERY_ADMIN_TOKEN", "must differ"}},
+		{name: "short admin token", token: testToken, admin: "hunter2-admin", mentions: []string{"GALLERY_ADMIN_TOKEN", "at least 16"}},
+		{name: "short admin token, public", public: "1", admin: "hunter2-admin", mentions: []string{"GALLERY_ADMIN_TOKEN", "at least 16"}},
+		{name: "padded admin token", token: testToken, admin: " " + testAdminToken, mentions: []string{"GALLERY_ADMIN_TOKEN", "space"}},
+		{name: "admin token with a line break", token: testToken, admin: testAdminToken + "\nmore", mentions: []string{"GALLERY_ADMIN_TOKEN", "control"}},
+		{name: "short token", token: "hunter2", mentions: []string{"GALLERY_TOKEN", "at least 16"}},
+		{name: "padded token", token: " padded-token-0123456789 ", mentions: []string{"GALLERY_TOKEN", "space"}},
+		// Only 1 turns public viewing on; nothing else is guessed at.
+		{name: "GALLERY_PUBLIC=true", public: "true", token: testToken, mentions: []string{"GALLERY_PUBLIC", "must be 1"}},
+		{name: "GALLERY_PUBLIC=yes without a token", public: "yes", mentions: []string{"GALLERY_PUBLIC", "must be 1", "GALLERY_TOKEN"}},
+	} {
+		cfg, err := FromEnv(env("GALLERY_PUBLIC", c.public, "GALLERY_TOKEN", c.token, "GALLERY_ADMIN_TOKEN", c.admin))
+		if !c.ok {
+			if err == nil {
+				t.Errorf("%s: accepted", c.name)
+				continue
+			}
+			for _, m := range c.mentions {
+				if !strings.Contains(err.Error(), m) {
+					t.Errorf("%s: the error does not mention %q: %v", c.name, m, err)
+				}
+			}
+			for _, secret := range []string{testToken, testAdminToken, "hunter2", "padded-token"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("%s: the error echoes a token: %v", c.name, err)
+				}
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if cfg.Public != c.wantPublic || cfg.LoginEnabled() != c.wantLogin || cfg.AdminEnabled() != c.wantAdmin ||
+			cfg.Token != c.token || cfg.AdminToken != c.admin || cfg.Public == (cfg.Token != "") {
+			t.Errorf("%s: public=%v login=%v admin=%v", c.name, cfg.Public, cfg.LoginEnabled(), cfg.AdminEnabled())
 		}
 	}
-	// "token" is the explicit name of the default.
-	if c, err := FromEnv(env("GALLERY_AUTH", "token")); err != nil || c.AuthOff {
-		t.Errorf("GALLERY_AUTH=token: %v", err)
+}
+
+// GALLERY_AUTH is gone. Whatever it is set to, and whatever else is set, the
+// gallery refuses to start and says what replaces it, so that a deployment
+// that relied on it never comes up with a different meaning.
+func TestGalleryAuthRefused(t *testing.T) {
+	for _, v := range []string{"off", "OFF", "token", "none", "false", "0", "no", "1", "x"} {
+		for name, vars := range map[string][]string{
+			"old proxy setup":       {"GALLERY_TOKEN", ""},
+			"with the token":        nil,
+			"with public":           {"GALLERY_TOKEN", "", "GALLERY_PUBLIC", "1"},
+			"with public and admin": {"GALLERY_TOKEN", "", "GALLERY_PUBLIC", "1", "GALLERY_ADMIN_TOKEN", testAdminToken},
+		} {
+			_, err := FromEnv(env(append([]string{"GALLERY_AUTH", v}, vars...)...))
+			if err == nil {
+				t.Errorf("GALLERY_AUTH=%s (%s) was accepted", v, name)
+				continue
+			}
+			for _, want := range []string{"GALLERY_AUTH: is no longer supported", "GALLERY_PUBLIC=1"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("GALLERY_AUTH=%s (%s): the error lacks %q: %v", v, name, want, err)
+				}
+			}
+		}
 	}
-	// Short tokens are rejected, without being echoed.
-	_, err = FromEnv(env("GALLERY_TOKEN", "hunter2"))
-	if err == nil || strings.Contains(err.Error(), "hunter2") {
-		t.Errorf("short token: %v", err)
-	}
-	if _, err := FromEnv(env("GALLERY_TOKEN", " padded-token-0123456789 ")); err == nil {
-		t.Error("token with surrounding spaces must fail")
+	// Empty or blank counts as unset.
+	for _, v := range []string{"", "  "} {
+		if _, err := FromEnv(env("GALLERY_AUTH", v)); err != nil {
+			t.Errorf("GALLERY_AUTH=%q: %v", v, err)
+		}
 	}
 }
 
@@ -206,6 +268,10 @@ func TestErrorsNeverContainSecrets(t *testing.T) {
 		{"GALLERY_TOKEN", "short-secret"},
 		{"GALLERY_TOKEN", "line\nbreak-secret-0123456789"},
 		{"GALLERY_AUTH", "off"},
+		{"GALLERY_PUBLIC", "1"},
+		{"GALLERY_ADMIN_TOKEN", "short-admin"},
+		{"GALLERY_ADMIN_TOKEN", " padded-admin-token-0123456789"},
+		{"GALLERY_ADMIN_TOKEN", testToken},
 		{"GALLERY_LISTEN", "bad"},
 	}
 	for _, kv := range cases {
@@ -214,7 +280,7 @@ func TestErrorsNeverContainSecrets(t *testing.T) {
 			t.Errorf("%v: expected an error", kv[0])
 			continue
 		}
-		for _, secret := range []string{testToken, testBotToken, badBot, "short-secret", "break-secret"} {
+		for _, secret := range []string{testToken, testBotToken, badBot, "short-secret", "break-secret", "short-admin", "padded-admin"} {
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("%s: error leaks a secret: %v", kv[0], err)
 			}
@@ -223,7 +289,7 @@ func TestErrorsNeverContainSecrets(t *testing.T) {
 }
 
 func TestPrintingNeverShowsSecrets(t *testing.T) {
-	c, err := FromEnv(env("GALLERY_CHATS", "-1001,7"))
+	c, err := FromEnv(env("GALLERY_CHATS", "-1001,7", "GALLERY_ADMIN_TOKEN", testAdminToken))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,23 +312,23 @@ func TestPrintingNeverShowsSecrets(t *testing.T) {
 		fmt.Sprintf("%v", []*Config{c}), fmt.Sprintf("%+v", struct{ C Config }{*c}),
 	}
 	for i, out := range outputs {
-		if strings.Contains(out, testToken) || strings.Contains(out, testBotToken) || strings.Contains(out, "AAH-secret") {
+		if strings.Contains(out, testToken) || strings.Contains(out, testAdminToken) || strings.Contains(out, testBotToken) || strings.Contains(out, "AAH-secret") {
 			t.Errorf("output %d leaks a secret: %s", i, out)
 		}
 	}
-	if !strings.Contains(c.String(), "token=[redacted]") || !strings.Contains(c.String(), "chats=-1001,7") || !strings.Contains(c.String(), "listen=127.0.0.1:8080") {
+	if !strings.Contains(c.String(), "view=token token=[redacted] admin_token=[redacted]") || !strings.Contains(c.String(), "chats=-1001,7") || !strings.Contains(c.String(), "listen=127.0.0.1:8080") {
 		t.Errorf("String() = %s", c.String())
 	}
-	if got := c.Secrets(); len(got) != 2 || got[0] != testToken || got[1] != testBotToken {
+	if got := c.Secrets(); len(got) != 3 || got[0] != testToken || got[1] != testAdminToken || got[2] != testBotToken {
 		t.Errorf("Secrets() = %d values", len(got))
 	}
 
-	off, err := FromEnv(env("GALLERY_TOKEN", "", "GALLERY_AUTH", "off"))
+	public, err := FromEnv(env("GALLERY_TOKEN", "", "GALLERY_PUBLIC", "1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(off.String(), "auth=off") || !strings.Contains(off.String(), "token=(unset)") || len(off.Secrets()) != 1 {
-		t.Errorf("auth-off String() = %s", off.String())
+	if !strings.Contains(public.String(), "view=public token=(unset) admin_token=(unset)") || len(public.Secrets()) != 1 {
+		t.Errorf("public String() = %s", public.String())
 	}
 }
 

@@ -48,8 +48,9 @@ Ownership of directories:
 ```go
 type Config struct {
 	Listen          string        // GALLERY_LISTEN, "host:port"; default 127.0.0.1:8080
-	Token           string        // GALLERY_TOKEN (secret); "" only when AuthOff
-	AuthOff         bool          // GALLERY_AUTH=off
+	Public          bool          // GALLERY_PUBLIC=1: viewing needs no login
+	Token           string        // GALLERY_TOKEN (secret): viewing needs it; "" exactly when Public
+	AdminToken      string        // GALLERY_ADMIN_TOKEN (secret); "" means no admin sessions, features or routes
 	Table           string        // DALIBOT_TABLE; default dalibot
 	Region          string        // AWS_REGION, else AWS_DEFAULT_REGION, else ap-southeast-1
 	TelegramToken   string        // TELEGRAM_BOT_TOKEN (secret); required
@@ -69,7 +70,8 @@ type Config struct {
 func Load() (*Config, error)                                   // from os.Getenv
 func FromEnv(getenv func(string) string) (*Config, error)      // for tests
 func (c *Config) CacheMaxBytes() int64
-func (c *Config) AuthRequired() bool                           // !AuthOff
+func (c *Config) AdminEnabled() bool                           // AdminToken != ""
+func (c *Config) LoginEnabled() bool                           // !Public || AdminEnabled(): /login and /logout exist
 func (c *Config) Secrets() []string                            // the non-empty secrets, for log redaction
 func (c *Config) LogValue() slog.Value                         // secrets shown as "[redacted]"
 func (c *Config) String() string                               // same, as text
@@ -77,8 +79,10 @@ func (c *Config) String() string                               // same, as text
 
 Rules enforced by `FromEnv` (the error lists every problem, names the variable and never contains a secret's value):
 
-- `GALLERY_TOKEN` must be at least **16** characters (`config.MinTokenLength`), with no surrounding spaces or control characters. Tests and examples must use a token that long.
-- No token: start-up fails unless `GALLERY_AUTH=off`. `GALLERY_AUTH` accepts only `off`, `token` or unset. `GALLERY_AUTH=off` together with a token is an error.
+- Who may view: exactly one of `GALLERY_TOKEN` and `GALLERY_PUBLIC=1`. Neither is an error (the gallery is never open by accident); both is an error (contradictory). `GALLERY_PUBLIC` accepts only `1` (and `0` or empty, meaning unset).
+- Who may administer: `GALLERY_ADMIN_TOKEN`, optional, in either mode. It must differ from `GALLERY_TOKEN`. An admin token alone (no token, not public) is the "neither" error.
+- `GALLERY_TOKEN` and `GALLERY_ADMIN_TOKEN` must each be at least **16** characters (`config.MinTokenLength`), with no surrounding spaces or control characters. Tests and examples must use tokens that long.
+- `GALLERY_AUTH` was removed. Set to anything non-blank, whatever else is set, it is an error whose message names `GALLERY_PUBLIC=1` as the replacement; its value is never interpreted.
 - `TELEGRAM_BOT_TOKEN` must match `^[0-9]+:[A-Za-z0-9_-]+$` (so it is safe inside a URL path). Tests can use `123456:TEST-token_abc`.
 - `TELEGRAM_API_BASE` must be an `http` or `https` URL without credentials, query or fragment.
 - `Config` can be passed to `fmt` or `slog` in any form (`%v`, `%+v`, `%#v`, value or pointer, text or JSON handler, `json.Marshal`) without printing a secret. Log it once at start-up as `slog.Info("configuration", "config", cfg)`.
@@ -121,7 +125,7 @@ type Image struct {                   // JSON: {"style","label","key","caption"}
 }
 type Tile struct {                    // JSON field names are the lower-case names below
 	Key     string  `json:"key"`      // this image's key; unique per tile
-	ID      string  `json:"id"`       // record id
+	ID      string  `json:"id,omitempty"` // record id (holds the chat id); absent from the JSON of a WithoutIDs copy
 	Style   string  `json:"style"`    // this image's style key
 	Label   string  `json:"label"`    // this image's style label
 	Caption string  `json:"caption"`  // this image's caption (may be "")
@@ -132,7 +136,8 @@ type Tile struct {                    // JSON field names are the lower-case nam
 	Styles  []Image `json:"styles"`   // every image of the record, this tile's included, in display order; never empty
 }
 func (t Tile) Alt() string            // caption, or the prompt when the caption is blank
-func (t Tile) Cursor() string         // opaque cursor naming this tile's sort position
+func (t Tile) Cursor() string         // cursor naming this tile's sort position; holds the record id, so the server seals it (7.3)
+func WithoutIDs(tiles []Tile) []Tile  // copies without the record id, for encoding only (a copy's Cursor is wrong)
 
 type Options struct {
 	StoreDays      int                // cfg.StoreDays
@@ -194,7 +199,7 @@ func (st *Store) Healthy(maxAge time.Duration) bool    // a refresh succeeded le
 - **Listing rules (`Build`)**: drops `check:check`, ids that are not `<chat>:<message>`, chats outside `Options.Chats` (when not empty), records with `ttl < now`, and records without images. Sorts records by (updated desc, id desc; ids compare as strings). Removes an image whose file_id already appeared in a newer record, and drops records left empty. `Current` = stored current if that image exists, else `_`, else the first image in display order. One tile per remaining image: the current style first, then style-table order, then unknown keys alphabetically.
 - **`Page`**: `cursor == ""` starts at the newest tile. `next == ""` means the end. A page always holds **whole records**: it takes records while they fit in `limit` and always at least one, so a page can be a little shorter than `limit` (or longer, if one record has more images than `limit`). **A short page is not the end; only `next == ""` is.** This is what keeps paging free of duplicates and gaps when the table changes between requests, including when a user switches a record's style in Telegram (which reorders that record's tiles without changing its timestamp). `limit < 1` is treated as 1; the caller applies the default (60) and the cap (120).
 - **`NewSince(cursor)`**: `count` = number of tiles that sort before the cursor's tile (i.e. are newer); `newest` = cursor of the snapshot's first tile, `""` if the snapshot is empty. `cursor == ""` counts every tile. `s.Newest(count)` are exactly those new tiles, newest first.
-- **Cursors** are opaque base64url strings without padding (URL-safe as they are). Never build or parse one outside this package. A malformed one gives `ErrBadCursor`. A cursor stays valid across snapshot swaps, even if its tile is gone.
+- **Cursors** are opaque base64url strings without padding (URL-safe as they are). Never build or parse one outside this package. A malformed one gives `ErrBadCursor`. A cursor stays valid across snapshot swaps, even if its tile is gone. A cursor of this package is base64 of text that includes the record id, so it must not reach a browser as it is: the server seals every cursor it sends and opens every cursor it receives (7.3).
 - **Request handling**: call `store.Snapshot()` once per request and use that value for everything in the request.
 - **`OnSwap` hooks** run synchronously on the refresher goroutine, in registration order, only after a successful swap. A hook must return quickly: the warmer and the cache pruning must start their own goroutine (and should cancel or skip a still-running previous run). Register hooks before `Run`.
 - **Liveness**: a key is live exactly when `store.Snapshot().Has(key)`. Pass `snap.Has` (from the snapshot given to the hook) as the `live` function of `cache.Prune`. Never prune from the empty start-up snapshot: only prune inside an `OnSwap` hook, which runs only after a successful scan.
@@ -383,7 +388,9 @@ type Deps struct {
 }
 
 // New returns the handler with every route, auth, headers and gzip applied.
-// It parses the templates and returns an error if they are invalid.
+// It parses the templates and returns an error if they are invalid, or if the
+// Config does not say who may view (neither or both of Public and Token) or
+// has an admin token equal to the token.
 func New(d Deps) (*Server, error)
 func (s *Server) Handler() http.Handler
 // Warm generates missing thumbnails for the newest Config.Warm tiles of snap. It is what main registers
@@ -407,24 +414,24 @@ How an image is produced (server): thumbnail request → `cache.GetThumb` → el
 
 ### 7.2 Routes
 
-Only `GET` and `HEAD` are allowed, except `POST /login`; anything else is `405` with an `Allow` header. Unknown paths are `404`. All routes except `/healthz`, `/login` and `/app.css` (the login page's stylesheet) need auth (7.4).
+Only `GET` and `HEAD` are allowed, except `POST /login` and `/logout`, which takes only `POST`; anything else is `405` with an `Allow` header. Unknown paths are `404`. `/login` and `/logout` exist only when `cfg.LoginEnabled()`; in a public gallery without an admin token they are unknown paths (`404`, and `405` for a `POST`). All routes except `/healthz`, `/login`, `/logout`, `/app.css` (the login page's stylesheet) and `/favicon.png` need view access (7.4), which everyone has in a public gallery.
 
 | Route | Response |
 |---|---|
-| `GET /` , `GET /?cursor=<c>` | `200 text/html; charset=utf-8`: `index.html` rendered as in 7.5. `Cache-Control: no-store`. A malformed cursor is `400`. |
-| `GET /app.js`, `GET /app.css` | the embedded file, `Cache-Control: no-cache`, strong `ETag`, `304` on `If-None-Match`. `/app.js` needs auth (`401 text/plain` without); `/app.css` does not. |
+| `GET /` , `GET /?cursor=<c>` | `200 text/html; charset=utf-8`: `index.html` rendered as in 7.5. `Cache-Control: no-store`. A cursor the server did not seal is `400`. |
+| `GET /app.js`, `GET /app.css` | the embedded file, `Cache-Control: no-cache`, strong `ETag`, `304` on `If-None-Match`. `/app.js` needs view access (`401 text/plain` without); `/app.css` does not. |
 | `GET /api/tiles?limit=<n>&cursor=<c>` | JSON, see 7.3. |
 | `GET /api/tiles/new?since=<c>[&tiles=1]` | JSON, see 7.3. |
 | `GET /img/<key>-<size>.webp?v=<tag>` | the WebP thumbnail, see below. |
 | `GET /img/<key>.jpg` | the original JPEG, byte for byte, see below. |
-| `GET /login`, `POST /login` | see 7.4. |
+| `GET /login`, `POST /login`, `POST /logout` | see 7.4. |
 | `GET /healthz` | `200 text/plain` body `ok\n` when `store.Healthy(3*cfg.Refresh)`, else `503` body `stale\n`. No auth. |
 
 Image routes:
 
 - The path after `/img/` must match `^[A-Za-z0-9_-]{22}-(240|480)\.webp$` or `^[A-Za-z0-9_-]{22}\.jpg$`. A key may itself contain `-` and `_`: it is always the first 22 characters. Anything else is `404`.
 - The key must be in the current snapshot (`snap.Has`), else `404`. For `.webp`, `v` must equal `imaging.Tag()`, else `404` (an old page asking for an old pipeline version must not be given new bytes under an immutable URL).
-- Success: `200`, `Content-Type: image/webp` or `image/jpeg`, `Cache-Control: private, max-age=31536000, immutable` (`public, …` when `cfg.AuthOff`; the brief's `public` would let shared caches store images that are behind the login), `ETag: "<key>-<size>-v<tag>"` (thumbnail) or `"<key>"` (original), `Content-Length`. `If-None-Match` with that ETag gives `304` without doing any work.
+- Success: `200`, `Content-Type: image/webp` or `image/jpeg`, `Cache-Control: private, max-age=31536000, immutable` (`public, …` when `cfg.Public`; the brief's `public` would let shared caches store images that are behind the login), `ETag: "<key>-<size>-v<tag>"` (thumbnail) or `"<key>"` (original), `Content-Length`. `If-None-Match` with that ETag gives `304` without doing any work.
 - Failure to obtain the image (Telegram error, invalid bytes):
   - `.webp`: `200`, `Content-Type: image/webp`, body `imaging.Placeholder()`, `Cache-Control: no-store`, header `X-Gallery-Placeholder: 1`, no `ETag`.
   - `.jpg`: `502`, `text/plain`, `Cache-Control: no-store`, body `image unavailable\n`.
@@ -432,7 +439,9 @@ Image routes:
 
 ### 7.3 JSON
 
-All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`, `Vary: Accept-Encoding`, gzip when the request allows it. Errors are `{"error":"<short message>"}` with status `400` (bad `limit`, `cursor` or `since`), `401`, `404`, `405` or `429`. No response ever contains a file_id, the token, a Telegram URL or a file_path.
+All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`, `Vary: Accept-Encoding`, gzip when the request allows it. Errors are `{"error":"<short message>"}` with status `400` (bad `limit`, `cursor` or `since`), `401`, `404`, `405` or `429`. No response ever contains a file_id, a token, a Telegram URL or a file_path, and no response to a non-admin visitor of a public gallery contains a record id or a chat id.
+
+**Cursors on the wire are sealed.** Every cursor the server sends (`next`, `newest`, the `?cursor=` of the "Load more" link) is `cursorBox.seal(<cursor of internal/source>)`, and every cursor it receives (`cursor`, `since`, `?cursor=`) goes through `cursorBox.open` first; one that does not open is `400`, exactly like a malformed one. This holds in every mode. The seal is base64url without padding of `nonce || AES-256-GCM(key, nonce, cursor, aad = "dalibot-gallery cursor v1")`, where `key = HMAC-SHA256(TELEGRAM_BOT_TOKEN, "dalibot-gallery cursor encryption v1")` and `nonce` is the first 12 bytes of `HMAC-SHA256(HMAC-SHA256(TELEGRAM_BOT_TOKEN, "dalibot-gallery cursor nonce v1"), cursor)`. It is deterministic (one position, one cursor) and stable across restarts. An empty cursor stays empty. Clients treat cursors as opaque strings and pass them back unchanged; tests that need one for a known position use the server's `cursors.seal`. Why: the unsealed cursor holds the record id, and a visitor able to make cursors could find an id by bisection (see `internal/server/cursor.go`).
 
 **`GET /api/tiles`**
 
@@ -458,13 +467,14 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
       ]
     }
   ],
-  "next": "MXwxNzk5OTk5MDAwfDF8LTEwMDEyMzQ1Njc4OTA6MTAx",
-  "newest": "MXwxNzk5OTk5MDAwfDB8LTEwMDEyMzQ1Njc4OTA6MTAx",
+  "next": "3q2-7w…(a sealed cursor, about 90 characters)",
+  "newest": "9J8hZk…(a sealed cursor)",
   "v": "1"
 }
 ```
 
 - `tiles`: always an array (`[]` when empty, never `null`), newest first; each element is `json.Marshal(source.Tile)`.
+  - `id`: the record id. **Absent** for a visitor of a public gallery who is not an admin (`cfg.Public && level < accessAdmin`: the tiles go through `source.WithoutIDs`). Present when viewing needs the token, and for an admin. The page does not use it.
   - `key`: unique per tile; the DOM de-duplication id and the deep link `#/p/<key>`.
   - `current`: a **string**, the style key of the record's current image. The tile is the record's current image when `tile.style === tile.current`.
   - `styles`: every image of the tile's record, the tile's own included (find it by `key`), current style first. Each entry's 240 px thumbnail is `/img/<styles[i].key>-240.webp?v=<v>` and its full image `/img/<styles[i].key>.jpg`. The lightbox strip does not use `styles`: it holds a lazily loaded thumbnail of every loaded tile in gallery order, centred on the open one, and loads the next page when scrolled near its end.
@@ -483,28 +493,38 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
   `{"count": 3, "newest": "<cursor>", "v": "1", "tiles": [ ...the min(count, 120) newest tiles, newest first... ]}`.
 - The "N new" pill: poll without `tiles` every 60 s while the page is visible and show `count` when it is above 0. On click, request with `tiles=1`. If `count > tiles.length` (more than 120 new), reload the page. Otherwise, for each returned tile in order, remove any DOM node that already has that key (a record that gained a style moves to the top, and its older tiles come with it), insert the tiles at the top in the order given, set `since = newest`, and scroll to the top. Never insert without the click.
 
-### 7.4 Auth
+### 7.4 Access
 
-When `cfg.AuthOff`: every route is open; `GET /login` and `POST /login` answer `303` to `/`.
+A request has one of three levels (`internal/server/auth.go`, `authorize`): none, view, admin. Admin includes view.
 
-Otherwise a request is authenticated if either:
+- **View**: everyone, when `cfg.Public`. Otherwise a view or admin session cookie, or `Authorization: Basic …` whose **password** equals `GALLERY_TOKEN` or `GALLERY_ADMIN_TOKEN` (any username).
+- **Admin** (only when `cfg.AdminEnabled()`): the admin session cookie, or Basic with `GALLERY_ADMIN_TOKEN` as the password. In either mode.
+- Nothing else counts: not the peer address, not `GALLERY_TRUSTED_PROXIES`, not a header.
 
-- it has a valid session cookie: name `gallery_session`, value = lower-case hex of `HMAC-SHA256(key = GALLERY_TOKEN, message = "dalibot-gallery session v1")`, compared in constant time; or
-- it has `Authorization: Basic …` whose **password** equals `GALLERY_TOKEN` (any username), compared in constant time. A Basic password is a token guess and goes through the limiter below: a wrong one is recorded, and a client over the limit gets `429` with `Retry-After` (JSON for `/api/`) whatever password it sends. The cookie is checked first and is never limited.
+Session cookie: name `gallery_session`, one cookie for both kinds, compared in constant time against both values:
 
-Unauthenticated requests:
+- view session: lower-case hex of `HMAC-SHA256(key = GALLERY_TOKEN, message = "dalibot-gallery session v1")`;
+- admin session: lower-case hex of `HMAC-SHA256(key = GALLERY_ADMIN_TOKEN, message = "dalibot-gallery admin session v1")`.
+
+A session whose token is not configured has no value and matches nothing (not even an empty cookie).
+
+A Basic password is a guess at both tokens and goes through the limiter below: a wrong one is recorded once, and a client over the limit has its password ignored, right or wrong. The cookie is checked first and is never limited. The password is only evaluated when it could raise the level: never for an admin session, never for a view session or a public visitor when there is no admin token. When a wrong or blocked password comes with view access from elsewhere (public mode, or a view cookie), the request is served at view level; otherwise it is `401`, or `429` with `Retry-After` (JSON for `/api/`) when blocked. `authorize` returns the level and the wait; an admin-only route must refuse when the level is below admin or the wait is above zero, answering as for an unknown path.
+
+Requests without view access (only when viewing needs the token):
 
 - `GET /` (and any other non-API, non-image page): `303` to `/login`.
 - `/api/…` and `/img/…`: `401` (`{"error":"unauthorized"}` for `/api/`, empty body for `/img/`). **No `WWW-Authenticate` header**, so `fetch()` never raises the browser's password dialog. The page reacts to a `401` from the API by navigating to `/login`.
 
-Login:
+Login and logout (both exist only when `cfg.LoginEnabled()`):
 
-- `GET /login`: `200 text/html`, `login.html` rendered as in 7.5 with `Error` false. If already authenticated: `303` to `/`.
-- `POST /login`: body `application/x-www-form-urlencoded` (at most 4 KiB) with field `token`.
-  - Correct: `303` to `/` with `Set-Cookie: gallery_session=<value>; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict`.
+- `GET /login`: `200 text/html`, `login.html` rendered as in 7.5 with `Error` false. `303` to `/` instead when the cookie is an admin session, or a view session and there is no admin token (a view session still gets the form when there is one: signing in again is how it becomes an admin session). Only the cookie is looked at here.
+- `POST /login`: body `application/x-www-form-urlencoded` (at most 4 KiB) with field `token`, compared with both tokens.
+  - Correct: `303` to `/` with `Set-Cookie: gallery_session=<value>; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict`, the value being the view or the admin session according to which token it was.
   - Wrong: `401 text/html`, `login.html` with `Error` true.
-  - Rate limit, shared with Basic passwords: at most 5 wrong tokens per client per minute, and 300 per minute overall; beyond that `429` with `Retry-After`, whether or not the token is right. The body is read first; the limiter then checks and records in one locked step (`loginLimiter.attempt`), so requests in flight together cannot all pass the check.
+  - Rate limit, shared with Basic passwords and between the two tokens: at most 5 wrong tokens per client per minute, and 300 per minute overall; beyond that `429` with `Retry-After`, whether or not the token is right. The body is read first; the limiter then checks and records in one locked step (`loginLimiter.attempt`), so requests in flight together cannot all pass the check.
   - The client is the peer address, or, when the peer is in `cfg.TrustedProxies`, the right-most `X-Forwarded-For` entry that is not itself a trusted proxy. IPv6 clients are counted per /64.
+- `POST /logout`: `303` to `/` with `Set-Cookie: gallery_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`. Needs no session. `GET` is `405` with `Allow: POST`.
+- A `POST` to either from another origin (`http.CrossOriginProtection`) is `403` and changes nothing.
 - The `Secure` attribute is always set: browsers accept it over plain HTTP on `localhost`/`127.0.0.1`, which is what tests use.
 
 Headers on **every** response the handler writes (responses net/http writes itself before the handler runs, such as `400` for a missing Host header or `431`, cannot carry them):
@@ -538,7 +558,10 @@ var Files embed.FS
 type indexData struct {
 	V     string       // imaging.Tag()
 	Tiles []indexTile  // one page (limit 60) starting at ?cursor=, or at the newest tile
-	Next  string       // cursor of the next page, "" at the end
+	Next  string       // sealed cursor of the next page, "" at the end
+	Admin      bool    // the visitor has admin access: rendered as <html lang="en" data-admin="1">
+	AdminLogin bool    // an admin token is configured and the visitor is not an admin: a link to /login in the footer
+	SignOut    bool    // the visitor has a session cookie: a POST /logout form in the footer
 }
 type indexTile struct {
 	Key    string  // tile key
@@ -560,9 +583,13 @@ The first page is server-rendered **inside `<noscript>`** only; with JavaScript 
 </noscript>
 ```
 
-With JavaScript, `?cursor=` in the page URL is ignored. `index.html` uses no other template fields.
+With JavaScript, `?cursor=` in the page URL is ignored.
 
-`login.html` is executed with `struct{ Error bool }` and must contain a `<form method="post" action="/login">` with `<input type="password" name="token" autocomplete="current-password" required autofocus>` and a submit button, and show a message when `{{if .Error}}`.
+**The admin flag.** For an admin the server renders `<html lang="en" data-admin="1">`; for everyone else `<html lang="en">`, with no attribute. Script reads it as `document.documentElement.dataset.admin`. It is a hint for the page: the server checks the level on every request. Admin-only script must be a separate file served only at admin level, so that `app.js` + `app.css` stay within their budget and other visitors download nothing extra.
+
+**The footer.** When `AdminLogin` or `SignOut`, the page ends with `<footer class="foot">` holding `<a href="/login">Admin</a>` and/or `<form method="post" action="/logout"><button type="submit">Sign out</button></form>`. An anonymous visitor of a public gallery without an admin token gets no footer.
+
+`login.html` is executed with `struct{ Error, AdminOnly bool }` (`AdminOnly` is `cfg.Public`: the label reads "Admin token" and a link leads back to the gallery) and must contain a `<form method="post" action="/login">` with `<input type="password" name="token" autocomplete="current-password" required autofocus>` and a submit button, and show a message when `{{if .Error}}`.
 
 Fixed values shared by `web/` and the server:
 

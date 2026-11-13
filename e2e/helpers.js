@@ -2,13 +2,19 @@
 const base = require('playwright/test')
 
 const TOKEN = () => process.env.E2E_TOKEN
+const ADMIN_TOKEN = () => process.env.E2E_ADMIN_TOKEN
 const CONTROL = () => process.env.E2E_CONTROL
+// The public dev stack (GALLERY_PUBLIC=1), or undefined when the run has none.
+const PUBLIC_URL = () => process.env.E2E_PUBLIC_URL
+// The chats of the dev stack's records (internal/devstack), without the sign.
+const CHAT_IDS = ['1001111111111', '1002222222222', '424242']
 
 // Nothing the browser receives may contain any of these: the gallery token,
-// the dev stack's bot token and file_id prefix, or anything naming Telegram's
-// file API. (Kept in step with internal/devstack.)
+// the admin token, the dev stack's bot token and file_id prefix, or anything
+// naming Telegram's file API. (Kept in step with internal/devstack.)
 const FORBIDDEN = () => [
   TOKEN(),
+  ADMIN_TOKEN(),
   '123456:DEV-fake_bot_token_abcdef',
   'AgACAgUAAxkBAAIDEVSTACK',
   'file_id',
@@ -55,7 +61,7 @@ async function watch(page) {
         text += '\n' + body.toString('latin1')
         if (!/^image\//.test(type) && FILE_ID.test(body.toString('latin1'))) leaks.push(where + ' contains something shaped like a file_id')
       } catch {} // redirects and aborted loads have no body
-      for (const s of FORBIDDEN()) if (text.includes(s)) leaks.push(where + ' contains ' + JSON.stringify(s))
+      for (const s of FORBIDDEN()) if (s && text.includes(s)) leaks.push(where + ' contains ' + JSON.stringify(s))
     })())
   })
   return {
@@ -181,5 +187,5 @@ async function control(path, method = 'GET') {
 
 module.exports = {
   test, expect: base.expect, devices: base.devices,
-  TOKEN, basic, watch, apiTiles, domKeys, gridGeometry, nonWhitePixels, viewportImagesLoaded, control,
+  TOKEN, ADMIN_TOKEN, PUBLIC_URL, CHAT_IDS, basic, watch, apiTiles, domKeys, gridGeometry, nonWhitePixels, viewportImagesLoaded, control,
 }
