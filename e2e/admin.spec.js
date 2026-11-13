@@ -334,6 +334,90 @@ test.describe('a gallery that needs the token to view', () => {
     expect(await hiddenKeys(request)).toEqual([])
     watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/\b40[14]\b|api\/tiles|ERR_FAILED/.test(p)))
   })
+
+  // The viewer fills the screen from the top and centres its box inside itself. The admin's
+  // controls sit in that box, on its background, and none of them is cut off, on a phone and on
+  // a short laptop screen, with the question open too. A tap on the image, a drag of the zoomed
+  // image onto Hide and a double click that zooms never hide.
+  for (const [name, opts] of [
+    ['phone', { viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true }],
+    ['short laptop', { viewport: { width: 1280, height: 600 } }],
+  ]) {
+    test(`the admin's controls fit the viewer: ${name}`, async ({ browser, baseURL, request }) => {
+      const context = await browser.newContext({ baseURL, ...opts })
+      const page = await context.newPage()
+      try {
+        await signInAsAdmin(page, 'Access token')
+        const target = (await domKeys(page))[2]
+        await page.locator(`#grid .tile[data-key="${target}"] a`).click()
+        await expect(lb(page)).toHaveAttribute('open', '')
+        await expect.poll(() => page.locator('#full').evaluate(i => i.naturalWidth)).toBeGreaterThan(0)
+        const { width: vw, height: vh } = opts.viewport
+        // Every control lies inside the box, the box inside the dialog's scrolled content (nothing
+        // above or left of where it starts), and the box has a background of its own.
+        const fits = async names => {
+          expect(await page.locator('#lb .box').evaluate(b => getComputedStyle(b).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
+          expect(await page.locator('#lb .box').evaluate(b => [b.offsetLeft >= 0, b.offsetTop >= 0])).toEqual([true, true])
+          for (const n of names) {
+            const b = adm(page).getByRole('button', { name: n, exact: true })
+            await b.scrollIntoViewIfNeeded()
+            await expect(b).toBeInViewport({ ratio: 1 })
+            const [r, box] = [await b.boundingBox(), await page.locator('#lb .box').boundingBox()]
+            expect(r.x).toBeGreaterThanOrEqual(box.x)
+            expect(r.y).toBeGreaterThanOrEqual(box.y)
+            expect(r.x + r.width).toBeLessThanOrEqual(box.x + box.width + 0.5)
+            expect(r.y + r.height).toBeLessThanOrEqual(box.y + box.height + 0.5)
+            expect(r.x + r.width).toBeLessThanOrEqual(vw)
+            expect(r.y + r.height).toBeLessThanOrEqual(vh)
+          }
+        }
+        await expect(hideButton(page)).toBeVisible()
+        await fits(['Hide'])
+        await hideButton(page).click()
+        await expect(confirmButton(page)).toBeVisible()
+        await fits(['Cancel', 'Hide image'])
+        await cancelButton(page).click()
+        await expect(hideButton(page)).toBeFocused()
+        await page.locator('#lb').evaluate(d => d.scrollTo(0, 0))
+
+        if (opts.hasTouch) {
+          // A tap on the image hides the controls with the caption, and the next shows them; it never asks.
+          await page.locator('#full').tap()
+          await expect(lb(page)).toHaveClass('bare')
+          await expect(hideButton(page)).toBeHidden()
+          await page.waitForTimeout(400)
+          await page.locator('#full').tap()
+          await expect(lb(page)).not.toHaveClass('bare')
+          await expect(hideButton(page)).toBeVisible()
+          await expect(confirmButton(page)).toBeHidden()
+        } else {
+          const scale = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).a)
+          // A double click zooms the image, and that is all.
+          const img = await page.locator('#full').boundingBox()
+          await page.mouse.dblclick(img.x + img.width / 2, img.y + img.height / 2)
+          await expect.poll(scale).toBeGreaterThan(1)
+          await expect(confirmButton(page)).toBeHidden()
+          await expect(hideButton(page)).toBeVisible()
+          // Held and dragged from the zoomed image onto Hide: the image moves, nothing is asked.
+          const btn = await hideButton(page).boundingBox()
+          await page.mouse.move(img.x + img.width / 2, img.y + img.height / 2)
+          await page.mouse.down()
+          await page.mouse.move(btn.x + btn.width / 2, btn.y + btn.height / 2, { steps: 8 })
+          await page.mouse.up()
+          await page.waitForTimeout(400)
+          await expect(confirmButton(page)).toBeHidden()
+          await expect(hideButton(page)).toBeVisible()
+          expect(await scale()).toBeGreaterThan(1)
+          await page.keyboard.press('0')
+          await expect.poll(scale).toBe(1)
+        }
+        expect(await openKey(page)).toBe(target)
+        expect(await hiddenKeys(request)).toEqual([])
+      } finally {
+        await context.close()
+      }
+    })
+  }
 })
 
 test.describe('a public gallery', () => {
