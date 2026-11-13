@@ -15,9 +15,9 @@ first, with infinite scroll and a full-size viewer.
   JavaScript and CSS, no framework, no build step). It links libvips through cgo,
   so libvips must be installed wherever it runs; the container image takes care of that.
 
-| Grid, 1440 px wide | Viewer |
+| Grid | Viewer |
 |---|---|
-| ![The grid on a desktop](docs/screenshots/desktop-1440-grid.jpg) | ![The viewer on a desktop](docs/screenshots/desktop-1440-lightbox.jpg) |
+| ![The grid on a desktop](docs/screenshots/desktop-grid.jpg) | ![The viewer on a desktop](docs/screenshots/desktop-lightbox.jpg) |
 
 Screenshots from the end-to-end tests, which run the real binary against a
 local stand-in for DynamoDB and Telegram that serves the sample images in
