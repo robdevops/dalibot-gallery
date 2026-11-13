@@ -385,8 +385,17 @@ Do these in order, from the repository root. The first step makes the
 `dalibot-gallery` binary that the second one installs; without it `install`
 fails with `cannot stat 'dalibot-gallery'`.
 
-1. Install [libvips](#libvips) with its headers, and Go 1.27 or later, then
-   build and check the binary:
+1. Install the build requirements: Go 1.27 or later, a C compiler,
+   pkg-config, and libvips with its headers. The run-time package alone
+   (`libvips42t64`) is not enough to build; without the rest the build stops
+   with `exec: "pkg-config": executable file not found`. On Debian or Ubuntu:
+
+   ```sh
+   sudo apt install libvips-dev pkg-config gcc
+   ```
+
+   Other systems are listed under [libvips](#libvips). Then build and check
+   the binary:
 
    ```sh
    go build -trimpath -o dalibot-gallery ./cmd/gallery
