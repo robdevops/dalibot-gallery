@@ -138,6 +138,7 @@ function show(key) {
   cur = key
   if (full.dataset.key != key) {
     full.dataset.key = key
+    full.className = 'wait' // hidden until loaded, so the previous picture never shows in its place
     full.src = src(key)
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
@@ -190,6 +191,7 @@ dlg.addEventListener('keydown', e => {
     step(d)
   }
 })
+full.onload = () => (full.className = '')
 full.onerror = () => { // a deep link to an image that is gone
   if (dlg.open && !data.has(cur)) {
     dlg.close()

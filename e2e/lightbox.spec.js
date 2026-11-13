@@ -76,6 +76,34 @@ test('arrow keys and buttons move between tiles; Esc closes and restores focus',
   expect(await page.evaluate(() => getComputedStyle(document.body).overflow)).not.toBe('hidden')
 })
 
+test('while a large image loads, the previous one is hidden, not left on screen', async ({ page }) => {
+  const api = await apiTiles(page.request)
+  const [a, b] = [api.tiles[2], api.tiles[3]]
+  const visibility = () => page.locator('#full').evaluate(i => getComputedStyle(i).visibility)
+  // Slow the originals down so the loading state can be observed.
+  await page.route('**/img/*.jpg', async route => {
+    await new Promise(r => setTimeout(r, 700))
+    await route.continue()
+  })
+
+  // Opening: nothing is shown until the image has loaded.
+  await page.locator(`.tile[data-key="${a.key}"] a`).click()
+  await expect(dialog(page)).toBeVisible()
+  expect(await visibility()).toBe('hidden')
+  await loaded(page, a.key)
+  await expect.poll(visibility).toBe('visible')
+
+  // Paging: the caption and address change at once and the old image is hidden straight away.
+  await page.keyboard.press('ArrowRight')
+  await expect(page.locator('#cap')).toHaveText(b.caption || b.prompt)
+  expect(await fullKey(page)).toBe(b.key)
+  expect(await visibility()).toBe('hidden')
+  const box = await page.locator('#full').boundingBox()
+  expect(box.width).toBeGreaterThan(100) // the space is kept, so the layout does not jump
+  await loaded(page, b.key)
+  await expect.poll(visibility).toBe('visible')
+})
+
 test('focus returns to the tile that is showing when the lightbox closes', async ({ page }) => {
   const keys = await domKeys(page)
   await page.locator(`.tile[data-key="${keys[2]}"] a`).focus()
