@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,20 +38,27 @@ func (e *env) answer(method, target string, opts ...reqOpt) answer {
 }
 
 type hiddenList struct {
-	Hidden []hiddenItem `json:"hidden"`
-	Gone   int          `json:"gone"`
-	V      string       `json:"v"`
+	Hidden []string // keys, as the page of hidden images lists them
+	Gone   int
 }
+
+var (
+	restoreButton = regexp.MustCompile(`data-restore="([\w-]{22})"`)
+	goneCount     = regexp.MustCompile(`in the bot's records: (\d+)\.`)
+)
 
 func (e *env) hiddenList(opts ...reqOpt) hiddenList {
 	e.t.Helper()
-	resp, body := e.get(adminListPath, opts...)
+	resp, body := e.get(adminHiddenPage, opts...)
 	if resp.StatusCode != 200 || resp.Header.Get("Cache-Control") != "no-store" {
-		e.t.Fatalf("GET %s: %d %s", adminListPath, resp.StatusCode, body)
+		e.t.Fatalf("GET %s: %d %s", adminHiddenPage, resp.StatusCode, body)
 	}
 	var l hiddenList
-	if err := json.Unmarshal(body, &l); err != nil {
-		e.t.Fatal(err)
+	for _, m := range restoreButton.FindAllSubmatch(body, -1) {
+		l.Hidden = append(l.Hidden, string(m[1]))
+	}
+	if m := goneCount.FindSubmatch(body); m != nil {
+		l.Gone, _ = strconv.Atoi(string(m[1]))
 	}
 	return l
 }
@@ -115,14 +124,14 @@ func TestAdminAuthorization(t *testing.T) {
 			e := newEnv(t, records(6), c.vars)
 			keys := e.store.Snapshot().Keys()
 			listedKey, hiddenKey, ghost := keys[0], keys[1], source.Key("never recorded")
-			if _, err := e.hidden.Hide(hiddenKey); err != nil {
+			if err := e.hidden.Hide(hiddenKey); err != nil {
 				t.Fatal(err)
 			}
 			e.store.Rebuild()
 			posts := []string{
 				adminHidePath + listedKey, adminHidePath + hiddenKey, adminHidePath + ghost, adminHidePath + "x", adminHidePath,
 				adminRestore + listedKey, adminRestore + hiddenKey, adminRestore + ghost,
-				adminListPath, adminHiddenPage, adminAPI + "nothing",
+				adminHiddenPage, adminAPI + "nothing",
 			}
 			unchanged := func(who string) {
 				t.Helper()
@@ -154,7 +163,7 @@ func TestAdminAuthorization(t *testing.T) {
 				unchanged(who)
 				// A GET or HEAD: exactly what a path that does not exist gives.
 				for _, pair := range [][2]string{
-					{adminHiddenPage, "/admin/nothing"}, {adminListPath, "/api/nothing"}, {adminAPI + "x", "/api/nothing"},
+					{adminHiddenPage, "/admin/nothing"}, {adminAPI + "x", "/api/nothing"},
 					{adminHidePath + listedKey, "/api/nothing"}, {adminRestore + hiddenKey, "/api/nothing"},
 					{"/admin.js", "/nothing.js"}, {"/admin.css", "/nothing.css"},
 				} {
@@ -195,7 +204,7 @@ func TestAdminAuthorization(t *testing.T) {
 						t.Errorf("no session: POST %s: %+v", target, got)
 					}
 				}
-				for _, pair := range [][2]string{{adminHiddenPage, "/admin/nothing"}, {adminListPath, "/api/nothing"}, {"/admin.js", "/nothing.js"}, {"/admin.css", "/nothing.css"}} {
+				for _, pair := range [][2]string{{adminHiddenPage, "/admin/nothing"}, {"/admin.js", "/nothing.js"}, {"/admin.css", "/nothing.css"}} {
 					got, want := e.answer("GET", pair[0]), e.answer("GET", pair[1])
 					if got != want || (got.status != 401 && got.status != 303) {
 						t.Errorf("no session: GET %s:\n got %+v\nlike %+v", pair[0], got, want)
@@ -241,7 +250,7 @@ func TestAdminAuthorization(t *testing.T) {
 				if got := e.answer("GET", adminHiddenPage, opts...); got.status != 200 || !strings.HasPrefix(got.ctype, "text/html") || got.cache != "no-store" {
 					t.Errorf("admin by %s: the page: %+v", how, got)
 				}
-				if l := e.hiddenList(opts...); len(l.Hidden) != 1 || l.Hidden[0].Key != hiddenKey {
+				if l := e.hiddenList(opts...); len(l.Hidden) != 1 || l.Hidden[0] != hiddenKey {
 					t.Errorf("admin by %s: the list: %+v", how, l)
 				}
 				for _, a := range []string{"/admin.js", "/admin.css"} {
@@ -260,7 +269,7 @@ func TestAdminAuthorization(t *testing.T) {
 			// Methods, for the admin: each route says what it takes.
 			for _, m := range []struct{ method, target, allow string }{
 				{"GET", adminHidePath + listedKey, "POST"}, {"HEAD", adminRestore + hiddenKey, "POST"},
-				{"POST", adminHiddenPage, "GET, HEAD"}, {"POST", adminListPath, "GET, HEAD"}, {"POST", adminAPI + "x", "GET, HEAD"},
+				{"POST", adminHiddenPage, "GET, HEAD"}, {"POST", adminAPI + "x", "GET, HEAD"},
 				{"DELETE", adminHidePath + listedKey, "GET, HEAD"},
 			} {
 				if got := e.answer(m.method, m.target, cookie(admin)); got.status != 405 || got.allow != m.allow {
@@ -300,7 +309,7 @@ func TestNoAdminTokenNoAdminRoutes(t *testing.T) {
 					t.Errorf("%s, %s: POST %s: %+v", name, who, target, got)
 				}
 			}
-			for _, target := range []string{adminHiddenPage, adminListPath, "/admin.js", "/admin.css"} {
+			for _, target := range []string{adminHiddenPage, "/admin.js", "/admin.css"} {
 				if got := e.answer("GET", target, opts...); got.status != 404 {
 					t.Errorf("%s, %s: GET %s: %+v", name, who, target, got)
 				}
@@ -327,7 +336,7 @@ func TestNoAdminTokenNoAdminRoutes(t *testing.T) {
 	if got := e.answer("POST", adminHidePath+e.store.Snapshot().Keys()[0], admin); got.status != 405 {
 		t.Errorf("no hidden list: POST hide: %+v", got)
 	}
-	for _, target := range []string{adminHiddenPage, adminListPath, "/admin.js", "/admin.css"} {
+	for _, target := range []string{adminHiddenPage, "/admin.js", "/admin.css"} {
 		if got := e.answer("GET", target, admin); got.status != 404 {
 			t.Errorf("no hidden list: GET %s: %+v", target, got)
 		}
@@ -438,19 +447,8 @@ func TestHideAndRestore(t *testing.T) {
 
 			// The list of hidden images, newest hidden first, without record ids.
 			l := e.hiddenList(admin)
-			if len(l.Hidden) != 2 || l.Gone != 0 || l.V != tag {
+			if len(l.Hidden) != 2 || l.Gone != 0 {
 				t.Fatalf("list: %+v", l)
-			}
-			got := map[string]hiddenItem{}
-			for _, it := range l.Hidden {
-				got[it.Key] = it
-			}
-			if it := got[monet]; it.Style != "monet" || it.Label != "Monet" || it.Prompt != "prompt 0 <b>&</b>" || it.Command != "dream" || it.Updated == 0 || it.HiddenAt == 0 {
-				t.Errorf("list entry: %+v", it)
-			}
-			_, raw := e.get(adminListPath, admin)
-			if strings.Contains(string(raw), `"id"`) || strings.Contains(string(raw), "-100") {
-				t.Errorf("the list carries a record id: %s", raw)
 			}
 			_, html := e.get(adminHiddenPage, admin)
 			for _, want := range []string{
@@ -527,7 +525,7 @@ func TestHideAndRestore(t *testing.T) {
 			if e.fetcher.total() != fetches {
 				t.Error("a restored image was downloaded again")
 			}
-			if l := e.hiddenList(admin); len(l.Hidden) != 0 || l.Hidden == nil || l.Gone != 0 {
+			if l := e.hiddenList(admin); len(l.Hidden) != 0 || l.Gone != 0 {
 				t.Errorf("list after restoring: %+v", l)
 			}
 			if _, html := e.get(adminHiddenPage, admin); !strings.Contains(string(html), `<p id="none">No hidden images to show.</p>`) || strings.Contains(string(html), "data-restore") {
@@ -733,7 +731,7 @@ func TestHideConcurrently(t *testing.T) {
 		wg.Go(func() {
 			for range 20 {
 				e.get("/api/tiles?limit=120")
-				e.get(adminListPath, admin)
+				e.get(adminHiddenPage, admin)
 				_ = e.store.Refresh(context.Background())
 			}
 		})

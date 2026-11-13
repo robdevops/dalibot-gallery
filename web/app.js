@@ -168,8 +168,9 @@ function pan(dx, dy, smooth) {
 }
 // What a finger on the image may do. Zoomed here: drag it (our handlers). The page zoomed by the
 // browser: pan every way. Neither: only up and down (app.css), leaving sideways drags to the swipe.
+const pinched = () => visualViewport.scale > 1.01 // the page zoomed by the browser: a pinch on a touch screen
 function touch() {
-  const zoomed = visualViewport.scale > 1.01 // by the browser: a pinch on a touch screen
+  const zoomed = pinched()
   full.style.touchAction = z > 1 ? 'none' : zoomed ? 'auto' : ''
   dlg.ontouchmove = zoomed ? null : move // so that the browser pans without waiting for this script
 }
@@ -178,7 +179,6 @@ function zoom(nz, x, y, smooth) {
   const r = full.parentNode.getBoundingClientRect()
   const mx = x == null ? 0 : x - r.left - r.width / 2, my = y == null ? 0 : y - r.top - r.height / 2
   nz = Math.max(1, Math.min(4, nz))
-  if (nz < 1.02) nz = 1 // so a pinch back out really ends at normal size
   px = mx - nz / z * (mx - px)
   py = my - nz / z * (my - py)
   z = nz
@@ -301,7 +301,7 @@ let sx = NaN, sy = 0, sliding = 0
 const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
-  sx = t[1] || sliding || z > 1 || !full.parentNode.contains(e.target) || visualViewport.scale > 1.01 ? NaN : t[0].clientX
+  sx = t[1] || sliding || z > 1 || !full.parentNode.contains(e.target) || pinched() ? NaN : t[0].clientX
   sy = t[0].clientY
 }, { passive: true })
 const move = e => {

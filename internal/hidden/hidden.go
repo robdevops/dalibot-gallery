@@ -204,18 +204,6 @@ func (l *List) Len() int {
 	return len(l.at)
 }
 
-// Entries is the whole list, most recently hidden first.
-func (l *List) Entries() []Entry {
-	l.mu.RLock()
-	out := make([]Entry, 0, len(l.at))
-	for k, at := range l.at {
-		out = append(out, Entry{Key: k, At: at})
-	}
-	l.mu.RUnlock()
-	sortEntries(out)
-	return out
-}
-
 func sortEntries(es []Entry) {
 	sort.Slice(es, func(i, j int) bool {
 		if es[i].At != es[j].At {
@@ -225,52 +213,50 @@ func sortEntries(es []Entry) {
 	})
 }
 
-// Hide adds key to the list and writes the list. changed is false when the
-// key was hidden already. On an error nothing has changed, in memory or on disk.
-func (l *List) Hide(key string) (changed bool, err error) {
+// Hide adds key to the list and writes the list. Hiding a hidden key changes nothing. On an error nothing has changed, in memory or on disk.
+func (l *List) Hide(key string) error {
 	if !source.ValidKey(key) {
-		return false, ErrBadKey
+		return ErrBadKey
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if _, ok := l.at[key]; ok {
-		return false, nil
+		return nil
 	}
 	if l.readOnly {
-		return false, ErrReadOnly
+		return ErrReadOnly
 	}
 	if len(l.at) >= MaxEntries {
-		return false, ErrFull
+		return ErrFull
 	}
 	l.at[key] = l.now().Unix()
 	if err := l.writeLocked(); err != nil {
 		delete(l.at, key)
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
-// Restore takes key off the list and writes the list. changed is false when
-// the key was not hidden. On an error nothing has changed, in memory or on disk.
-func (l *List) Restore(key string) (changed bool, err error) {
+// Restore takes key off the list and writes the list. Restoring a key that is not hidden changes nothing. On an error nothing has changed, in memory or on disk.
+func (l *List) Restore(key string) error {
 	if !source.ValidKey(key) {
-		return false, ErrBadKey
+		return ErrBadKey
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	at, ok := l.at[key]
 	if !ok {
-		return false, nil
+		return nil
 	}
 	if l.readOnly {
-		return false, ErrReadOnly
+		return ErrReadOnly
 	}
 	delete(l.at, key)
 	if err := l.writeLocked(); err != nil {
 		l.at[key] = at
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // writeLocked writes the list to a temporary file next to it, syncs it and

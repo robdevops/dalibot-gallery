@@ -123,7 +123,6 @@ signed in to a gallery that needs the token, the usual redirect to `/login`
 | Route | |
 |---|---|
 | `GET /admin/hidden` | The page of hidden images. |
-| `GET /api/admin/hidden` | The same list as JSON: `{"hidden":[{"key","style","label","caption","prompt","command","updated","hidden_at"}], "gone": <n>, "v": "<tag>"}`. No record id. |
 | `POST /api/admin/hide/<key>` | Hide an image of the bot's records. `200 {"key":…,"hidden":true}`; hiding one that is hidden already also succeeds. |
 | `POST /api/admin/restore/<key>` | Put a hidden image back. `200 {"key":…,"hidden":false}`. |
 

@@ -33,7 +33,7 @@ async function listedKeys(request, headers) {
 }
 
 const hiddenKeys = async request =>
-  (await (await request.get('/api/admin/hidden', { headers: basicAdmin() })).json()).hidden.map(h => h.key)
+  [...(await (await request.get('/admin/hidden', { headers: basicAdmin() })).text()).matchAll(/data-restore="([\w-]{22})"/g)].map(m => m[1])
 
 // Whatever a test leaves hidden is restored, so the other specs see the whole gallery.
 async function restoreAll(request) {
@@ -80,7 +80,7 @@ async function expectNoAdminParts(page, request, headers, watched) {
 
   // Asked for outright, the files and the routes are not there.
   const key = await openKey(page)
-  for (const path of [...ADMIN_FILES, '/admin/hidden', '/api/admin/hidden']) {
+  for (const path of [...ADMIN_FILES, '/admin/hidden']) {
     expect((await request.get(path, { headers })).status(), path).toBe(404)
   }
   for (const path of ['/api/admin/hide/' + key, '/api/admin/restore/' + key, '/api/admin/hide/AAAAAAAAAAAAAAAAAAAAAA']) {
@@ -212,13 +212,11 @@ test.describe('a public gallery', () => {
     expect(await domKeys(theirs)).not.toContain(first)
     await expect(theirs.locator('#trash')).toHaveCount(0)
 
-    // The admin's list and page carry no chat id (the listing an admin gets does; these do not).
-    const list = await (await request.get('/api/admin/hidden', { headers: basicAdmin() })).text()
-    expect(JSON.parse(list).hidden.map(h => h.key)).toEqual([first])
+    // The admin's page carries no chat id (the listing an admin gets does; this does not).
+    expect(await hiddenKeys(request)).toEqual([first])
     const html = await (await request.get('/admin/hidden', { headers: basicAdmin() })).text()
     expect(html).toContain(`data-restore="${first}"`)
     for (const chat of CHAT_IDS) {
-      expect(list).not.toContain(chat)
       expect(html).not.toContain(chat)
     }
 

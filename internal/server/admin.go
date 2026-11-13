@@ -15,7 +15,6 @@ import (
 // answers everyone else before handleAdmin is reached.
 //
 //	GET  /admin/hidden             the page of hidden images, each with "Restore"
-//	GET  /api/admin/hidden         the same list as JSON
 //	POST /api/admin/hide/<key>     hide an image that is in the listing
 //	POST /api/admin/restore/<key>  put a hidden image back
 //
@@ -25,7 +24,6 @@ import (
 const (
 	adminHiddenPage = "/admin/hidden"
 	adminAPI        = "/api/admin/"
-	adminListPath   = adminAPI + "hidden"
 	adminHidePath   = adminAPI + "hide/"
 	adminRestore    = adminAPI + "restore/"
 )
@@ -37,7 +35,7 @@ func isAdminPath(p string) bool {
 	return p == adminHiddenPage || strings.HasPrefix(p, adminAPI)
 }
 
-// hiddenItem is one hidden image in GET /api/admin/hidden. It has no record
+// hiddenItem is one hidden image in the page of hidden images. It has no record
 // id: the list is about images.
 type hiddenItem struct {
 	Key      string `json:"key"`
@@ -48,18 +46,6 @@ type hiddenItem struct {
 	Command  string `json:"command"`
 	Updated  int64  `json:"updated"`
 	HiddenAt int64  `json:"hidden_at"` // epoch seconds
-}
-
-// hiddenResponse is the body of GET /api/admin/hidden.
-type hiddenResponse struct {
-	// Hidden: the hidden images that are still in the bot's records, most
-	// recently hidden first. Only these can be shown.
-	Hidden []hiddenItem `json:"hidden"`
-	// Gone: entries of the list whose image is no longer in the bot's
-	// records as the gallery reads them (expired, deleted by the bot, or
-	// outside GALLERY_CHATS). They stay on the list in case the image returns.
-	Gone int    `json:"gone"`
-	V    string `json:"v"`
 }
 
 // changeResponse is the body of a successful hide or restore.
@@ -99,16 +85,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, p string) {
 		}
 	}
 	switch {
-	case p == adminHiddenPage || p == adminListPath:
+	case p == adminHiddenPage:
 		if !get {
 			method("GET, HEAD")
 			return
 		}
 		items, gone := s.hiddenItems(s.store.Snapshot())
-		if api {
-			s.json(w, r, http.StatusOK, hiddenResponse{Hidden: items, Gone: gone, V: s.tag})
-			return
-		}
 		s.handleHiddenPage(w, r, items, gone)
 	case strings.HasPrefix(p, adminHidePath):
 		if r.Method != http.MethodPost {
@@ -153,14 +135,14 @@ func (s *Server) handleChange(w http.ResponseWriter, r *http.Request, key string
 			s.jsonError(w, r, http.StatusNotFound, "not found")
 			return
 		}
-		_, err = s.hidden.Hide(key)
+		err = s.hidden.Hide(key)
 	} else {
 		// A hidden image can be restored even after it has left the bot's records.
 		if !s.hidden.Has(key) {
 			s.jsonError(w, r, http.StatusNotFound, "not found")
 			return
 		}
-		_, err = s.hidden.Restore(key)
+		err = s.hidden.Restore(key)
 	}
 	switch {
 	case errors.Is(err, hidden.ErrFull):

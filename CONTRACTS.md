@@ -409,13 +409,12 @@ func (l *List) Path() string
 func (l *List) Has(key string) bool       // what source.Options.Hidden takes
 func (l *List) At(key string) (int64, bool)
 func (l *List) Len() int
-func (l *List) Entries() []Entry          // most recently hidden first
-func (l *List) Hide(key string) (changed bool, err error)
-func (l *List) Restore(key string) (changed bool, err error)
+func (l *List) Hide(key string) error
+func (l *List) Restore(key string) error
 ```
 
 - `Open` creates `dir` (0700), removes leftover temporary files, and reads the list. A missing file is an empty list. A file it cannot understand (not JSON, another version) is renamed to `hidden.json.corrupt-<UTC time>` and logged, and the list starts empty; if the rename fails the list starts empty and every change returns `ErrReadOnly`, so the file is never overwritten. Entries whose key fails `source.ValidKey` are skipped with a warning. An error is returned only when the directory cannot be used or the file exists but cannot be read (or is not a regular file, or is over 16 MiB); `cmd/gallery` then exits with status 1.
-- `Hide` and `Restore` take `source.ValidKey` keys only (`ErrBadKey`), write the whole list to a temporary file in the same directory (0600), `fsync` it, rename it over the list and `fsync` the directory. If the write fails, the change is undone in memory: `Has` always says what the file says. `changed` is false (and nothing is written) when the key was already hidden, or not hidden.
+- `Hide` and `Restore` take `source.ValidKey` keys only (`ErrBadKey`), write the whole list to a temporary file in the same directory (0600), `fsync` it, rename it over the list and `fsync` the directory. If the write fails, the change is undone in memory: `Has` always says what the file says. Nothing is written when the key was already hidden, or not hidden.
 - The file is read at `Open` only.
 
 ## 7. HTTP API (REQUIRED; implemented by `internal/server`, consumed by `web/`)
@@ -480,7 +479,6 @@ Only `GET` and `HEAD` are allowed, except `POST /login`, `/logout`, which takes 
 | `GET /healthz` | `200 text/plain` body `ok\n` when `store.Healthy(3*cfg.Refresh)`, else `503` body `stale\n`. No auth. |
 | `GET /admin.js`, `GET /admin.css` | admin only (see below): the embedded file, `Cache-Control: private, no-cache`, `ETag`, `304`. |
 | `GET /admin/hidden` | admin only: `hidden.html` (7.5), `no-store`. |
-| `GET /api/admin/hidden` | admin only: `{"hidden":[{"key","style","label","caption","prompt","command","updated","hidden_at"}],"gone":<n>,"v":"<tag>"}`: the hidden images still in the bot's records (`snap.Hidden()`), most recently hidden first, and the number of other entries of the list. No record id. |
 | `POST /api/admin/hide/<key>` | admin only: hide an image the snapshot knows (`snap.Known`) or that is hidden already; `200 {"key":"<key>","hidden":true}`. |
 | `POST /api/admin/restore/<key>` | admin only: restore a hidden image (also one no longer in the records); `200 {"key":"<key>","hidden":false}`. |
 

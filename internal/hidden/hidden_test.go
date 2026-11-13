@@ -64,7 +64,7 @@ func names(t *testing.T, dir string) []string {
 func TestHideRestorePersist(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state", "deep") // created on Open
 	l, logs := open(t, dir)
-	if l.Len() != 0 || l.Has(key(1)) || len(l.Entries()) != 0 {
+	if l.Len() != 0 || l.Has(key(1)) || len(entries(l)) != 0 {
 		t.Fatal("a new list is not empty")
 	}
 	if got := names(t, dir); len(got) != 0 {
@@ -77,15 +77,14 @@ func TestHideRestorePersist(t *testing.T) {
 	l.now = func() time.Time { return clock }
 
 	for i := 1; i <= 3; i++ {
-		changed, err := l.Hide(key(i))
-		if err != nil || !changed {
-			t.Fatalf("Hide %d: %v %v", i, changed, err)
+		if err := l.Hide(key(i)); err != nil {
+			t.Fatalf("Hide %d: %v", i, err)
 		}
 		clock = clock.Add(time.Minute)
 	}
 	// Again is not a change, and keeps the first time.
-	if changed, err := l.Hide(key(1)); err != nil || changed {
-		t.Fatalf("hiding twice: %v %v", changed, err)
+	if err := l.Hide(key(1)); err != nil || l.Len() != 3 {
+		t.Fatalf("hiding twice: %v, %d entries", err, l.Len())
 	}
 	if at, ok := l.At(key(1)); !ok || at != 1_700_000_000 {
 		t.Errorf("At = %d %v", at, ok)
@@ -94,7 +93,7 @@ func TestHideRestorePersist(t *testing.T) {
 		t.Error("At reports a key that is not hidden")
 	}
 	// Most recently hidden first.
-	es := l.Entries()
+	es := entries(l)
 	if len(es) != 3 || es[0].Key != key(3) || es[2].Key != key(1) || es[0].At != 1_700_000_120 {
 		t.Errorf("Entries = %+v", es)
 	}
@@ -119,11 +118,11 @@ func TestHideRestorePersist(t *testing.T) {
 	}
 
 	// Restore, and restore again.
-	if changed, err := l.Restore(key(2)); err != nil || !changed {
-		t.Fatalf("Restore: %v %v", changed, err)
+	if err := l.Restore(key(2)); err != nil || l.Has(key(2)) {
+		t.Fatalf("Restore: %v", err)
 	}
-	if changed, err := l.Restore(key(2)); err != nil || changed {
-		t.Fatalf("restoring twice: %v %v", changed, err)
+	if err := l.Restore(key(2)); err != nil {
+		t.Fatalf("restoring twice: %v", err)
 	}
 	if l.Has(key(2)) || !l.Has(key(1)) || !l.Has(key(3)) || l.Len() != 2 {
 		t.Error("wrong list after Restore")
@@ -131,10 +130,10 @@ func TestHideRestorePersist(t *testing.T) {
 
 	// Keys that are not keys are refused and never reach the file.
 	for _, bad := range []string{"", "short", key(1) + "x", "../../../../etc/passwd!!", strings.Repeat("é", 11)} {
-		if _, err := l.Hide(bad); !errors.Is(err, ErrBadKey) {
+		if err := l.Hide(bad); !errors.Is(err, ErrBadKey) {
 			t.Errorf("Hide(%q): %v", bad, err)
 		}
-		if _, err := l.Restore(bad); !errors.Is(err, ErrBadKey) {
+		if err := l.Restore(bad); !errors.Is(err, ErrBadKey) {
 			t.Errorf("Restore(%q): %v", bad, err)
 		}
 	}
@@ -142,7 +141,7 @@ func TestHideRestorePersist(t *testing.T) {
 	// A new process sees the same list, times included.
 	again, _ := open(t, dir)
 	if again.Len() != 2 || !again.Has(key(1)) || !again.Has(key(3)) || again.Has(key(2)) {
-		t.Errorf("after reopening: %+v", again.Entries())
+		t.Errorf("after reopening: %+v", entries(again))
 	}
 	if at, _ := again.At(key(3)); at != 1_700_000_120 {
 		t.Errorf("time after reopening: %d", at)
@@ -157,7 +156,7 @@ func TestHideRestorePersist(t *testing.T) {
 func TestAtomicWrite(t *testing.T) {
 	dir := t.TempDir()
 	l, _ := open(t, dir)
-	if _, err := l.Hide(key(1)); err != nil {
+	if err := l.Hide(key(1)); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(l.Path())
@@ -169,7 +168,7 @@ func TestAtomicWrite(t *testing.T) {
 		return info
 	}
 	old := inode()
-	if _, err := l.Hide(key(2)); err != nil {
+	if err := l.Hide(key(2)); err != nil {
 		t.Fatal(err)
 	}
 	if os.SameFile(old, inode()) {
@@ -187,10 +186,10 @@ func TestAtomicWrite(t *testing.T) {
 		if err := os.Chmod(dir, 0o500); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := l.Hide(key(3)); err == nil {
+		if err := l.Hide(key(3)); err == nil {
 			t.Error("Hide succeeded in a read-only directory")
 		}
-		if _, err := l.Restore(key(1)); err == nil {
+		if err := l.Restore(key(1)); err == nil {
 			t.Error("Restore succeeded in a read-only directory")
 		}
 		_ = os.Chmod(dir, 0o700)
@@ -204,15 +203,15 @@ func TestAtomicWrite(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(l.Path(), "x"), nil, 0o600); err != nil { // so that the rename cannot replace it
 		t.Fatal(err)
 	}
-	if changed, err := l.Hide(key(3)); err == nil || changed {
-		t.Errorf("Hide with the rename failing: %v %v", changed, err)
+	if err := l.Hide(key(3)); err == nil {
+		t.Errorf("Hide with the rename failing: %v", err)
 	}
-	if changed, err := l.Restore(key(1)); err == nil || changed {
-		t.Errorf("Restore with the rename failing: %v %v", changed, err)
+	if err := l.Restore(key(1)); err == nil {
+		t.Errorf("Restore with the rename failing: %v", err)
 	}
 	// Memory still says what the last good file said.
 	if !l.Has(key(1)) || !l.Has(key(2)) || l.Has(key(3)) || l.Len() != 2 {
-		t.Errorf("a failed write changed the list: %+v", l.Entries())
+		t.Errorf("a failed write changed the list: %+v", entries(l))
 	}
 	if got := names(t, dir); len(got) != 1 {
 		t.Errorf("a failed write left files behind: %v", got)
@@ -223,7 +222,7 @@ func TestAtomicWrite(t *testing.T) {
 	if err := os.WriteFile(l.Path(), good, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Hide(key(3)); err != nil {
+	if err := l.Hide(key(3)); err != nil {
 		t.Fatalf("Hide after the directory was repaired: %v", err)
 	}
 	if bytes.Equal(before, good) {
@@ -238,7 +237,7 @@ func TestAtomicWrite(t *testing.T) {
 	}
 	again, logs := open(t, dir)
 	if again.Len() != 3 || again.Has(key(9)) {
-		t.Errorf("after a crash: %+v", again.Entries())
+		t.Errorf("after a crash: %+v", entries(again))
 	}
 	if got := names(t, dir); len(got) != 1 || got[0] != FileName {
 		t.Errorf("after a crash the directory holds %v", got)
@@ -269,7 +268,7 @@ func TestCorruptFile(t *testing.T) {
 			}
 			l, logs := open(t, dir)
 			if l.Len() != 0 || l.Has(key(1)) {
-				t.Errorf("the list is not empty: %+v", l.Entries())
+				t.Errorf("the list is not empty: %+v", entries(l))
 			}
 			if s := logs.String(); !strings.Contains(s, "level=ERROR") || !strings.Contains(s, "corrupt") || !strings.Contains(s, "kept_as=") {
 				t.Errorf("log: %s", s)
@@ -283,7 +282,7 @@ func TestCorruptFile(t *testing.T) {
 				t.Errorf("the copy differs from the corrupt file: %q", kept)
 			}
 			// The list works, and writing it leaves the copy alone.
-			if _, err := l.Hide(key(5)); err != nil {
+			if err := l.Hide(key(5)); err != nil {
 				t.Fatal(err)
 			}
 			kept, _ = os.ReadFile(filepath.Join(dir, got[0]))
@@ -293,7 +292,7 @@ func TestCorruptFile(t *testing.T) {
 			// The next start is an ordinary one.
 			again, logs := open(t, dir)
 			if again.Len() != 1 || !again.Has(key(5)) || logs.String() != "" {
-				t.Errorf("after reopening: %+v, log %q", again.Entries(), logs.String())
+				t.Errorf("after reopening: %+v, log %q", entries(again), logs.String())
 			}
 		})
 	}
@@ -318,10 +317,10 @@ func TestCorruptFileThatCannotBeMoved(t *testing.T) {
 	if s := logs.String(); !strings.Contains(s, "level=ERROR") || !strings.Contains(s, "could not be set aside") {
 		t.Errorf("log: %s", s)
 	}
-	if _, err := l.Hide(key(1)); !errors.Is(err, ErrReadOnly) {
+	if err := l.Hide(key(1)); !errors.Is(err, ErrReadOnly) {
 		t.Errorf("Hide: %v", err)
 	}
-	if _, err := l.Restore(key(1)); err != nil {
+	if err := l.Restore(key(1)); err != nil {
 		t.Errorf("restoring what is not hidden: %v", err)
 	}
 	if l.Has(key(1)) {
@@ -344,7 +343,7 @@ func TestOddEntries(t *testing.T) {
 	}
 	l, logs := open(t, dir)
 	if l.Len() != 2 || !l.Has(key(1)) || !l.Has(key(2)) {
-		t.Errorf("list: %+v", l.Entries())
+		t.Errorf("list: %+v", entries(l))
 	}
 	if s := logs.String(); !strings.Contains(s, "level=WARN") || !strings.Contains(s, "entries=2") {
 		t.Errorf("log: %s", s)
@@ -409,16 +408,16 @@ func TestFull(t *testing.T) {
 	if l.Len() != MaxEntries {
 		t.Fatalf("Len = %d", l.Len())
 	}
-	if _, err := l.Hide(key(MaxEntries)); !errors.Is(err, ErrFull) {
+	if err := l.Hide(key(MaxEntries)); !errors.Is(err, ErrFull) {
 		t.Errorf("Hide on a full list: %v", err)
 	}
-	if changed, err := l.Hide(key(0)); err != nil || changed {
-		t.Errorf("hiding a hidden key on a full list: %v %v", changed, err)
+	if err := l.Hide(key(0)); err != nil {
+		t.Errorf("hiding a hidden key on a full list: %v", err)
 	}
-	if _, err := l.Restore(key(0)); err != nil {
+	if err := l.Restore(key(0)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Hide(key(MaxEntries)); err != nil {
+	if err := l.Hide(key(MaxEntries)); err != nil {
 		t.Errorf("Hide after making room: %v", err)
 	}
 }
@@ -453,7 +452,7 @@ func TestConcurrent(t *testing.T) {
 					return
 				}
 				_ = l.Has(key(1))
-				_ = l.Entries()
+				_ = entries(l)
 			}
 		})
 	}
@@ -462,11 +461,11 @@ func TestConcurrent(t *testing.T) {
 		wg.Go(func() {
 			for i := range each {
 				k := key(w*1000 + i)
-				if _, err := l.Hide(k); err != nil {
+				if err := l.Hide(k); err != nil {
 					t.Error(err)
 				}
 				if i%5 == 4 { // every fifth is restored again
-					if _, err := l.Restore(k); err != nil {
+					if err := l.Restore(k); err != nil {
 						t.Error(err)
 					}
 				}
@@ -499,4 +498,16 @@ func TestConcurrent(t *testing.T) {
 	if got := names(t, dir); len(got) != 1 {
 		t.Errorf("temporary files left behind: %v", got)
 	}
+}
+
+// entries is the whole list, most recently hidden first.
+func entries(l *List) []Entry {
+	l.mu.RLock()
+	out := make([]Entry, 0, len(l.at))
+	for k, at := range l.at {
+		out = append(out, Entry{Key: k, At: at})
+	}
+	l.mu.RUnlock()
+	sortEntries(out)
+	return out
 }
