@@ -356,6 +356,13 @@ of HTTP Basic auth with any user name.
    `location = /login { return 302 /; }` so the unused login page is not shown.
 4. `sudo nginx -t && sudo systemctl reload nginx`.
 
+The separate file is only there to keep the token private: site files under
+`sites-available` are usually world-readable, and base64 is an encoding, not
+encryption. You can put the `proxy_set_header Authorization` line straight
+into your site file's `location /` instead, as long as you then make that
+file readable by root only (`sudo chmod 600`); nginx reads its configuration
+as root.
+
 Visitors now see the gallery straight away; a request that reaches port 8080
 without passing through nginx still gets 401. nginx replaces any
 `Authorization` header a visitor sends.
