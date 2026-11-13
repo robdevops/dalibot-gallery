@@ -335,20 +335,32 @@ Whatever proxy you use:
 
 ### libvips
 
-The binary needs the libvips shared library at run time, version 8.14 or
-later, and its headers plus a C compiler and pkg-config to build. Install the
-newest libvips your distribution ships and keep it, libwebp and libjpeg-turbo
-patched: they parse image data.
+The gallery is distributed as source only, so running it without a container
+means building it, and building needs more than the libvips run-time
+library: the libvips headers, a C compiler and pkg-config. Install these
+first. Each command also brings in the run-time library, version 8.14 or
+later required.
 
-| System | Run time | To build as well | `vips` command |
-|---|---|---|---|
-| Debian 13+, Ubuntu 24.04+ | `apt install libvips42t64` | `apt install libvips-dev pkg-config gcc` | `apt install libvips-tools` |
-| Debian 12 | `apt install libvips42` | same | same |
-| Fedora | `dnf install vips` | `dnf install vips-devel pkgconf-pkg-config gcc` | `dnf install vips-tools` |
-| Arch | `pacman -S libvips` | `pacman -S libvips pkgconf gcc` | included |
-| Alpine | `apk add vips` | `apk add vips-dev pkgconf build-base` | `apk add vips-tools` |
-| macOS (Homebrew) | `brew install vips` | `brew install vips pkg-config` | included |
-| FreeBSD | `pkg install vips` | `pkg install vips pkgconf` | included |
+| System | Install before building |
+|---|---|
+| Debian, Ubuntu 24.04+ | `sudo apt install libvips-dev pkg-config gcc` |
+| Fedora | `sudo dnf install vips-devel pkgconf-pkg-config gcc` |
+| Arch | `sudo pacman -S libvips pkgconf gcc` |
+| Alpine | `apk add vips-dev pkgconf build-base` |
+| macOS (Homebrew) | `brew install vips pkg-config` |
+| FreeBSD | `pkg install vips pkgconf` |
+
+You also need Go 1.27 or later. An older Go (1.21 or later) downloads the
+1.27 toolchain by itself on the first build if it can reach the internet.
+
+Install the newest libvips your distribution ships and keep it, libwebp and
+libjpeg-turbo patched: they parse image data.
+
+The run-time library alone (`libvips42t64` on Debian 13 and Ubuntu 24.04,
+`libvips42` on Debian 12, `vips` on Fedora and Alpine) is enough only on a
+machine that receives a binary built elsewhere on the same distribution
+release. The optional `vips` command comes from `libvips-tools` (Debian,
+Ubuntu) or `vips-tools` (Fedora, Alpine) and is included elsewhere.
 
 Check what you have:
 
@@ -365,7 +377,8 @@ links musl).
 
 ### Building from source
 
-Go 1.27 or later, libvips headers, gcc and pkg-config:
+With the packages from [libvips](#libvips) and Go installed, from the
+repository root:
 
 ```sh
 go build -trimpath -o dalibot-gallery ./cmd/gallery
@@ -385,17 +398,10 @@ Do these in order, from the repository root. The first step makes the
 `dalibot-gallery` binary that the second one installs; without it `install`
 fails with `cannot stat 'dalibot-gallery'`.
 
-1. Install the build requirements: Go 1.27 or later, a C compiler,
-   pkg-config, and libvips with its headers. The run-time package alone
-   (`libvips42t64`) is not enough to build; without the rest the build stops
-   with `exec: "pkg-config": executable file not found`. On Debian or Ubuntu:
-
-   ```sh
-   sudo apt install libvips-dev pkg-config gcc
-   ```
-
-   Other systems are listed under [libvips](#libvips). Then build and check
-   the binary:
+1. Install the build requirements under [libvips](#libvips) (on Debian or
+   Ubuntu: `sudo apt install libvips-dev pkg-config gcc`). Without them the
+   build stops with `exec: "pkg-config": executable file not found`. Then
+   build and check the binary:
 
    ```sh
    go build -trimpath -o dalibot-gallery ./cmd/gallery
