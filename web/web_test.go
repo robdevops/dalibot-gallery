@@ -34,6 +34,13 @@ func TestNoInlineCode(t *testing.T) {
 	for _, name := range []string{"index.html", "login.html"} {
 		b, _ := fs.ReadFile(Files, name)
 		s := strings.ToLower(string(b))
+		// The one address outside the gallery is the link-preview picture. Only preview
+		// fetchers read that tag; the browser never loads it, so the policy is not involved.
+		const preview = `<meta property="og:image" content="https://raw.githubusercontent.com/robdevops/dalibot-gallery/main/docs/og-image.png">`
+		if strings.Count(s, preview) != 1 {
+			t.Errorf("%s: want the link-preview picture exactly once", name)
+		}
+		s = strings.Replace(s, preview, "", 1)
 		for _, bad := range []string{"<style", " style=", " onclick=", " onload=", " onerror=", "javascript:", "data:", "http://", "https://"} {
 			if strings.Contains(s, bad) {
 				t.Errorf("%s contains %q", name, bad)

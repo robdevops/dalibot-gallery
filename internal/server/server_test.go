@@ -352,6 +352,9 @@ func TestLinkPreviewText(t *testing.T) {
 			`<meta name="description" content="Gallery for dalibot AI images">`,
 			`<meta property="og:title" content="Gallery">`,
 			`<meta property="og:description" content="Gallery for dalibot AI images">`,
+			`<meta property="og:image" content="https://raw.githubusercontent.com/robdevops/dalibot-gallery/main/docs/og-image.png">`,
+			`<meta property="og:image:width" content="480">`,
+			`<meta name="twitter:card" content="summary">`,
 		} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("%s: missing %s", target, want)
