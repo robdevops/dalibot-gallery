@@ -185,7 +185,11 @@ func Build(records []Record, opt Options) *Snapshot {
 			continue
 		}
 		seenID[r.ID] = true
-		kept = append(kept, rec{r, r.TTL - span})
+		updated := r.TTL - span
+		if r.Created > 0 { // an imported picture keeps its real date instead of the import's
+			updated = r.Created
+		}
+		kept = append(kept, rec{r, updated})
 	}
 	sort.Slice(kept, func(i, j int) bool {
 		if kept[i].updated != kept[j].updated {

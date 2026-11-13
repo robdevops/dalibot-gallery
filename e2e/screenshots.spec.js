@@ -35,7 +35,7 @@ for (const [name, profile, [w, h]] of PROFILES) {
       }
       await save(`${name}-grid.jpg`)
 
-      // The lightbox on a record that has several styles, so the strip shows.
+      // The lightbox, with its strip of neighbouring images.
       const key = await page.evaluate(async () => {
         const j = await (await fetch('/api/tiles?limit=60')).json()
         return j.tiles.find(t => t.styles.length >= 3 && t.caption)?.key || j.tiles.find(t => t.styles.length >= 2).key

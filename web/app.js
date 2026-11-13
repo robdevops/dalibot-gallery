@@ -133,25 +133,27 @@ pill.onclick = async () => {
 }
 
 // Lightbox
+const keys = () => [...grid.querySelectorAll('.tile')].map(e => e.dataset.key)
 function show(key) {
   const t = data.get(key)
   cur = key
   if (full.dataset.key != key) {
     full.dataset.key = key
-    full.className = 'wait' // hidden until loaded, so the previous picture never shows in its place
+    full.className = 'wait' // hidden until loaded
     full.src = src(key)
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
   $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
-  strip.replaceChildren(...(t && t.styles[1] ? t.styles : []).map(s => {
-    const li = el('li'), b = el('button'), img = el('img')
+  // Strip: its neighbours in gallery order.
+  const all = keys(), i = all.indexOf(key)
+  strip.replaceChildren(...(i < 0 ? [] : all.slice(Math.max(0, i - 4), i + 5)).map(k => {
+    const s = data.get(k), li = el('li'), b = el('button'), img = el('img')
     b.type = 'button'
-    b.title = s.label
-    if (s.key == key) b.setAttribute('aria-current', 'true')
-    b.onclick = () => go(s.key)
-    img.alt = s.label
+    b.title = img.alt = s.caption || s.prompt
+    if (k == key) b.setAttribute('aria-current', 'true')
+    b.onclick = () => go(k)
     img.width = img.height = 56
-    img.src = src(s.key, 240)
+    img.src = src(k, 240)
     b.append(img)
     li.append(b)
     return li
@@ -163,8 +165,8 @@ function go(key) {
   show(key)
 }
 function step(d) {
-  const all = [...grid.querySelectorAll('.tile')], i = all.findIndex(e => e.dataset.key == cur)
-  if (i >= 0 && all[i + d]) go(all[i + d].dataset.key)
+  const all = keys(), i = all.indexOf(cur)
+  if (i >= 0 && all[i + d]) go(all[i + d])
   else if (d > 0) more()
 }
 function route() {
@@ -184,8 +186,8 @@ dlg.addEventListener('close', () => {
   a?.focus()
 })
 dlg.addEventListener('click', e => { if (e.target == dlg) dlg.close() })
-dlg.addEventListener('keydown', e => {
-  const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key]
+addEventListener('keydown', e => {
+  const d = dlg.open && { ArrowLeft: -1, ArrowRight: 1 }[e.key]
   if (d) {
     e.preventDefault()
     step(d)

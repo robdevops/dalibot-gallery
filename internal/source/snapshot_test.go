@@ -263,6 +263,32 @@ func TestBuildRules(t *testing.T) {
 	}
 }
 
+// A picture imported from a forwarded message is dated by its created time, not by
+// when it was imported, and still expires by its ttl.
+func TestImportedRecordsKeepTheirDate(t *testing.T) {
+	now := int64(1_800_000_000)
+	span := int64(90 * 86400)
+	opt := Options{StoreDays: 90, DefaultCommand: "dream", Now: func() time.Time { return time.Unix(now, 0) }}
+	img := func(id string) map[string]RawImage { return map[string]RawImage{"_": {FileID: id, Caption: id}} }
+	recs := []Record{
+		{ID: "111:fOLD", TTL: now + span, Created: now - 400*86400, Images: img("old")}, // imported just now, made 400 days ago
+		{ID: "-100:7", TTL: now + span - 3600, Images: img("hour")},                     // drawn an hour ago
+		{ID: "111:fMID", TTL: now + span, Created: now - 60, Images: img("minute")},     // imported, made a minute ago
+		{ID: "111:fGONE", TTL: now - 1, Created: now - 10, Images: img("gone")},         // imported, but expired
+	}
+	tiles := Build(recs, opt).Newest(10)
+	var got []string
+	for _, tile := range tiles {
+		got = append(got, tile.ID)
+	}
+	if want := []string{"111:fMID", "-100:7", "111:fOLD"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	if tiles[2].Updated != now-400*86400 || tiles[1].Updated != now-3600 {
+		t.Errorf("updated = %d and %d", tiles[2].Updated, tiles[1].Updated)
+	}
+}
+
 func TestBuildDoesNotDependOnInputOrder(t *testing.T) {
 	f, records := fixtureRecords(t)
 	want := describe(Build(records, f.options()).Newest(1000))

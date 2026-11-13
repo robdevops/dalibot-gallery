@@ -26,12 +26,12 @@ func TestScanRequest(t *testing.T) {
 	if len(fake.inputs) != 4 { // 17 items in pages of 5
 		t.Fatalf("made %d Scan calls, want 4", len(fake.inputs))
 	}
-	wantNames := map[string]string{"#id": "id", "#p": "prompt", "#c": "command", "#cur": "current", "#img": "images", "#ttl": "ttl"}
+	wantNames := map[string]string{"#id": "id", "#p": "prompt", "#c": "command", "#cur": "current", "#img": "images", "#ttl": "ttl", "#cr": "created"}
 	for i, in := range fake.inputs {
 		if *in.TableName != "my-table" {
 			t.Errorf("call %d: table %q", i, *in.TableName)
 		}
-		if in.ProjectionExpression == nil || *in.ProjectionExpression != "#id, #p, #c, #cur, #img, #ttl" {
+		if in.ProjectionExpression == nil || *in.ProjectionExpression != "#id, #p, #c, #cur, #img, #ttl, #cr" {
 			t.Errorf("call %d: projection %v", i, in.ProjectionExpression)
 		}
 		if !reflect.DeepEqual(in.ExpressionAttributeNames, wantNames) {
@@ -124,6 +124,17 @@ func TestDecodeItemEdgeCases(t *testing.T) {
 	})
 	if err != nil || r.Images["_"].FileID != "F" || r.Images["_"].Caption != "" || r.TTL != 1800000000 || r.Command != "" {
 		t.Errorf("decode = %+v, %v", r, err)
+	}
+	if r.Created != 0 {
+		t.Errorf("Created = %d for an item without one", r.Created)
+	}
+	// A picture the bot imported from a forwarded message: its id ends in the file's name, and it has a created date.
+	r, err = decodeItem(map[string]types.AttributeValue{
+		"id": s("111:fAQADabc_-9"), "ttl": &types.AttributeValueMemberN{Value: "1800000000"},
+		"created": &types.AttributeValueMemberN{Value: "1700000000"},
+	})
+	if err != nil || r.ID != "111:fAQADabc_-9" || r.Created != 1700000000 || r.TTL != 1800000000 {
+		t.Errorf("imported item = %+v, %v", r, err)
 	}
 	if r, err := decodeItem(map[string]types.AttributeValue{"id": s("1:2"), "images": null}); err != nil || r.Images != nil {
 		t.Errorf("NULL images = %+v, %v", r, err)

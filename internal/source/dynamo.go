@@ -13,7 +13,7 @@ import (
 )
 
 // Every attribute name goes through a placeholder: ttl and current are DynamoDB reserved words.
-const projection = "#id, #p, #c, #cur, #img, #ttl"
+const projection = "#id, #p, #c, #cur, #img, #ttl, #cr"
 
 var projectionNames = map[string]string{
 	"#id":  "id",
@@ -22,6 +22,7 @@ var projectionNames = map[string]string{
 	"#cur": "current",
 	"#img": "images",
 	"#ttl": "ttl",
+	"#cr":  "created",
 }
 
 // ScanAPI is the one DynamoDB operation the reader uses.
@@ -78,6 +79,7 @@ type item struct {
 	Command string               `dynamodbav:"command"`
 	Current string               `dynamodbav:"current"`
 	TTL     int64                `dynamodbav:"ttl"`
+	Created int64                `dynamodbav:"created"`
 	Images  map[string]itemImage `dynamodbav:"images"`
 }
 
@@ -124,7 +126,7 @@ func decodeItem(av map[string]types.AttributeValue) (Record, error) {
 	if it.ID == "" {
 		return Record{}, fmt.Errorf("item has no id")
 	}
-	r := Record{ID: it.ID, Prompt: it.Prompt, Command: it.Command, Current: it.Current, TTL: it.TTL}
+	r := Record{ID: it.ID, Prompt: it.Prompt, Command: it.Command, Current: it.Current, TTL: it.TTL, Created: it.Created}
 	if len(it.Images) > 0 {
 		r.Images = make(map[string]RawImage, len(it.Images))
 		for k, img := range it.Images {

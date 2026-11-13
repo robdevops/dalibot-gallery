@@ -1,4 +1,4 @@
-// The lightbox: open, arrow keys, style strip, Esc, backdrop, focus, deep links.
+// The lightbox: open, arrow keys, strip of neighbours, Esc, backdrop, focus, deep links.
 const { test, expect, apiTiles, domKeys } = require('./helpers')
 
 const dialog = page => page.locator('dialog#lb')
@@ -129,46 +129,43 @@ test('arrow right past the last loaded tile loads the next page', async ({ page 
   await loaded(page, api.tiles[n].key)
 })
 
-test('the style strip swaps the image within a record', async ({ page }) => {
-  const api = await apiTiles(page.request)
+test('the strip shows the neighbouring images in gallery order, whatever their prompt', async ({ page }) => {
   const keys = await domKeys(page)
-  const t = api.tiles.find(x => x.styles.length >= 2 && keys.includes(x.key))
-  const single = api.tiles.find(x => x.styles.length === 1 && keys.includes(x.key))
-  expect(t, 'a record with several styles on the first page').toBeTruthy()
-  await page.locator(`.tile[data-key="${t.key}"] a`).evaluate(a => a.click())
-  await loaded(page, t.key)
+  const strip = () => page.locator('#strip button')
+  const stripKeys = () => page.locator('#strip img').evaluateAll(is => is.map(i => i.getAttribute('src').match(/\/img\/(.+)-240\.webp/)[1]))
 
-  const buttons = page.locator('#strip button')
-  await expect(buttons).toHaveCount(t.styles.length)
-  expect(await buttons.evaluateAll(bs => bs.map(b => b.title))).toEqual(t.styles.map(s => s.label))
-  const mine = t.styles.findIndex(s => s.key === t.key)
-  await expect(buttons.nth(mine)).toHaveAttribute('aria-current', 'true')
+  // In the middle of the page: four before, the image itself, four after.
+  const i = 10
+  await page.locator(`.tile[data-key="${keys[i]}"] a`).evaluate(a => a.click())
+  await loaded(page, keys[i])
+  await expect(strip()).toHaveCount(9)
+  expect(await stripKeys()).toEqual(keys.slice(i - 4, i + 5))
+  await expect(strip().nth(4)).toHaveAttribute('aria-current', 'true')
   await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
   await expect.poll(() => page.locator('#strip img').evaluateAll(is => is.every(i => i.complete && i.naturalWidth > 0))).toBe(true)
 
-  const other = t.styles.findIndex(s => s.key !== t.key)
-  await buttons.nth(other).click()
-  await loaded(page, t.styles[other].key)
-  await expect(page).toHaveURL(new RegExp(`#/p/${t.styles[other].key}$`))
-  await expect(page.locator('#strip button').nth(other)).toHaveAttribute('aria-current', 'true')
-  await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
-  await expect(page.locator('#cap')).toHaveText(t.styles[other].caption || t.prompt)
-  await expect(page.locator('#cmd')).toHaveText(`/${t.command} · ${t.styles[other].label}`)
+  // Selecting a neighbour moves there, and the strip moves with it.
+  await strip().nth(6).click()
+  await loaded(page, keys[i + 2])
+  await expect(page).toHaveURL(new RegExp(`#/p/${keys[i + 2]}$`))
+  expect(await stripKeys()).toEqual(keys.slice(i - 2, i + 7))
+  await expect(strip().nth(4)).toHaveAttribute('aria-current', 'true')
 
-  // Back to the first style, then close: focus lands on that tile.
-  await page.locator('#strip button').nth(mine).click()
-  await loaded(page, t.key)
+  // The arrow keys move the strip too.
+  await page.keyboard.press('ArrowLeft')
+  await loaded(page, keys[i + 1])
+  expect(await stripKeys()).toEqual(keys.slice(i - 3, i + 6))
+
+  // Close: focus lands on the tile that was showing.
   await page.keyboard.press('Escape')
   await expect(dialog(page)).toBeHidden()
-  await expect.poll(() => focusKey(page)).toBe(t.key)
+  await expect.poll(() => focusKey(page)).toBe(keys[i + 1])
 
-  // A record with one image has no strip.
-  if (single) {
-    await page.locator(`.tile[data-key="${single.key}"] a`).evaluate(a => a.click())
-    await loaded(page, single.key)
-    await expect(page.locator('#strip button')).toHaveCount(0)
-    await expect(page.locator('#strip')).toBeHidden()
-  }
+  // At the very start there is nothing before the first image.
+  await page.locator(`.tile[data-key="${keys[0]}"] a`).evaluate(a => a.click())
+  await loaded(page, keys[0])
+  expect(await stripKeys()).toEqual(keys.slice(0, 5))
+  await expect(strip().nth(0)).toHaveAttribute('aria-current', 'true')
 })
 
 test('a click on the backdrop closes; a click on the image does not', async ({ page }) => {
@@ -213,7 +210,7 @@ test('a deep link opens the image, also one far down the list', async ({ page })
     // Its details arrive with its tile, however many pages down that is.
     await expect(page.locator('#cmd')).toHaveText(`/${t.command} · ${t.label}`)
     await expect(page.locator('#cap')).toHaveText(t.caption || t.prompt)
-    await expect(page.locator('#strip button')).toHaveCount(t.styles.length > 1 ? t.styles.length : 0)
+    await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
     await expect(page.locator(`.tile[data-key="${t.key}"]`)).toHaveCount(1)
     await page.keyboard.press('Escape')
     await expect(dialog(page)).toBeHidden()

@@ -139,7 +139,7 @@ variable at fault. Secrets are never printed. `.env.example` lists them all.
 | AWS credentials | standard chain | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an instance or task role, and so on. |
 | `AWS_REGION` | `ap-southeast-1` | Falls back to `AWS_DEFAULT_REGION`. |
 | `DALIBOT_TABLE` | `dalibot` | The bot's table. |
-| `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. |
+| `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. |
 | `GALLERY_DEFAULT_COMMAND` | `dream` | Shown for records that carry no command. Display only. |
 | `GALLERY_CHATS` | (empty) | Comma list of chat ids to show (negative for groups). Empty shows every chat. |
 | `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
@@ -709,6 +709,13 @@ together; every tile was fetched at 480 px, about 43 kB each.
 - "Newest" means most recently drawn: adding a style to an old message brings
   its tiles back to the top. The date is derived from the TTL, so it is only
   right if `GALLERY_STORE_DAYS` matches the bot.
+- **Older pictures can be imported.** The bot cannot read a chat's history,
+  but pictures it made before it kept records can be forwarded to it in a
+  private chat (see the bot's README). The bot stores each with a `created`
+  date, and the gallery shows it at that date instead of at the top. An
+  imported picture belongs to the private chat it was forwarded in, expires
+  like any other record, and appears twice if the bot also has an ordinary
+  record of the same picture under a different Telegram file id.
 - With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](#reverse-proxy).
 - Responses that Go's HTTP server writes itself for malformed requests carry
   no security headers; see [Security model](#security-model).

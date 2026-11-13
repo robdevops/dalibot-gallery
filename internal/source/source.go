@@ -25,11 +25,14 @@ const KeyLen = 22
 
 // Record is one item of the bot's store, as stored.
 type Record struct {
-	ID      string              // "<chat_id>:<message_id>"
-	Prompt  string              // the user's original prompt
-	Command string              // the command used; may be empty in a malformed item
-	Current string              // style key shown in Telegram; may name a missing image
-	TTL     int64               // epoch seconds; 0 when missing
+	ID      string // "<chat_id>:<message_id>"
+	Prompt  string // the user's original prompt
+	Command string // the command used; may be empty in a malformed item
+	Current string // style key shown in Telegram; may name a missing image
+	TTL     int64  // epoch seconds; 0 when missing
+	// Created is when the picture was first sent, for records the bot imported from
+	// forwarded messages. 0 for ordinary records, which are dated from the ttl.
+	Created int64
 	Images  map[string]RawImage // style key -> image
 }
 
