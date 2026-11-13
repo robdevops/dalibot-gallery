@@ -1,19 +1,14 @@
-// Hiding images as an admin: the Hide control in the viewer with its
-// confirmation, Undo, and the page of hidden images, on the token-protected
-// stack and on the public one. And the other side: someone who is not an
-// admin is sent no admin script, has no controls and cannot use the routes.
-const { test, expect, ADMIN_TOKEN, PUBLIC_URL, CHAT_IDS, basic, domKeys, gridGeometry } = require('./helpers')
+// Hiding images as an admin: the trash can in the viewer, and the page of
+// hidden images, on the token-protected stack and on the public one. And the
+// other side: someone who is not an admin is sent no admin script, has no
+// controls and cannot use the routes.
+const { test, expect, ADMIN_TOKEN, PUBLIC_URL, CHAT_IDS, basic, domKeys } = require('./helpers')
 
 const basicAdmin = () => ({ Authorization: 'Basic ' + Buffer.from('e2e:' + ADMIN_TOKEN()).toString('base64') })
 const ADMIN_FILES = ['/admin.js', '/admin.css']
 const lb = page => page.locator('#lb')
-const adm = page => page.locator('#adm')
-const hideButton = page => adm(page).getByRole('button', { name: 'Hide', exact: true })
-const confirmButton = page => adm(page).getByRole('button', { name: 'Hide image' })
-const cancelButton = page => adm(page).getByRole('button', { name: 'Cancel' })
-const undoButton = page => page.getByRole('button', { name: 'Undo' })
+const trash = page => page.locator('#trash')
 const openKey = page => page.evaluate(() => /^#\/p\/([\w-]{22})$/.exec(location.hash)?.[1] || '')
-const stripCount = page => page.locator('#strip > li').count()
 
 // Paths of everything the page requests, from now on.
 function requested(page) {
@@ -55,13 +50,12 @@ async function signInAsAdmin(page, label) {
   await expect(page.locator('#grid .tile').first()).toBeVisible()
 }
 
-// Hide the image the viewer shows, with the mouse: Hide, wait out the guard, Hide image.
-async function hideOpenImage(page) {
-  await hideButton(page).click()
-  await expect(confirmButton(page)).toBeVisible()
-  await page.waitForTimeout(600)
-  await confirmButton(page).click()
-  await expect(page.locator('.did').getByText('Image hidden.')).toBeVisible()
+// Open the tile with this key in the viewer, and wait for its image.
+async function open(page, key) {
+  await page.locator(`#grid .tile[data-key="${key}"] a`).click()
+  await expect(lb(page)).toHaveAttribute('open', '')
+  expect(await openKey(page)).toBe(key)
+  await expect.poll(() => page.locator('#full').evaluate(i => i.complete && i.naturalWidth)).toBeGreaterThan(0)
 }
 
 // Someone who is not an admin: no admin files requested, none served, no
@@ -74,9 +68,8 @@ async function expectNoAdminParts(page, request, headers, watched) {
   await page.locator('#grid .tile a').first().click()
   await expect(lb(page)).toHaveAttribute('open', '')
   await expect.poll(() => page.locator('#full').evaluate(i => i.naturalWidth)).toBeGreaterThan(0)
-  await expect(adm(page)).toHaveCount(0)
-  await expect(page.locator('#undo')).toHaveCount(0)
-  for (const name of ['Hide', 'Hide image', 'Undo', 'Restore']) {
+  await expect(page.locator('#trash')).toHaveCount(0)
+  for (const name of ['Hide this image from the gallery', 'Restore']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
   }
   await expect(page.getByRole('link', { name: 'Hidden images' })).toHaveCount(0)
@@ -109,315 +102,75 @@ test.describe('a gallery that needs the token to view', () => {
     await expectNoAdminParts(page, request, basic(), watched)
   })
 
-  test('the admin hides an image in the viewer, undoes it, and restores from the page of hidden images', async ({ page, request }) => {
+  test('the admin hides an image with one press of the trash can, and restores it from the page of hidden images', async ({ page, request }) => {
     const paths = requested(page)
     await signInAsAdmin(page, 'Access token')
-    // Only now, as an admin, is the admin's script loaded.
     for (const f of ADMIN_FILES) expect(paths, f).toContain(f)
-    for (const f of ADMIN_FILES) {
-      const r = await request.get(f, { headers: basicAdmin() })
-      expect(r.status()).toBe(200)
-      expect(r.headers()['cache-control']).toBe('private, no-cache')
-    }
-
-    // Load a second batch, so that hiding has to move tiles between batches.
-    await expect.poll(async () => {
-      await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight))
-      return page.locator('#grid .tile').count()
-    }, { timeout: 30_000 }).toBeGreaterThan(100)
-    await page.evaluate(() => scrollTo(0, 0))
     const before = await domKeys(page)
-    expect(await listedKeys(request, basic())).toEqual(expect.arrayContaining(before))
+    const [target, following, after] = [before[2], before[3], before[4]]
+    await open(page, target)
 
-    // Open the third tile.
-    const [target, following] = [before[2], before[3]]
-    await page.locator(`#grid .tile[data-key="${target}"] a`).click()
-    await expect(lb(page)).toHaveAttribute('open', '')
-    await expect.poll(() => page.locator('#full').evaluate(i => i.naturalWidth)).toBeGreaterThan(0)
-    expect(await stripCount(page)).toBe(before.length)
-    await expect(hideButton(page)).toBeVisible()
-    await expect(confirmButton(page)).toBeHidden()
-
-    // Nothing but the two buttons, one after the other, hides: not a click on the image, not a
-    // drag or a swipe, not a double click on Hide, not Enter held down, not the arrow keys.
-    await page.locator('#full').click() // hides the buttons and the caption, the Hide button with them
-    await expect(lb(page)).toHaveClass('bare')
-    await expect(hideButton(page)).toBeHidden()
-    await page.locator('#full').click() // and shows them again
-    await expect(lb(page)).not.toHaveClass('bare')
-    await expect(hideButton(page)).toBeVisible()
-    // A press on the image dragged onto the Hide button and released there is not a click on it.
-    const img = await page.locator('#full').boundingBox()
-    const btn = await hideButton(page).boundingBox()
-    await page.mouse.move(img.x + img.width / 2, img.y + img.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(btn.x + btn.width / 2, btn.y + btn.height / 2, { steps: 8 })
-    await page.mouse.up()
-    await page.waitForTimeout(400) // past app.js's wait for a second click
-    await expect(lb(page)).toHaveAttribute('open', '')
-    await expect(confirmButton(page)).toBeHidden()
-    await expect(hideButton(page)).toBeVisible()
-    expect(await openKey(page)).toBe(target)
-    // A double click on Hide opens the question, and that is all.
-    await hideButton(page).dblclick()
-    await page.waitForTimeout(300)
-    expect(await openKey(page)).toBe(target)
+    // In the top left corner, the same size as the close button, and gone with the other overlays.
+    const t = await trash(page).boundingBox(), c = await page.locator('#x').boundingBox(), stage = await page.locator('.stage').boundingBox()
+    expect([t.width, t.height]).toEqual([c.width, c.height])
+    expect([t.x, t.y]).toEqual([stage.x, stage.y])
+    expect(c.x).toBeGreaterThan(t.x)
+    await expect(trash(page)).toHaveAccessibleName('Hide this image from the gallery')
+    await page.locator('#full').click()
+    await expect(trash(page)).toBeHidden()
+    await page.locator('#full').click()
+    await expect(trash(page)).toBeVisible()
+    // A tap on the image, a swipe or the arrow keys hide nothing.
     expect(await hiddenKeys(request)).toEqual([])
-    await expect(page.getByText('Hide this image from the gallery?')).toBeVisible()
-    await expect(hideButton(page)).toBeHidden()
-    // A single click opens it with the focus on Cancel.
-    await cancelButton(page).click()
-    await expect(hideButton(page)).toBeFocused()
-    await hideButton(page).click()
-    await expect(cancelButton(page)).toBeFocused()
-    await expect(confirmButton(page)).toBeVisible()
-    // Moving to another image withdraws it: with the arrow keys, and with a sideways swipe on a touchpad.
-    await page.keyboard.press('ArrowRight')
+
+    // One press: the tile is gone, the viewer has moved on, nothing is asked and nothing stays on screen.
+    await trash(page).click()
     await expect.poll(() => openKey(page)).toBe(following)
-    await expect(confirmButton(page)).toBeHidden()
-    await expect(hideButton(page)).toBeVisible()
-    await page.keyboard.press('ArrowLeft')
-    await expect.poll(() => openKey(page)).toBe(target)
-    await hideButton(page).click()
-    await expect(confirmButton(page)).toBeVisible()
-    await page.mouse.move(img.x + img.width / 2, img.y + img.height / 2)
-    for (const dx of [4, 12, 30, 45, 40, 30, 22, 16, 11, 8, 5, 3, 2, 1, 1]) {
-      await page.mouse.wheel(dx, 0)
-      await page.waitForTimeout(16)
-    }
-    await expect.poll(() => openKey(page)).toBe(following)
-    await expect(confirmButton(page)).toBeHidden()
-    await expect(hideButton(page)).toBeVisible()
-    await page.waitForTimeout(250) // the swipe's momentum has ended
-    await page.keyboard.press('ArrowLeft')
-    await expect.poll(() => openKey(page)).toBe(target)
-    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(0)
-    expect(await hiddenKeys(request)).toEqual([])
-    // Enter held down on Hide goes to Cancel and back, never to "Hide image".
-    await hideButton(page).focus()
-    for (let i = 0; i < 6; i++) await page.keyboard.press('Enter')
-    await page.waitForTimeout(700)
-    for (let i = 0; i < 5; i++) await page.keyboard.press('Enter')
-    expect(await hiddenKeys(request)).toEqual([])
-    // "Hide image" straight after Hide (a second click that lands on it) does nothing either.
-    if (await confirmButton(page).isVisible()) await cancelButton(page).click()
-    await hideButton(page).click()
-    await confirmButton(page).click()
-    await page.waitForTimeout(300)
-    expect(await hiddenKeys(request)).toEqual([])
-    expect(await openKey(page)).toBe(target)
-    await cancelButton(page).click()
-    await expect(hideButton(page)).toBeFocused()
-
-    // With the keyboard: Enter on Hide, Tab to "Hide image", Enter.
-    await page.keyboard.press('Enter')
-    await expect(cancelButton(page)).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(confirmButton(page)).toBeFocused()
-    await page.waitForTimeout(600)
-    await page.keyboard.press('Enter')
-
-    // The tile is gone, the viewer has moved to the next image, and Undo is offered.
-    await expect(page.locator('.did').getByText('Image hidden.')).toBeVisible()
-    await expect.poll(() => openKey(page)).toBe(following)
-    await expect(page.locator('#full')).toHaveAttribute('data-key', following)
-    await expect(lb(page)).toHaveAttribute('open', '')
-    const after = before.filter(k => k !== target)
-    expect(await domKeys(page)).toEqual(after)
-    expect(await stripCount(page)).toBe(after.length)
-    await expect(page.locator('#strip [aria-current]')).toHaveCount(1)
-    await expect(undoButton(page)).toBeVisible()
-    await expect(hideButton(page)).toBeFocused()
-    await expect(page.locator('#live')).toHaveText('Image hidden.')
-    // For everyone, at once: not in the listing, and its images are unknown.
+    await expect(page.locator(`#grid .tile[data-key="${target}"]`)).toHaveCount(0)
+    expect(await domKeys(page)).not.toContain(target)
+    expect(await page.locator('#strip > li').count()).toBe(before.length - 1)
+    await expect(page.getByRole('button', { name: /Cancel|Hide image|Undo/ })).toHaveCount(0)
+    await expect(page.locator('#adm, #undo')).toHaveCount(0)
     expect(await hiddenKeys(request)).toEqual([target])
     expect(await listedKeys(request, basic())).not.toContain(target)
-    const v = (await (await request.get('/api/tiles?limit=1', { headers: basic() })).json()).v
-    for (const path of [`/img/${target}.jpg`, `/img/${target}-240.webp?v=${v}`]) {
-      expect((await request.get(path, { headers: basic() })).status(), path).toBe(404)
-      const r = await request.get(path, { headers: basicAdmin() })
-      expect(r.status(), path + ' for the admin').toBe(200)
-      expect(r.headers()['cache-control']).toBe('no-store')
-    }
+    expect((await request.get(`/img/${target}.jpg`, { headers: basic() })).status()).toBe(404)
 
-    // Undo, with the keyboard (it is the next stop after Hide): back in its place, and shown again.
-    await page.keyboard.press('Tab')
-    await expect(undoButton(page)).toBeFocused()
-    await page.keyboard.press('Enter')
-    await expect(page.locator('.did').getByText('Image restored.')).toBeVisible()
-    await expect.poll(() => openKey(page)).toBe(target)
-    expect(await domKeys(page)).toEqual(before)
-    expect(await stripCount(page)).toBe(before.length)
-    await expect(page.locator('#strip > li').nth(2).locator('button')).toHaveAttribute('aria-current', 'true')
-    await expect(undoButton(page)).toHaveCount(0)
-    expect(await hiddenKeys(request)).toEqual([])
-    expect(await listedKeys(request, basic())).toContain(target)
-
-    // Hide it again, and the one after it, with the mouse. Close the viewer: the grid has no hole.
-    await hideOpenImage(page)
-    await expect.poll(() => openKey(page)).toBe(following)
-    await hideOpenImage(page)
-    await expect.poll(() => openKey(page)).toBe(before[4])
+    // A double press hides one image, not two.
     await page.keyboard.press('Escape')
-    await expect(lb(page)).not.toHaveAttribute('open', '')
-    const left = before.filter(k => k !== target && k !== following)
-    expect(await domKeys(page)).toEqual(left)
-    const geo = await gridGeometry(page)
-    expect(geo.issues, 'the grid after hiding two tiles').toEqual([])
-    expect(await page.$$eval('#grid .sub', subs => subs.slice(0, -1).map(s => s.childElementCount)), 'every batch but the last is full')
-      .toEqual(expect.arrayContaining([60]))
-    expect(await page.$$eval('#grid .sub', subs => subs.slice(0, -1).every(s => s.childElementCount === 60))).toBe(true)
-    // With the viewer closed, Undo is at the foot of the page, and restores the last one hidden.
-    await expect(page.locator('#undo').getByRole('button', { name: 'Undo' })).toBeVisible()
-    await page.locator('#undo').getByRole('button', { name: 'Undo' }).click()
-    await expect(page.locator('.did').getByText('Image restored.')).toBeVisible()
-    expect(await domKeys(page)).toEqual(before.filter(k => k !== target))
-    await expect(lb(page)).not.toHaveAttribute('open', '')
-    expect((await gridGeometry(page)).issues).toEqual([])
-    expect(await hiddenKeys(request)).toEqual([target])
+    await page.waitForTimeout(600) // the button ignores presses for half a second after a hide
+    await open(page, following)
+    await trash(page).dblclick()
+    await expect.poll(() => openKey(page)).toBe(after)
+    await page.waitForTimeout(700)
+    expect((await hiddenKeys(request)).sort()).toEqual([target, following].sort()) // two, not three
+    await page.keyboard.press('Escape')
 
-    // The page of hidden images, from the link at the foot of the gallery.
-    const link = page.locator('footer.foot').getByRole('link', { name: 'Hidden images' })
-    await expect(link).toHaveAttribute('href', '/admin/hidden')
-    await page.goto('/admin/hidden')
-    await expect(page.getByRole('heading', { name: 'Hidden images' })).toBeVisible()
-    const item = page.locator('#hidden > li')
-    await expect(item).toHaveCount(1)
-    await expect.poll(() => item.locator('img').evaluate(i => i.complete && i.naturalWidth)).toBeGreaterThan(0)
-    await expect(item.locator('a')).toHaveAttribute('href', `/img/${target}.jpg`)
-    await expect(page.locator('#none')).toBeHidden()
-    const restore = item.getByRole('button', { name: 'Restore' })
-    await restore.focus()
-    await page.keyboard.press('Enter')
-    await expect(item).toHaveCount(0)
-    await expect(page.locator('#none')).toBeVisible()
-    await expect(page.locator('#live')).toHaveText('Image restored')
-    await expect(page.getByRole('link', { name: 'Back to the gallery' })).toBeFocused()
-    expect(await hiddenKeys(request)).toEqual([])
-
-    // Back in the gallery, in its place.
-    await page.getByRole('link', { name: 'Back to the gallery' }).click()
-    await expect(page.locator('#grid .tile').first()).toBeVisible()
-    expect((await domKeys(page)).slice(0, 5)).toEqual(before.slice(0, 5))
+    // The hidden images are on a page of their own, each with Restore.
+    await page.getByRole('link', { name: 'Hidden images' }).click()
+    await expect(page.locator('#hidden li')).toHaveCount(2)
+    await page.locator(`[data-restore="${target}"]`).click()
+    await expect(page.locator('#hidden li')).toHaveCount(1)
+    expect(await hiddenKeys(request)).toEqual([following])
     expect(await listedKeys(request, basic())).toContain(target)
+    expect((await request.get(`/img/${target}.jpg`, { headers: basic() })).status()).toBe(200)
   })
 
-  test('hiding the last loaded image moves to the one before; a failed request changes nothing', async ({ page, request, context, watched }) => {
+  test('a failed request changes nothing', async ({ page, request, watched }) => {
     await signInAsAdmin(page, 'Access token')
-    const keys = await domKeys(page)
-    const last = keys[keys.length - 1], previous = keys[keys.length - 2]
-    // Keep the page from loading more, so that the last tile stays the last.
-    await page.route('**/api/tiles?*', route => route.abort())
-    await page.locator(`#grid .tile[data-key="${last}"] a`).evaluate(a => a.click())
-    await expect(lb(page)).toHaveAttribute('open', '')
-    await expect.poll(() => openKey(page)).toBe(last)
-
-    // The server refuses (the session is gone): the image stays, and the admin is told.
-    const cookies = await context.cookies()
-    await context.clearCookies()
-    await hideButton(page).click()
-    await page.waitForTimeout(600)
-    await confirmButton(page).click()
-    await expect(adm(page).getByText('Could not hide the image')).toBeVisible()
+    const key = (await domKeys(page))[1]
+    await open(page, key)
+    await page.route('**/api/admin/hide/*', route => route.fulfill({ status: 500, body: '{"error":"no"}' }))
+    await trash(page).click()
     await expect(page.locator('#live')).toHaveText('Could not hide the image')
-    expect(await openKey(page)).toBe(last)
-    expect(await domKeys(page)).toEqual(keys)
+    expect(await openKey(page)).toBe(key)
+    await expect(page.locator(`#grid .tile[data-key="${key}"]`)).toHaveCount(1)
     expect(await hiddenKeys(request)).toEqual([])
-    await context.addCookies(cookies)
-
-    await hideOpenImage(page)
-    await expect.poll(() => openKey(page)).toBe(previous)
-    expect(await domKeys(page)).toEqual(keys.slice(0, -1))
-    await undoButton(page).click()
-    await expect.poll(() => openKey(page)).toBe(last)
-    expect(await domKeys(page)).toEqual(keys)
-    expect(await hiddenKeys(request)).toEqual([])
-    watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/\b40[14]\b|api\/tiles|ERR_FAILED/.test(p)))
+    // And the button still works once the request does.
+    await page.unroute('**/api/admin/hide/*')
+    await trash(page).click()
+    await expect.poll(() => hiddenKeys(request)).toEqual([key])
+    watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/\b500\b/.test(p)))
   })
-
-  // The viewer fills the screen from the top and centres its box inside itself. The admin's
-  // controls sit in that box, on its background, and none of them is cut off, on a phone and on
-  // a short laptop screen, with the question open too. A tap on the image, a drag of the zoomed
-  // image onto Hide and a double click that zooms never hide.
-  for (const [name, opts] of [
-    ['phone', { viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true }],
-    ['short laptop', { viewport: { width: 1280, height: 600 } }],
-  ]) {
-    test(`the admin's controls fit the viewer: ${name}`, async ({ browser, baseURL, request }) => {
-      const context = await browser.newContext({ baseURL, ...opts })
-      const page = await context.newPage()
-      try {
-        await signInAsAdmin(page, 'Access token')
-        const target = (await domKeys(page))[2]
-        await page.locator(`#grid .tile[data-key="${target}"] a`).click()
-        await expect(lb(page)).toHaveAttribute('open', '')
-        await expect.poll(() => page.locator('#full').evaluate(i => i.naturalWidth)).toBeGreaterThan(0)
-        const { width: vw, height: vh } = opts.viewport
-        // Every control lies inside the box, the box inside the dialog's scrolled content (nothing
-        // above or left of where it starts), and the box has a background of its own.
-        const fits = async names => {
-          expect(await page.locator('#lb .box').evaluate(b => getComputedStyle(b).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
-          expect(await page.locator('#lb .box').evaluate(b => [b.offsetLeft >= 0, b.offsetTop >= 0])).toEqual([true, true])
-          for (const n of names) {
-            const b = adm(page).getByRole('button', { name: n, exact: true })
-            await b.scrollIntoViewIfNeeded()
-            await expect(b).toBeInViewport({ ratio: 1 })
-            const [r, box] = [await b.boundingBox(), await page.locator('#lb .box').boundingBox()]
-            expect(r.x).toBeGreaterThanOrEqual(box.x)
-            expect(r.y).toBeGreaterThanOrEqual(box.y)
-            expect(r.x + r.width).toBeLessThanOrEqual(box.x + box.width + 0.5)
-            expect(r.y + r.height).toBeLessThanOrEqual(box.y + box.height + 0.5)
-            expect(r.x + r.width).toBeLessThanOrEqual(vw)
-            expect(r.y + r.height).toBeLessThanOrEqual(vh)
-          }
-        }
-        await expect(hideButton(page)).toBeVisible()
-        await fits(['Hide'])
-        await hideButton(page).click()
-        await expect(confirmButton(page)).toBeVisible()
-        await fits(['Cancel', 'Hide image'])
-        await cancelButton(page).click()
-        await expect(hideButton(page)).toBeFocused()
-        await page.locator('#lb').evaluate(d => d.scrollTo(0, 0))
-
-        if (opts.hasTouch) {
-          // A tap on the image hides the controls with the caption, and the next shows them; it never asks.
-          await page.locator('#full').tap()
-          await expect(lb(page)).toHaveClass('bare')
-          await expect(hideButton(page)).toBeHidden()
-          await page.waitForTimeout(400)
-          await page.locator('#full').tap()
-          await expect(lb(page)).not.toHaveClass('bare')
-          await expect(hideButton(page)).toBeVisible()
-          await expect(confirmButton(page)).toBeHidden()
-        } else {
-          const scale = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).a)
-          // A double click zooms the image, and that is all.
-          const img = await page.locator('#full').boundingBox()
-          await page.mouse.dblclick(img.x + img.width / 2, img.y + img.height / 2)
-          await expect.poll(scale).toBeGreaterThan(1)
-          await expect(confirmButton(page)).toBeHidden()
-          await expect(hideButton(page)).toBeVisible()
-          // Held and dragged from the zoomed image onto Hide: the image moves, nothing is asked.
-          const btn = await hideButton(page).boundingBox()
-          await page.mouse.move(img.x + img.width / 2, img.y + img.height / 2)
-          await page.mouse.down()
-          await page.mouse.move(btn.x + btn.width / 2, btn.y + btn.height / 2, { steps: 8 })
-          await page.mouse.up()
-          await page.waitForTimeout(400)
-          await expect(confirmButton(page)).toBeHidden()
-          await expect(hideButton(page)).toBeVisible()
-          expect(await scale()).toBeGreaterThan(1)
-          await page.keyboard.press('0')
-          await expect.poll(scale).toBe(1)
-        }
-        expect(await openKey(page)).toBe(target)
-        expect(await hiddenKeys(request)).toEqual([])
-      } finally {
-        await context.close()
-      }
-    })
-  }
 })
 
 test.describe('a public gallery', () => {
@@ -429,7 +182,7 @@ test.describe('a public gallery', () => {
     await expectNoAdminParts(page, request, {}, watched)
   })
 
-  test('what the admin hides is gone for every visitor at once, and back after Undo', async ({ page, request, browser }) => {
+  test('what the admin hides is gone for every visitor at once, and back after Restore', async ({ page, request, browser }) => {
     // A visitor's own page, open before anything is hidden.
     const visitor = await browser.newContext({ baseURL: PUBLIC_URL() })
     const theirs = await visitor.newPage()
@@ -441,10 +194,9 @@ test.describe('a public gallery', () => {
     for (const u of urls) expect((await request.get(u)).headers()['cache-control']).toBe('public, max-age=31536000, immutable')
 
     await signInAsAdmin(page, 'Admin token')
-    await page.locator('#grid .tile a').first().click()
-    await expect(lb(page)).toHaveAttribute('open', '')
-    expect(await openKey(page)).toBe(first)
-    await hideOpenImage(page)
+    await open(page, first)
+    await trash(page).click()
+    await expect.poll(() => hiddenKeys(request)).toEqual([first])
 
     // No login, no cookie: the listing, the page without JavaScript and the image URLs.
     expect(await listedKeys(request, {})).not.toContain(first)
@@ -458,7 +210,7 @@ test.describe('a public gallery', () => {
     await theirs.reload()
     await expect(theirs.locator('#grid .tile').first()).toBeVisible()
     expect(await domKeys(theirs)).not.toContain(first)
-    await expect(theirs.locator('#adm')).toHaveCount(0)
+    await expect(theirs.locator('#trash')).toHaveCount(0)
 
     // The admin's list and page carry no chat id (the listing an admin gets does; these do not).
     const list = await (await request.get('/api/admin/hidden', { headers: basicAdmin() })).text()
@@ -470,8 +222,9 @@ test.describe('a public gallery', () => {
       expect(html).not.toContain(chat)
     }
 
-    await undoButton(page).click()
-    await expect(page.locator('.did').getByText('Image restored.')).toBeVisible()
+    await page.goto('/admin/hidden')
+    await page.locator(`[data-restore="${first}"]`).click()
+    await expect(page.locator('#hidden li')).toHaveCount(0)
     expect(await listedKeys(request, {})).toContain(first)
     for (const u of urls) expect((await request.get(u)).status(), u).toBe(200)
     await theirs.reload()

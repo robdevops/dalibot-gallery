@@ -201,8 +201,7 @@ if the gallery is meant to be viewable without a login. See
 
 ### Hiding images
 
-An admin can hide an image: a "Hide" button in the viewer, with a
-confirmation, removes it from the gallery for everyone at once, and a page
+An admin can hide an image: a trash can in the viewer removes it from the gallery for everyone at once, and a page
 of hidden images (linked at the foot of the gallery) puts it back. Hiding
 never touches the bot's data: the gallery keeps its own list of hidden
 images in `GALLERY_STATE_DIR`, which, unlike the cache, must be kept. To

@@ -3,22 +3,10 @@
 /* A batch that hiding has emptied takes no room until it is filled again. */
 .page:has(.sub:empty){display:none}
 
-/* The Hide button sits at the end of the command line, so the viewer is no taller for it;
-   the question and "Image hidden. Undo" take a line of their own. */
-.meta{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:start}
-#cap,#strip,#adm:has(.ask:not([hidden]),.note:not(:empty),.did){grid-column:1/-1}
-#adm{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem .75rem;margin-top:.25rem;font-size:.85rem}
-#adm button,#undo button,#hidden button{padding:.15rem .6rem;border:1px solid #777;border-radius:4px}
-#hidden button,#adm .ask button{padding:.35rem .7rem}
-#adm .go{border-color:#ff9c9c;background:#ff9c9c;color:#111;font-weight:600}
-#adm span:empty{display:none}
-#adm .ask:not([hidden]){display:contents}
-.note{color:#ff9c9c}
-
-/* "Image hidden. Undo" when the viewer is closed; inside the viewer it sits in #adm. */
-#undo{position:fixed;z-index:2;inset:auto 0 .75rem;display:flex;align-items:center;gap:.75rem;width:fit-content;max-width:calc(100vw - 2rem);margin:auto;padding:.5rem .75rem;border-radius:4px;background:#222;font-size:.85rem;box-shadow:0 2px 8px #000a}
-#undo:empty{display:none}
-.did{display:flex;align-items:center;gap:.75rem}
+/* The trash can: a close button on the other side. It is a .nav button, so it is the same size
+   and hides with the other buttons when the image is tapped. */
+#trash{top:0;left:0}
+#trash svg{display:block;width:1.5rem;height:1.5rem;margin:auto;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
 .hid{max-width:64rem;margin:auto;padding:1rem}
 .hid h1{margin:0 0 .5rem;font-size:1.5rem}
@@ -26,4 +14,4 @@
 #hidden img{display:block;width:100%;height:auto;aspect-ratio:1/1;object-fit:cover}
 #hidden p{margin:.4rem 0 0;overflow-wrap:anywhere;font-size:.85rem}
 #hidden .cmd,.gone{color:#aaa}
-#hidden button{margin-top:.5rem}
+#hidden button{margin-top:.5rem;padding:.35rem .7rem;border:1px solid #777;border-radius:4px}

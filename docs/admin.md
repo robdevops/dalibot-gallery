@@ -46,26 +46,14 @@ The list is state, not cache. Include the state directory in backups.
 Sign in at `/login` with the admin token. In a public gallery the small
 "Admin" link at the foot of the page leads there.
 
-**In the viewer.** Under the large image, at the end of the line with the
-command and style, there is a "Hide" button. It asks first: "Hide this image
-from the gallery?" with "Cancel" and "Hide image". Only "Hide image" hides,
-and only:
-
-- for the image the question was asked about (moving to another image, with
-  the arrows, the strip or a swipe, withdraws the question);
-- after a moment: a double click on "Hide", or a second tap that lands where
-  "Hide" was, does nothing;
-- never from the image itself: a tap or click on the image, a drag or a
-  swipe does not hide.
-
-The question opens with the focus on "Cancel", so Enter held down on "Hide"
-does not go through either. With the keyboard: Tab to "Hide", Enter, Tab to
-"Hide image", Enter.
-
-After hiding, the tile leaves the grid, the viewer moves to the next image
-(the one before, if it was the last), and "Image hidden. Undo" is offered
-for 30 seconds: in the viewer while it is open, at the foot of the window
-when it is closed. Undo puts the image back where it was.
+**In the viewer.** A small trash can sits in the top left, the same size as the
+close button. One press hides the image: no question, no message. The viewer
+moves to the next image (the one before, if it was the last), and the tile
+leaves the grid. The button fades with the other controls when the image is
+tapped, and a tap on the image itself never hides. Presses within half a
+second of a hide are ignored, so a double tap hides one image, not two. If
+the request fails, nothing changes and screen readers are told "Could not hide
+the image". There is no Undo: put an image back from the page of hidden images.
 
 **The page of hidden images.** "Hidden images", at the foot of the gallery,
 opens `/admin/hidden`: every hidden image that is still in the bot's
