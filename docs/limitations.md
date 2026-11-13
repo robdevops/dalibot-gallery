@@ -9,8 +9,8 @@
 - **DynamoDB only.** The bot's self-hosted SQLite mode is not supported (the
   listing sits behind an interface so a reader could be added).
 - **JPEG originals only**, which is what Telegram serves for photos. Anything
-  else shows the placeholder. Photo-variation albums are not stored by the
-  bot, so they cannot appear.
+  else shows the placeholder. Photo-variation albums appear only once the bot
+  records them: bot versions before that change did not store them.
 - **WebP thumbnails only**; no AVIF or JPEG XL.
 - "Newest" means most recently drawn: adding a style to an old message brings
   its tiles back to the top. The date is derived from the TTL, so it is only
