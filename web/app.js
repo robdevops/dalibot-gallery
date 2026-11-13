@@ -396,7 +396,16 @@ function settle() {
     slide()
   }
 }
-full.onload = settle
+// Once the large image is in, fetch the next and the previous one, so that moving on shows
+// it at once. The browser keeps them: originals never change.
+const ahead = [new Image(), new Image()]
+full.onload = () => {
+  settle()
+  ;[1, -1].forEach((d, i) => {
+    const k = near(d)
+    if (k) ahead[i].src = src(k)
+  })
+}
 full.onerror = () => {
   settle()
   full.dataset.key = '' // retry next time

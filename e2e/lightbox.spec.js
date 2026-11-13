@@ -559,6 +559,39 @@ test('zoom with a trackpad pinch, the keyboard and a double click; drag to pan',
   await loaded(page, keys[8])
 })
 
+test('the next and previous large images are fetched ahead, so moving on does not wait', async ({ page }) => {
+  const keys = await domKeys(page)
+  const fetched = []
+  page.on('request', r => {
+    const m = /\/img\/([\w-]{22})\.jpg$/.exec(new URL(r.url()).pathname)
+    if (m) fetched.push(m[1])
+  })
+  // Nothing large is fetched while the viewer is closed.
+  await page.waitForTimeout(300)
+  expect(fetched).toEqual([])
+
+  await page.locator(`.tile[data-key="${keys[10]}"] a`).click()
+  await loaded(page, keys[10])
+  // The open image first, then its neighbours, and nothing else.
+  await expect.poll(() => fetched.slice().sort()).toEqual([keys[9], keys[10], keys[11]].sort())
+  expect(fetched[0]).toBe(keys[10])
+  await expect.poll(() => page.evaluate(k => performance.getEntriesByName(location.origin + '/img/' + k + '.jpg').some(e => e.responseEnd > 0), keys[11])).toBe(true)
+
+  // Moving on: the image is there at once, and nothing is transferred for it a second time.
+  const entries = k => page.evaluate(key => performance.getEntriesByName(location.origin + '/img/' + key + '.jpg').map(e => e.transferSize), k)
+  const first = await entries(keys[11])
+  expect(first.length).toBe(1)
+  expect(first[0]).toBeGreaterThan(50000) // it really came over the network when it was fetched ahead
+  const start = Date.now()
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[11])
+  expect(Date.now() - start).toBeLessThan(1000)
+  const again = (await entries(keys[11])).slice(1) // none, or served from the browser's cache
+  expect(again.every(size => size === 0)).toBe(true)
+  // And the one after is fetched in turn.
+  await expect.poll(() => fetched.includes(keys[12])).toBe(true)
+})
+
 test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
   const keys = await domKeys(page)
   const opener = page.locator(`.tile[data-key="${keys[1]}"] a`)
