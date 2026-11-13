@@ -357,6 +357,27 @@ test('on a touch screen, swiping the large image moves to the next or previous o
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     }
 
+    const shift = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)
+    const settled = async () => {
+      await expect.poll(shift).toBe(0)
+      expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+    }
+
+    // While the finger is down the image follows it.
+    const pt = (x, yy) => ({ x, y: Math.round(yy), id: 0 })
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pt(300, y)] })
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pt(260, y)] })
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pt(180, y)] })
+    await expect.poll(shift).toBe(-120) // touch moves are delivered with the next frame
+    expect(await fullKey(page)).toBe(keys[3]) // nothing changes until the finger lifts
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    // It slid away to the left; the next image arrives and comes to rest in place.
+    await loaded(page, keys[4])
+    await settled()
+    await swipe(80, y, 300, y) // and back
+    await loaded(page, keys[3])
+    await settled()
+
     await swipe(300, y, 80, y + 10) // to the left: the next image
     await loaded(page, keys[4])
     await expect(page).toHaveURL(new RegExp(`#/p/${keys[4]}$`))
@@ -369,6 +390,7 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await swipe(200, y, 170, y)
     await page.waitForTimeout(200)
     expect(await fullKey(page), 'after a short drag').toBe(keys[2])
+    await settled() // it sprang back
     await swipe(200, y - 100, 120, y + 150)
     await page.waitForTimeout(200)
     expect(await fullKey(page), 'after a vertical drag').toBe(keys[2])
@@ -380,6 +402,27 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await swipe(300, st.y + st.height / 2, 80, st.y + st.height / 2)
     await page.waitForTimeout(200)
     expect(await fullKey(page), 'after dragging the strip').toBe(keys[2])
+    await settled()
+
+    // At the first image there is nothing before it: a swipe to the right springs back.
+    await page.keyboard.press('Escape')
+    await page.locator('#grid .tile a').first().tap()
+    await loaded(page, keys[0])
+    await swipe(80, y, 300, y)
+    await page.waitForTimeout(300)
+    expect(await fullKey(page)).toBe(keys[0])
+    await settled()
+    // A tap straight after a fast swipe still works. (A browser that took the swipe for a scroll
+    // would swallow it; the page claims the gesture to prevent that.)
+    await swipe(300, y, 80, y)
+    await loaded(page, keys[1])
+    await page.getByRole('button', { name: 'Previous image' }).tap()
+    await loaded(page, keys[0])
+    await settled()
+    // The arrow buttons leave the image in place.
+    await page.getByRole('button', { name: 'Next image' }).tap()
+    await loaded(page, keys[1])
+    await settled()
     await expect(dialog(page)).toBeVisible()
   } finally {
     await context.close()

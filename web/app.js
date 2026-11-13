@@ -15,6 +15,7 @@ const cols = +getComputedStyle(grid).getPropertyValue('--cols') || 2
 let v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
 
 const enc = encodeURIComponent
+const still = () => matchMedia('(prefers-reduced-motion:reduce)').matches
 const say = s => { $('live').textContent = s }
 const src = (key, size) => '/img/' + key + (size ? '-' + size + '.webp?v=' + v : '.jpg')
 const node = key => grid.querySelector('[data-key="' + key + '"]')
@@ -144,7 +145,7 @@ pill.onclick = async () => {
     pill.hidden = true
     say('Loaded ' + j.tiles.length + ' new images')
     grid.querySelector('a')?.focus({ preventScroll: true })
-    scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth' })
+    scrollTo({ top: 0, behavior: still() ? 'auto' : 'smooth' })
   } catch {}
 }
 
@@ -177,9 +178,14 @@ function go(key) {
   history.replaceState(null, '', '#/p/' + key)
   show(key)
 }
-function step(d) {
+// The key d tiles from the open one.
+function near(d) {
   const all = keys(), i = all.indexOf(cur)
-  if (i >= 0 && all[i + d]) go(all[i + d])
+  return i < 0 ? '' : all[i + d]
+}
+function step(d) {
+  const k = near(d)
+  if (k) go(k)
   else if (d > 0) more()
 }
 function route() {
@@ -206,24 +212,58 @@ addEventListener('keydown', e => {
     step(d)
   }
 })
-// Swipe on the large image: left for the next one, right for the previous.
-// Only a single finger that starts on the image counts, and not while the page
-// is zoomed, so pinching, panning and scrolling the strip still work. The
-// listeners are on the dialog so that a second finger anywhere in it is seen.
-let sx = NaN, sy = 0
+// Swipe the large image: left for the next, right for the previous. One finger,
+// starting on the image, and not while zoomed (pinch, pan and the strip still
+// work). It follows the finger, then slides away or springs back.
+let sx = NaN, sy = 0, sliding = 0
+const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
-  sx = t[1] || e.target != full || visualViewport.scale > 1 ? NaN : t[0].clientX
+  sx = t[1] || sliding || !full.parentNode.contains(e.target) || visualViewport.scale > 1 ? NaN : t[0].clientX
   sy = t[0].clientY
 }, { passive: true })
-dlg.addEventListener('touchend', e => {
+dlg.ontouchmove = e => {
+  const t = e.touches[0], dx = t.clientX - sx // NaN unless this is a swipe
+  if (dx == dx && (full.style.transform || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
+    if (e.cancelable) e.preventDefault() // or the next tap is eaten
+    full.style.transition = 'none'
+    slide(dx + 'px')
+  }
+}
+function release(e) {
   const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
-  if (!e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy)) step(dx < 0 ? 1 : -1)
+  const d = !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
   sx = NaN
-})
-full.onload = () => (full.className = '')
+  full.style.transition = ''
+  if (e.type == 'touchend' && d && near(d)) {
+    sliding = 1
+    slide(-d * 100 + '%')
+    setTimeout(() => {
+      full.style.transition = 'none'
+      slide(d * 100 + '%')
+      sliding = 0
+      if (dlg.open) step(d)
+      else slide()
+    }, still() ? 0 : 180)
+  } else {
+    slide() // spring back
+    if (e.type == 'touchend' && d) step(d) // at the end
+  }
+}
+dlg.ontouchend = dlg.ontouchcancel = release
+// Loaded or failed: show it in place.
+function settle() {
+  full.className = ''
+  if (full.style.transform) {
+    full.offsetWidth // reflow first
+    full.style.transition = ''
+    slide()
+  }
+}
+full.onload = settle
 full.onerror = () => {
-  full.dataset.key = full.className = '' // retry next time
+  settle()
+  full.dataset.key = '' // retry next time
   if (dlg.open && !data.has(cur)) { // a dead deep link
     dlg.close()
     say('Image not found')
