@@ -331,6 +331,41 @@ Whatever proxy you use:
 - Nothing else is needed: no WebSockets, no path rewriting, and the only
   request body is the login form.
 
+### No password for visitors (nginx)
+
+To let visitors in without a token while the gallery still refuses anyone
+who does not come through nginx, keep `GALLERY_TOKEN` set and have nginx
+present it on every request. The gallery accepts the token as the password
+of HTTP Basic auth with any user name.
+
+1. Encode `nginx:` followed by the token:
+
+   ```sh
+   printf 'nginx:%s' 'YOUR_GALLERY_TOKEN' | base64 -w0
+   ```
+
+2. Put the result in a file only root can read, for example
+   `/etc/nginx/gallery-auth.conf` (`chmod 600`):
+
+   ```nginx
+   proxy_set_header Authorization "Basic PASTE_THE_BASE64_HERE";
+   ```
+
+3. In `deploy/nginx.conf`, inside `location /`, add
+   `include /etc/nginx/gallery-auth.conf;`, and next to that location add
+   `location = /login { return 302 /; }` so the unused login page is not shown.
+4. `sudo nginx -t && sudo systemctl reload nginx`.
+
+Visitors now see the gallery straight away; a request that reaches port 8080
+without passing through nginx still gets 401. nginx replaces any
+`Authorization` header a visitor sends.
+
+This makes the gallery public to everyone who can reach nginx. To limit
+that, restrict the `server` block with `allow` / `deny`, or put nginx's own
+`auth_basic` or SSO in front. `GALLERY_AUTH=off` also removes the password,
+but then nothing protects the gallery's port itself, and images are sent as
+`Cache-Control: public`.
+
 ## Running without a container
 
 ### libvips
@@ -480,6 +515,12 @@ generated again on demand (images whose file id has since died are then gone).
 
 ## Upgrading
 
+There is no database and nothing to migrate. The cache is kept across
+upgrades: originals are reused, and thumbnails are regenerated only if the
+pipeline version changed.
+
+**Container:**
+
 ```sh
 git pull
 docker compose -f deploy/compose.yaml up -d --build
@@ -487,10 +528,26 @@ docker compose -f deploy/compose.yaml up -d --build
 
 Use `docker compose -f deploy/compose.yaml build --pull --no-cache` now and
 then, even without a new release, to pick up security updates to libvips and
-its codecs. The cache volume is kept across upgrades; originals are reused,
-and thumbnails are regenerated only if the pipeline version changed. For the
-systemd install, rebuild the binary, install it over the old one and
-`systemctl restart dalibot-gallery`. There is no database and nothing to migrate.
+its codecs.
+
+**systemd:** the running service uses the binary in `/usr/local/bin`, so new
+code, including new defaults, takes effect only after you rebuild, reinstall
+and restart. From the repository root:
+
+```sh
+git pull
+go build -trimpath -o dalibot-gallery ./cmd/gallery
+./dalibot-gallery -version
+sudo install -m 0755 dalibot-gallery /usr/local/bin/dalibot-gallery
+sudo systemctl restart dalibot-gallery
+journalctl -u dalibot-gallery -n 20
+```
+
+The first log line prints the settings in effect (secrets are redacted), so
+you can check a changed default there. If `deploy/dalibot-gallery.service`
+changed, install it again and run `sudo systemctl daemon-reload` before the
+restart. If you changed `.env`, install it again as `/etc/dalibot-gallery/env`.
+After a system update of libvips, rebuild as well.
 
 ## Development and tests
 
