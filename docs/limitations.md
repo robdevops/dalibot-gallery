@@ -23,7 +23,7 @@
   like any other record, is labelled with the bot's default command whatever
   model made it, and appears twice if the bot also has an ordinary
   record of the same picture under a different Telegram file id.
-- With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](../README.md#reverse-proxy).
+- With `GALLERY_AUTH=off`, image responses are cacheable as `public`; see [Reverse proxy](reverse-proxy.md).
 - Responses that Go's HTTP server writes itself for malformed requests carry
   no security headers; see [Security model](security.md).
 - Rebuild the container image often to pick up security updates to Alpine,

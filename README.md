@@ -20,7 +20,7 @@ first, with infinite scroll and a full-size viewer.
 | ![The grid on a desktop](docs/screenshots/desktop-1440-grid.jpg) | ![The viewer on a desktop](docs/screenshots/desktop-1440-lightbox.jpg) |
 
 Screenshots from the end-to-end tests, which run the real binary against a
-local stand-in for DynamoDB and Telegram that serves the 12 sample images in
+local stand-in for DynamoDB and Telegram that serves the sample images in
 `testdata/telegram/`. Phone versions are in `docs/screenshots/`.
 
 Contents: [Quick start](#quick-start-container) ·
@@ -85,44 +85,8 @@ The image sets `GALLERY_LISTEN=0.0.0.0:8080` and
 when you use `docker run --env-file` (Compose overrides them for you). Write
 values in `.env` without quotes: `docker run --env-file` and systemd pass quotes through literally.
 
-The image is built with Go 1.27 on `golang:1.27-alpine` and runs on
-`alpine:3` (Alpine 3.24 with libvips 8.18.2 when this was written). Alpine
-packages libvips' heavier loaders (PDF, ImageMagick, HEIF, JPEG XL)
-separately and the image installs none of them, so it is about 125 MB,
-against more than 300 MB on Debian or Ubuntu. Both images can be replaced
-with the build arguments `GO_IMAGE` and `BASE_IMAGE`, but the build and
-runtime stages must stay on the same Alpine release (the binary links musl
-and libvips dynamically) and the package names in the Dockerfile are Alpine's.
-
-**What has and has not been tested.** The image was built and run in the
-development sandbox only (Docker 29, x86-64):
-
-- Built from this Dockerfile, unchanged, but with `GO_IMAGE` and `BASE_IMAGE`
-  set to copies of `golang:1.27-alpine` and `alpine:3` that add the sandbox
-  proxy's certificate, because the sandbox has no direct internet access.
-  The default build arguments (the plain images from Docker Hub) have not
-  been built end to end.
-- The Go tests were run inside the build stage (Go 1.27.4, musl, libvips
-  8.18.2), except the integration test, which needs moto and ran on the
-  host only (Ubuntu 24.04, libvips 8.15.1).
-- Run with the `docker run` flags above against the dev stack (a local
-  DynamoDB stand-in and a fake Telegram): healthy, uid 10001, read-only root,
-  no capabilities, thumbnails and originals served, 15 MiB of the 512 MiB
-  in use after warming 240 thumbnails, clean exit on `docker stop`.
-- `deploy/compose.yaml` was brought up and its client-address handling
-  checked through the published port with an earlier Ubuntu-based image;
-  it has not been run again with the Alpine image. The nginx, Caddy and
-  Traefik examples were each run in front of that earlier container before
-  `GALLERY_TRUSTED_PROXIES` existed; they have not been run again since,
-  and the Traefik address in `deploy/traefik-labels.yaml` is a placeholder
-  you must change.
-- Not tested: real AWS, the real Telegram API, certificate issuance, any
-  other machine or architecture, the unit under a running systemd.
-
-`/healthz` answers 503 until the first read of the table has succeeded, so
-the container is "starting" or "unhealthy" while AWS is unreachable or the
-credentials are wrong; the log says why. Traefik does not route to a
-container that is not healthy.
+How the image is built, what has and has not been tested, and the health
+check are described in [docs/container.md](docs/container.md).
 
 ## Configuration
 
@@ -141,7 +105,7 @@ These are the ones to look at before the first start:
 | `DALIBOT_TABLE` | `dalibot` | The bot's table. |
 | `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. |
 | `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
-| `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [Reverse proxy](#reverse-proxy). |
+| `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [docs/reverse-proxy.md](docs/reverse-proxy.md). |
 
 The rest have defaults that suit most installations: turning the login off,
 which chats to show, the refresh interval, cache size, thumbnail quality and
@@ -168,42 +132,10 @@ TLS. Examples are in `deploy/`:
 | `deploy/Caddyfile` | Caddy on the host, proxying to `127.0.0.1:8080` |
 | `deploy/traefik-labels.yaml` | Traefik's Docker provider; a Compose override: `docker compose -f deploy/compose.yaml -f deploy/traefik-labels.yaml up -d --build` |
 
-Whatever proxy you use:
-
-- **Do not remove, replace or duplicate the gallery's security headers.** The
-  examples add only `Strict-Transport-Security`.
-- **Do not cache at the proxy.** With the gallery's login on, images are
-  sent with `Cache-Control: private, max-age=31536000, immutable`: the
-  browser keeps them for a year, and a shared cache that follows the
-  standard does not store them. (The plan specified `public`; `private` was
-  chosen because the images are behind the login. Browser caching is the
-  same.) With `GALLERY_AUTH=off` they are sent as `public`, and it is then up
-  to you not to put a shared cache between the authenticating proxy and the visitors.
-- **Set `X-Forwarded-For`, and tell the gallery which proxies to believe.**
-  The limiter on token guesses counts per client address. The gallery uses
-  the address of the TCP peer, unless that peer is listed in
-  `GALLERY_TRUSTED_PROXIES`; then it reads `X-Forwarded-For` from the right
-  and takes the first address that is not itself a trusted proxy. nginx's
-  `$proxy_add_x_forwarded_for`, Caddy and Traefik all append the client
-  address by default. Set the variable to the address your proxy connects
-  from, as the gallery sees it:
-  - Proxy and gallery on the same host, no container: nothing to do. The
-    default trusts loopback.
-  - `deploy/compose.yaml` with a proxy on the host: already set. The
-    container sees the proxy's connections as coming from the gateway of
-    the Compose network, which the file pins to `172.30.80.1`.
-  - `docker run` with a proxy on the host: the gateway of the Docker network
-    in use (`docker network inspect bridge`, usually `172.17.0.1`).
-  - Traefik in Docker: Traefik's address on the shared network; see the
-    comments in `deploy/traefik-labels.yaml`.
-
-  List only the proxies themselves. Anything that can connect to the gallery
-  from a trusted address can pick its own client address and so get around
-  the per-client limit (the overall limit still applies) and write false
-  addresses to the log. If the proxy is not listed, nothing breaks, but all
-  visitors count as one client and share 5 wrong tokens per minute.
-- Nothing else is needed: no WebSockets, no path rewriting, and the only
-  request body is the login form.
+Whatever proxy you use, there are a few rules to follow: leave the gallery's
+security headers alone, do not cache at the proxy, and tell the gallery
+which proxies to believe for the client address. They are in
+[docs/reverse-proxy.md](docs/reverse-proxy.md).
 
 ### No password for visitors (nginx)
 
@@ -398,6 +330,8 @@ After a system update of libvips, rebuild as well.
 |---|---|
 | [docs/aws-access.md](docs/aws-access.md) | The read-only IAM policy, creating the user and key, troubleshooting |
 | [docs/configuration.md](docs/configuration.md) | The settings beyond the essentials above |
+| [docs/container.md](docs/container.md) | How the image is built, what has been tested, the health check |
+| [docs/reverse-proxy.md](docs/reverse-proxy.md) | Rules for any proxy: security headers, caching, client addresses and `GALLERY_TRUSTED_PROXIES` |
 | [docs/security.md](docs/security.md) | What the browser can and cannot see, authentication, headers, the Telegram allowlist, image handling |
 | [docs/cache.md](docs/cache.md) | The disk cache, its size limit, eviction and `PIPELINE_VERSION` |
 | [docs/development.md](docs/development.md) | Running the tests, the local dev stack, the browser tests |
@@ -406,4 +340,4 @@ After a system update of libvips, rebuild as well.
 
 ## Licence
 
-MIT; see [LICENSE](LICENSE).
+[MIT](LICENSE)

@@ -45,7 +45,7 @@ whether it is posted to `/login` or sent as a Basic password to any route:
   credentials do not count.
 - The limit is only as good as the client address. Behind a reverse proxy
   that is not listed in `GALLERY_TRUSTED_PROXIES`, every visitor has the
-  proxy's address and shares one allowance of 5; see [Reverse proxy](../README.md#reverse-proxy).
+  proxy's address and shares one allowance of 5; see [Reverse proxy](reverse-proxy.md).
 - The limiter slows guessing; it does not make a weak token safe. Use a long
   random one (`openssl rand -base64 32`). The 16-character minimum checks
   length, not randomness.

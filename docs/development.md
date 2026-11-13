@@ -18,7 +18,7 @@ go test ./internal/imaging -run '^$' -fuzz FuzzValidate -fuzztime 30s   # the JP
   cache, size cap), the imaging pipeline, the cache and the HTTP server.
 - `cmd/gallery/integration_test.go` builds the real binary and runs it
   against moto and a fake Telegram API with about 150 seeded items in 3 chats.
-- `testdata/telegram/` holds 12 real images exactly as Telegram served them
+- `testdata/telegram/` holds 8 real images exactly as Telegram served them
   (1024×1024 progressive JPEG, 142–348 KB). The imaging tests, the benchmark
   and the fake Telegram server all use them. `testdata/dynamodb/items.json`
   holds items in the bot's shapes.
