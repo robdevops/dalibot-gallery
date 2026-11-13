@@ -1,7 +1,7 @@
 # Thumbnail benchmark
 
 Measured on 8 real Telegram images (`testdata/telegram/telegram-01.jpg` … `telegram-08.jpg`:
-1024×1024 progressive JPEG, 102–443 KB each, exactly as Telegram served them). No synthetic
+1024×1024 progressive JPEG, 102–348 KB each, exactly as Telegram served them). No synthetic
 images are used in these numbers.
 
 | | |
@@ -18,37 +18,38 @@ images are used in these numbers.
 
 | | 480 px | 240 px |
 |---|---:|---:|
-| Time per thumbnail, one at a time (mean) | 45.3 ms | 23.4 ms |
-| Time per thumbnail, one at a time (median) | 43.6 ms | 23.0 ms |
-| First call in the process | 48.5 ms | 19.6 ms |
-| Bytes per thumbnail (mean) | 36,594 | 12,038 |
-| Bytes per thumbnail (smallest – largest) | 14,488 – 99,882 | 5,938 – 28,980 |
-| Throughput with 4 workers | 75.5 per second | 138.7 per second |
+| Time per thumbnail, one at a time (mean) | 47.9 ms | 23.4 ms |
+| Time per thumbnail, one at a time (median) | 45.5 ms | 23.3 ms |
+| First call in the process | 47.3 ms | 29.4 ms |
+| Bytes per thumbnail (mean) | 31,371 | 11,206 |
+| Bytes per thumbnail (smallest – largest) | 14,488 – 64,170 | 5,938 – 21,186 |
+| Throughput with 4 workers | 71.2 per second | 126.9 per second |
 
-A whole tile (the 480 px and the 240 px thumbnail of one image) takes about 69 ms on one
-core, and 4 workers make 48.7 tiles per second.
+A whole tile (the 480 px and the 240 px thumbnail of one image) takes about 71 ms on one
+core, and 4 workers make 47.4 tiles per second.
 
 Every call is "cold": the libvips operation cache is off and each thumbnail is decoded from
 the JPEG bytes again, so the per-thumbnail time is what a first request for an uncached tile
 costs (without the Telegram download). The times include the pure-Go header validation.
 
 The server also decodes every downloaded original once in full (`imaging.Verify`) before
-storing it. That check takes about 13 ms per image (13.4 and 13.0 ms in two runs of
-`BenchmarkVerify`), once, on the first request for a cold tile: about 82 ms of CPU for a
-whole tile instead of about 69 ms.
+storing it. That check takes about 14 ms per image (14.0 and 13.4 ms in two runs of
+`BenchmarkVerify`), once, on the first request for a cold tile: about 85 ms of CPU for a
+whole tile instead of about 71 ms.
 
 Against the plan's original figures (51–57 ms per 480 px thumbnail cold, about 75 WebP per
 second on 4 cores and about 44 KB per tile, measured with bimg on 13 other images): this
-run is somewhat faster per thumbnail (45.3 ms) and the same in throughput (75.5 per second).
-The mean 480 px size is smaller, 36.6 KB. The image sets differ, so the sizes in particular
-are not a like-for-like comparison.
+run is a little faster per thumbnail (47.9 ms; 47.1 to 51.5 ms over all four runs, see
+"Caveats") and a little lower in throughput (71.2 per second; 67.2 to 73.1 over all four
+runs). The mean 480 px size is smaller, 31.4 KB. The image sets differ, so the sizes in
+particular are not a like-for-like comparison.
 
-**One image misses the 60 KB target.** `telegram-04.jpg`, a pop-art picture covered in
-halftone dots, is 99,882 bytes at 480 px with this libvips; the other seven are between
-14,488 and 41,294 bytes (mean 27,554). Quality 76 and effort 4 are fixed, so this is an
-accepted exception. The imaging test names that one file and gives it a 100 KB ceiling,
-fails if any other sample is over 60 KB, and checks the means (≤ 50 KB at 480 px, ≤ 16 KB
-at 240 px).
+**One image misses the 60 KB target.** `telegram-07.jpg`, a finely detailed pattern of
+birds, is 64,170 bytes at 480 px with this libvips; the other seven are between 14,488 and
+40,472 bytes (mean 26,685). Quality 76 and effort 4 are fixed, so this is an accepted
+exception. The imaging test (`internal/imaging/imaging_test.go`) names that one file and
+gives it a 65 KB ceiling, fails if any other sample is over 60 KB, and checks the means
+(≤ 50 KB at 480 px, ≤ 16 KB at 240 px).
 
 ## Per image
 
@@ -56,14 +57,14 @@ Median of 15 runs per image and size, one pipeline at a time.
 
 | image | JPEG bytes | 480 ms | 480 bytes | 240 ms | 240 bytes |
 |---|---:|---:|---:|---:|---:|
-| telegram-01.jpg | 160732 | 43.6 | 25252 | 21.0 | 7346 |
-| telegram-02.jpg | 148604 | 40.6 | 23252 | 22.0 | 9470 |
-| telegram-03.jpg | 102160 | 35.4 | 14488 | 16.5 | 7850 |
-| telegram-04.jpg | 443038 | 62.9 | 99882 | 35.8 | 28980 |
-| telegram-05.jpg | 252279 | 45.8 | 40472 | 24.8 | 11888 |
-| telegram-06.jpg | 246523 | 47.0 | 41294 | 24.4 | 11844 |
-| telegram-07.jpg | 131027 | 37.7 | 16892 | 19.3 | 5938 |
-| telegram-08.jpg | 179206 | 41.1 | 31226 | 23.1 | 12990 |
+| telegram-01.jpg | 160732 | 40.5 | 25252 | 19.4 | 7346 |
+| telegram-02.jpg | 102160 | 38.6 | 14488 | 20.4 | 7850 |
+| telegram-03.jpg | 252279 | 55.4 | 40472 | 25.2 | 11888 |
+| telegram-04.jpg | 131027 | 39.1 | 16892 | 19.4 | 5938 |
+| telegram-05.jpg | 179206 | 42.5 | 31226 | 23.8 | 12990 |
+| telegram-06.jpg | 141736 | 45.1 | 24810 | 20.0 | 11342 |
+| telegram-07.jpg | 348340 | 62.6 | 64170 | 30.9 | 21186 |
+| telegram-08.jpg | 255445 | 45.5 | 33658 | 25.8 | 11108 |
 
 ## All runs
 
@@ -71,8 +72,8 @@ Median of 15 runs per image and size, one pipeline at a time.
 
 | size | ms mean | ms median | ms min | ms max | first call ms | bytes mean | bytes min | bytes max |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 480 | 45.3 | 43.6 | 31.6 | 83.1 | 48.5 | 36594 | 14488 | 99882 |
-| 240 | 23.4 | 23.0 | 14.5 | 41.7 | 19.6 | 12038 | 5938 | 28980 |
+| 480 | 47.9 | 45.5 | 30.3 | 78.5 | 47.3 | 31371 | 14488 | 64170 |
+| 240 | 23.4 | 23.3 | 16.1 | 35.6 | 29.4 | 11206 | 5938 | 21186 |
 
 ## Throughput
 
@@ -81,20 +82,20 @@ Four goroutines (`Workers: 4`), each running pipelines back to back for 10 secon
 
 | workload, 4 goroutines for 10 s | per second |
 |---|---:|
-| 480 px thumbnails | 75.5 |
-| 240 px thumbnails | 138.7 |
-| tiles (480 px + 240 px from the same JPEG) | 48.7 |
+| 480 px thumbnails | 71.2 |
+| 240 px thumbnails | 126.9 |
+| tiles (480 px + 240 px from the same JPEG) | 47.4 |
 
-The standard Go benchmarks agree:
+The standard Go benchmarks, run straight afterwards, came out somewhat slower at 480 px:
 
 ```
 $ go test ./internal/imaging -run '^$' -bench 'Thumbnail|Verify' -benchtime 5s -cpu 1
-BenchmarkThumbnail480 	     133	  45867207 ns/op	     36748 webp-bytes/op
-BenchmarkThumbnail240 	     264	  23035817 ns/op	     12038 webp-bytes/op
-BenchmarkVerify       	     452	  13360031 ns/op
+BenchmarkThumbnail480 	     100	  51462408 ns/op	     31087 webp-bytes/op
+BenchmarkThumbnail240 	     248	  24276378 ns/op	     11206 webp-bytes/op
+BenchmarkVerify       	     399	  14014582 ns/op
 $ go test ./internal/imaging -run '^$' -bench Parallel -benchtime 5s -cpu 4
-BenchmarkParallel480-4   	     429	  13196916 ns/op	        75.78 thumbs/s
-BenchmarkParallel240-4   	     880	   7010923 ns/op	       142.6 thumbs/s
+BenchmarkParallel480-4   	     415	  14878761 ns/op	        67.21 thumbs/s
+BenchmarkParallel240-4   	     694	   8079148 ns/op	       123.8 thumbs/s
 ```
 
 (`webp-bytes/op` in the 480 px line is not exactly the table's mean because the number of
@@ -111,18 +112,25 @@ thumbnails without the budget peaked at 651 MB in a reviewer's measurement.
 
 ## Caveats
 
-- Every measurement was run twice, with other light work on the machine (load average 1–3.6
-  around the runs). The tables above are the first run. The second run of the report gave
-  46.1 ms and 22.8 ms mean per thumbnail (medians 43.1 and 22.0 ms), first calls of 43.4 and
-  25.3 ms, and 76.2 / 139.3 / 48.6 per second with 4 workers. The second run of the Go
-  benchmarks gave 46.4 ms and 23.3 ms, and 74.0 and 141.2 per second. So the means agree
-  within about 3% and the throughput within about 2%. Single images vary more: the
-  per-image medians moved by up to 5 ms at 480 px (`telegram-03.jpg` 35.4 → 40.4 ms,
-  `telegram-05.jpg` 45.8 → 53.6 ms) and up to 5.4 ms at 240 px between the two runs.
-  Byte sizes do not vary: the output is identical from run to run.
-- Eight images are a small sample. Sizes depend heavily on the picture (6.9× between the
+- Every measurement was run twice, one after the other: the report, the report again, then
+  the Go benchmarks twice. The load average was 0.5 before the first run; nothing else was
+  started on the machine, but it is a shared virtual machine. The tables above are the
+  first run of each. The second run of the report gave 47.1 ms and 24.7 ms mean per
+  thumbnail (medians 46.1 and 25.0 ms), first calls of 45.1 and 21.1 ms, and
+  73.1 / 129.8 / 45.3 per second with 4 workers. The second run of the Go benchmarks gave
+  50.2 ms and 24.5 ms, 13.4 ms for `Verify`, and 69.9 and 130.0 per second. So the two
+  report runs agree within 2% at 480 px and 6% at 240 px, and their throughput within 3%
+  (5% for tiles). The Go benchmarks were 5–9% slower than the report at 480 px (50.2 and
+  51.5 ms against 47.1 and 47.9 ms) and 2–8% lower in 480 px throughput (67.2 and 69.9
+  against 71.2 and 73.1 per second). Over all four runs: 47.1–51.5 ms at 480 px,
+  23.4–24.7 ms at 240 px, 67.2–73.1 and 123.8–130.0 per second. Single images vary more:
+  the per-image medians moved by up to 7.6 ms at 480 px (`telegram-07.jpg` 62.6 → 55.0 ms,
+  `telegram-04.jpg` 39.1 → 44.1 ms) and up to 5.5 ms at 240 px (`telegram-01.jpg`
+  19.4 → 24.9 ms) between the two report runs. Byte sizes do not vary: the output is
+  identical from run to run.
+- Eight images are a small sample. Sizes depend heavily on the picture (4.4× between the
   smallest and largest here at 480 px), and one image out of eight moves the mean a lot:
-  without `telegram-04.jpg` the 480 px mean is 27.6 KB instead of 36.6 KB.
+  without `telegram-07.jpg` the 480 px mean is 26.7 KB instead of 31.4 KB.
 - Not measured: the Telegram download, the disk cache and HTTP serving. Memory was not
   measured for the Telegram images at all; see "Memory".
 
