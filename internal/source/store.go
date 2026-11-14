@@ -119,23 +119,29 @@ func (st *Store) Touch() {
 	}
 }
 
-// wanted reports whether someone has looked at the gallery since the last good read, so that
-// what they saw may be out of date.
+// WarmFor is how long after the last Touch the snapshot is kept fresh: someone who loaded the
+// page, and has gone to do something else, comes back to current data for this long.
+const WarmFor = 20 * time.Minute
+
+// wanted reports whether the gallery is warm: it was looked at less than WarmFor ago.
 func (st *Store) wanted() bool {
 	u := st.use.Load()
-	return u != 0 && u >= st.success.Load()
+	return u != 0 && time.Since(time.Unix(0, u)) < WarmFor
 }
 
 // Run keeps the snapshot up to date until ctx is cancelled. It reads the source straight away
-// unless a read has already succeeded, and after that only while the gallery is in use:
+// unless a read has already succeeded, and after that only while the gallery is warm (a Touch
+// less than WarmFor ago, 20 minutes):
 //
-//   - every interval, if there has been a Touch since the last good read (so while it is used
-//     it is read at most once an interval, and a failed read is tried again at the next one);
-//   - at once on a Touch that finds the snapshot older than an interval, so the first visit
-//     after a quiet spell does not wait for the timer.
+//   - every interval while warm, whether or not anything is asked for in between (a page
+//     left open in a hidden tab does not poll, and is current when it is looked at again);
+//     a failed read is tried again at the next interval;
+//   - at once on a Touch that finds the last read attempt older than an interval, so the
+//     first visit after a quiet spell does not wait for the timer.
 //
-// A gallery nobody is looking at makes no requests of the bot's table at all. A failed read is
-// logged and the previous snapshot is kept. Each read is given at most max(interval, 30 s).
+// A gallery nobody has looked at for WarmFor makes no requests of the bot's table at all. A
+// failed read is logged and the previous snapshot is kept. Each read is given at most
+// max(interval, 30 s).
 func (st *Store) Run(ctx context.Context, interval time.Duration) {
 	timeout := max(interval, 30*time.Second)
 	refresh := func() {
@@ -193,7 +199,7 @@ func (st *Store) Age() time.Duration {
 }
 
 // Healthy reports whether a refresh has succeeded within maxAge (/healthz uses 3 x
-// GALLERY_REFRESH), or whether nobody has looked since the last one, so that none was due.
+// GALLERY_REFRESH), or whether the gallery is not warm, so that no refresh is due.
 func (st *Store) Healthy(maxAge time.Duration) bool {
 	return st.success.Load() != 0 && (st.Age() < maxAge || !st.wanted())
 }

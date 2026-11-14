@@ -122,10 +122,10 @@ of creating a user, and leave `AWS_ACCESS_KEY_ID` and
 ## Cost
 
 The gallery serves every request from memory and scans the whole table at
-most once per `GALLERY_REFRESH` (60 s by default), and only while someone is
-looking at it: a page or the listing was asked for since the last scan. A
-gallery nobody has open makes no requests to AWS at all, and the first visit
-after a quiet spell scans at once. The table is bounded by the bot's 90-day
+most once per `GALLERY_REFRESH` (60 s by default), and only while it is warm:
+for 20 minutes after the last page or listing request. A gallery nobody has
+looked at for 20 minutes makes no requests to AWS at all, and the first visit
+after that scans at once. The table is bounded by the bot's 90-day
 TTL, so a scan is small, but it is billed as read capacity for the whole
 table: 134 items of about 2 KB scanned every minute round the clock would be
 roughly 50,000 read units a day, about 50 US cents a month, and the gallery

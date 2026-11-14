@@ -178,7 +178,7 @@ func TestStoreRun(t *testing.T) {
 		if st.Snapshot().Len() != 19 {
 			t.Fatalf("len = %d", st.Snapshot().Len())
 		}
-		// Not again within the interval, however often it is looked at...
+		// Not again within the interval, however often it is looked at.
 		for range 50 {
 			st.Touch()
 		}
@@ -186,41 +186,47 @@ func TestStoreRun(t *testing.T) {
 		if swaps() != 2 {
 			t.Fatalf("a read within the interval of the last: %d swaps, want 2", swaps())
 		}
-		// ...but at the end of it, because it has been looked at since.
-		synctest.Sleep(interval)
-		if swaps() != 3 {
-			t.Fatalf("a timed read after a look: %d swaps, want 3", swaps())
+
+		// Warm: it is read at every interval for WarmFor after the last look, with nobody asking.
+		synctest.Sleep(WarmFor - interval/2)
+		warm := swaps()
+		if want := int32(2 + WarmFor/interval - 1); warm != want {
+			t.Fatalf("%d swaps over the %s it is kept warm, want %d", warm, WarmFor, want)
 		}
-		// And then it is quiet again.
-		synctest.Sleep(10 * interval)
-		if swaps() != 3 {
-			t.Fatalf("a read with nobody looking: %d swaps, want 3", swaps())
+		if !st.Healthy(3 * interval) {
+			t.Error("a warm gallery that is read at every interval should be healthy")
+		}
+		// And then it is quiet again, however long.
+		synctest.Sleep(100 * interval)
+		if swaps() != warm || !st.Healthy(3*interval) {
+			t.Fatalf("a read after the warm time with nobody looking: %d swaps, want %d", swaps(), warm)
 		}
 
-		// Used steadily, it is read once an interval.
-		for range 3 {
-			synctest.Sleep(interval / 2)
-			st.Touch()
-			synctest.Sleep(interval / 2)
+		// A look in the middle of the warm time extends it by the full time.
+		st.Touch() // reads at once
+		synctest.Wait()
+		synctest.Sleep(WarmFor / 2)
+		st.Touch()
+		before := swaps()
+		synctest.Sleep(WarmFor - interval/2)
+		if got := swaps() - before; got != int32(WarmFor/interval-1) {
+			t.Fatalf("%d reads in the %s after the second look, want %d", got, WarmFor, WarmFor/interval-1)
 		}
-		if swaps() != 6 {
-			t.Fatalf("3 intervals of use: %d swaps, want 6", swaps())
-		}
+		synctest.Sleep(100 * interval)
 
-		// The source starts failing while it is used: Run logs it, keeps the old snapshot, tries again at each
-		// interval (not at every request), and the store turns unhealthy when it stays so.
-		synctest.Sleep(2 * interval) // quiet again, and the last read is more than an interval old
-		base := swaps()
+		// The source starts failing while it is warm: Run logs it, keeps the old snapshot, tries again at
+		// each interval (not at every request), and the store turns unhealthy when it stays so.
 		src.set(nil, errors.New("ProvisionedThroughputExceededException"))
-		before := src.callCount()
+		base := swaps()
+		start := src.callCount()
 		st.Touch()
 		synctest.Wait()
 		for range 100 {
 			st.Touch()
 		}
 		synctest.Wait()
-		if src.callCount() != before+1 {
-			t.Fatalf("%d reads of a failing source for a burst of visits, want 1", src.callCount()-before)
+		if src.callCount() != start+1 {
+			t.Fatalf("%d reads of a failing source for a burst of visits, want 1", src.callCount()-start)
 		}
 		if !strings.Contains(logs.String(), "keeping the previous snapshot") {
 			t.Fatal("failure was not logged")
@@ -229,12 +235,12 @@ func TestStoreRun(t *testing.T) {
 			t.Error("snapshot lost after a failed refresh")
 		}
 		synctest.Sleep(interval)
-		if got := src.callCount() - before; got != 2 {
+		if got := src.callCount() - start; got != 2 {
 			t.Fatalf("%d reads of a failing source after an interval, want 2", got)
 		}
 		synctest.Sleep(3 * interval)
 		if st.Healthy(3 * interval) {
-			t.Error("store should be unhealthy after 3 missed refreshes while it is looked at")
+			t.Error("store should be unhealthy after 3 missed refreshes while it is warm")
 		}
 		// ...and recovers.
 		src.set(records, nil)

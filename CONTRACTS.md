@@ -207,13 +207,13 @@ func (s *Snapshot) Keys() []string                 // every live key, newest fir
 func NewStore(src Source, opt Options, log *slog.Logger) *Store   // log may be nil
 func (st *Store) Snapshot() *Snapshot              // never nil; empty until the first successful refresh
 func (st *Store) Refresh(ctx context.Context) error    // on error the previous snapshot stays
-func (st *Store) Run(ctx context.Context, interval time.Duration)  // blocks; refreshes now, then only while in use (see Touch): every interval if there was a Touch since the last good read, and at once on a Touch when the last read attempt is older than interval; logs failures
+func (st *Store) Run(ctx context.Context, interval time.Duration)  // blocks; refreshes now, then only while warm (a Touch less than `WarmFor` = 20 min ago): every interval, with or without further Touches, and at once on a Touch when the last read attempt is older than interval; logs failures
 func (st *Store) Touch()                           // someone is looking (the server calls it for /, /api/tiles and /api/tiles/new, after authorization); cheap, any goroutine
 func (st *Store) Rebuild()                         // Build again from the records read last (no read) and swap; after a change to Options.Hidden
 func (st *Store) OnSwap(fn func(*Snapshot))        // called after every swap, by Refresh or Rebuild, on the goroutine that swapped
 func (st *Store) LastRefresh() time.Time           // last success; zero if none
 func (st *Store) Age() time.Duration               // since last success; math.MaxInt64 if none
-func (st *Store) Healthy(maxAge time.Duration) bool    // a refresh succeeded, and either less than maxAge ago or nobody has Touched since (none was due)
+func (st *Store) Healthy(maxAge time.Duration) bool    // a refresh succeeded, and either less than maxAge ago or the store is not warm (none is due)
 ```
 
 ### Behaviour other packages rely on
