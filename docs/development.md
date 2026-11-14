@@ -74,8 +74,8 @@ directory, written the way the bot writes it; the dev stack never opens an
 existing database. The browser tests run against the DynamoDB stack only.
 
 **Container.** To run the image against the dev stack, start the stack, take
-`AWS_ENDPOINT_URL_DYNAMODB` and `TELEGRAM_API_BASE` from its gallery
-process's environment, and run the image with `--network host`, those two
+`AWS_ENDPOINT_URL_DYNAMODB`, `AWS_ENDPOINT_URL_DYNAMODB_STREAMS` and `TELEGRAM_API_BASE` from its gallery
+process's environment, and run the image with `--network host`, those
 variables, the dev token (as `GALLERY_TOKEN`) and bot token, `AWS_ACCESS_KEY_ID=testing`,
 `AWS_SECRET_ACCESS_KEY=testing` and a free `GALLERY_LISTEN` port (to try
 hiding, add `GALLERY_ADMIN_TOKEN` and `-v <volume>:/var/lib/dalibot-gallery`). With

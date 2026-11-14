@@ -130,6 +130,7 @@ func (m *Moto) Stop() {
 func AWSEnv(endpoint string) []string {
 	return []string{
 		"AWS_ENDPOINT_URL_DYNAMODB=" + endpoint,
+		"AWS_ENDPOINT_URL_DYNAMODB_STREAMS=" + endpoint, // the stream is another service, with its own endpoint
 		"AWS_ACCESS_KEY_ID=testing",
 		"AWS_SECRET_ACCESS_KEY=testing",
 		"AWS_SESSION_TOKEN=",

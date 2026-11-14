@@ -38,7 +38,7 @@ type DynamoOptions struct {
 	Table  string // required
 	Region string // required
 	// Endpoint overrides the service endpoint, for moto or DynamoDB Local.
-	// When empty the SDK's own rules apply, including AWS_ENDPOINT_URL_DYNAMODB.
+	// When empty the SDK's own rules apply, including AWS_ENDPOINT_URL_DYNAMODB and AWS_ENDPOINT_URL_DYNAMODB_STREAMS.
 	Endpoint string
 	// Logger receives a warning for items that cannot be decoded. May be nil.
 	Logger *slog.Logger

@@ -169,7 +169,7 @@ func Build(records []Record, opt Options) *Snapshot   // all listing rules; use 
 // DynamoDB reader (Scan, DescribeTable and the three read operations of DynamoDB Streams; never writes)
 type DynamoOptions struct {
 	Table, Region string
-	Endpoint      string        // "" = SDK default (AWS_ENDPOINT_URL_DYNAMODB is honoured); set for moto
+	Endpoint      string        // "" = SDK default (AWS_ENDPOINT_URL_DYNAMODB and AWS_ENDPOINT_URL_DYNAMODB_STREAMS are honoured); set for moto
 	Logger        *slog.Logger  // may be nil
 }
 func NewDynamo(ctx context.Context, opt DynamoOptions) (*Dynamo, error)   // standard credential chain; no request made

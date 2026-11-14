@@ -122,6 +122,7 @@ func TestIntegrationSQLite(t *testing.T) {
 			"DALIBOT_TABLE=not a table!",
 			"AWS_REGION=Not A Region",
 			"AWS_ENDPOINT_URL_DYNAMODB=http://127.0.0.1:1",
+			"AWS_ENDPOINT_URL_DYNAMODB_STREAMS=http://127.0.0.1:1",
 			"AWS_CONFIG_FILE=" + filepath.Join(tmp, "no-such-aws-config"),
 			"AWS_SHARED_CREDENTIALS_FILE=" + filepath.Join(tmp, "no-such-aws-credentials"),
 			"AWS_EC2_METADATA_DISABLED=true",
