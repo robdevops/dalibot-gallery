@@ -205,8 +205,13 @@ This applies to `GALLERY_SOURCE=dynamodb`, the default. With
 setting.
 
 The gallery needs its own read-only AWS identity for the bot's table: an IAM
-policy allowing `dynamodb:Scan` on that one table, attached to a new user
+policy allowing `dynamodb:Scan` and `dynamodb:DescribeTable` on that one table and reading its stream, attached to a new user
 whose access key goes in `.env` (under systemd, `/etc/dalibot-gallery/env`). Do not reuse the bot's identity.
+
+Turn on a DynamoDB stream (view type New image) on the table: the gallery
+then reads the table once and afterwards only what has changed, instead of
+scanning the whole table every refresh, which costs more. Without a stream it
+still works, and warns in its log.
 
 [docs/aws-access.md](docs/aws-access.md) has the policy, step-by-step
 instructions for the AWS console and the AWS CLI, where to put the key, and

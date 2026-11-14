@@ -354,6 +354,8 @@ func Seed(ctx context.Context, endpoint, table string, now time.Time, storeDays 
 		AttributeDefinitions: []types.AttributeDefinition{{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS}},
 		KeySchema:            []types.KeySchemaElement{{AttributeName: aws.String("id"), KeyType: types.KeyTypeHash}},
 		BillingMode:          types.BillingModePayPerRequest,
+		// As documented for the gallery: the stream it follows (docs/aws-access.md).
+		StreamSpecification: &types.StreamSpecification{StreamEnabled: aws.Bool(true), StreamViewType: types.StreamViewTypeNewImage},
 	}); err != nil {
 		return nil, fmt.Errorf("creating the table in moto: %w", err)
 	}

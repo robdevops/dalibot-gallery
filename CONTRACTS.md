@@ -166,7 +166,7 @@ func Key(fileID string) string                     // base64url(sha256(file_id))
 func ValidKey(s string) bool                       // exactly 22 of [A-Za-z0-9_-]; says nothing about the snapshot
 func Build(records []Record, opt Options) *Snapshot   // all listing rules; use in tests to make snapshots
 
-// DynamoDB reader (Scan only; never writes)
+// DynamoDB reader (Scan, DescribeTable and the three read operations of DynamoDB Streams; never writes)
 type DynamoOptions struct {
 	Table, Region string
 	Endpoint      string        // "" = SDK default (AWS_ENDPOINT_URL_DYNAMODB is honoured); set for moto
@@ -175,7 +175,21 @@ type DynamoOptions struct {
 func NewDynamo(ctx context.Context, opt DynamoOptions) (*Dynamo, error)   // standard credential chain; no request made
 type ScanAPI = dynamodb.ScanAPIClient
 func NewDynamoFromClient(api ScanAPI, table string, log *slog.Logger) *Dynamo
+func (d *Dynamo) WithStreams(table TableAPI, streams StreamsAPI) *Dynamo   // NewDynamo does this; a reader without it scans every time
 func (d *Dynamo) Records(ctx context.Context) ([]Record, error)
+// Records: the first call, and every `resyncEvery` (6 h) after, scans the whole table (ConsistentRead only
+// when a stream is followed). If the table has a stream (DescribeTable: enabled, view NEW_IMAGE or
+// NEW_AND_OLD_IMAGES, and DescribeStream allowed), every later call reads the stream and applies INSERT/MODIFY
+// (the new image replaces the record) and REMOVE (by key) to the picture of the table. Every shard is read
+// from TRIM_HORIZON (so changes the scan missed or saw are replayed: replacing a record whole and keeping
+// each item's changes in order converge), parent first, resumed by AFTER_SEQUENCE_NUMBER, a new iterator at
+// every call (nothing expires). A page with no records is read through (3 in a row), `callsPerShard` bounds
+// one call. Failures that may pass keep the state and return an error (Store keeps the old snapshot); after 3
+// in a row, or at once for the unrecoverable (trimmed records, a vanished unfinished shard, a stream that is
+// off, a record that cannot be applied), the picture is dropped, the table scanned and the stream joined again;
+// a stream dropped twice within 10 min is left alone for 1 h. A table with no usable stream is scanned at every
+// call, with one warning per reason, and looked at again every `attachEvery` (1 h). The records returned are
+// shared with the picture: do not modify them; from the stream they are sorted by id.
 
 // SQLite reader for the bot's self-hosted store (lib/store.py, SqliteStore); never writes.
 // messages(chat_id TEXT, message_id TEXT, data TEXT, updated INTEGER, PRIMARY KEY (chat_id, message_id)); data is the record as JSON.
@@ -661,7 +675,7 @@ Fixed values shared by `web/` and the server:
 
 ## 8. Things no package may do
 
-- Call any Telegram method other than `getFile` and the file download, or any DynamoDB operation other than `Scan` (and `GetItem`). Tests may create and fill tables in moto only.
+- Call any Telegram method other than `getFile` and the file download, or any DynamoDB operation other than `Scan`, `DescribeTable`, `DescribeStream`, `GetShardIterator` and `GetRecords`. Tests may create and fill tables in moto only.
 - Open the bot's SQLite file in any way but read-only, or run any statement on it but the one `SELECT`. Tests and the dev stack write only to database files they created themselves.
 - Write anywhere but `cfg.CacheDir` (the cache) and `cfg.StateDir` (`hidden.json`).
 - Send or log a file_id, the bot token, the gallery token, a cookie value, a Telegram URL or a file_path.

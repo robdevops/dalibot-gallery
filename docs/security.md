@@ -179,7 +179,7 @@ fake Telegram server sees any other path. Downloads are capped at 20 MiB,
 with timeouts, at most 4 at a time; failures are remembered (24 h for a file
 Telegram rejects, 5 minutes otherwise) and the tile shows a plain placeholder.
 
-**DynamoDB.** Read-only by policy and by code: the gallery only calls `Scan`.
+**DynamoDB.** Read-only by policy and by code: the gallery only calls `Scan`, `DescribeTable` and, to follow the table's stream, `DescribeStream`, `GetShardIterator` and `GetRecords`.
 Whatever the source, the only files the gallery writes are its cache and
 its list of hidden images.
 
