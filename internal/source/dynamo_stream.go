@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -59,6 +60,8 @@ const (
 	emptyPages = 3
 	// rediscoverEvery is how often the list of shards is asked for again, besides whenever a shard has ended.
 	rediscoverEvery = 5 * time.Minute
+	// maxParallel is how many shards are read at the same time.
+	maxParallel = 8
 	// slowFollow: reading the stream that takes longer than this is logged.
 	slowFollow = 2 * time.Second
 )
@@ -79,10 +82,11 @@ type StreamsAPI interface {
 type stream struct {
 	arn          string
 	shards       map[string]*shard
-	failures     int       // refreshes in a row that failed in a way that may pass
-	discoveredAt time.Time // when the list of shards was last asked for
-	calls        int       // requests made by the current follow
-	changes      int       // changes applied by the current follow
+	mu           sync.Mutex // guards calls and changes, and d.items while shards are read at the same time
+	failures     int        // refreshes in a row that failed in a way that may pass
+	discoveredAt time.Time  // when the list of shards was last asked for
+	calls        int        // requests made by the current follow
+	changes      int        // changes applied by the current follow
 }
 
 type shard struct {
@@ -232,31 +236,48 @@ func (d *Dynamo) follow(ctx context.Context) error {
 		}
 	}
 	// A shard waits for its parent. Reading one to its end can free its children, so go round again.
-	for progress := true; progress; {
-		progress = false
-		ids := make([]string, 0, len(st.shards))
-		for id := range st.shards {
-			ids = append(ids, id)
+	// The shards that are ready are independent (the changes to one item are all in one lineage, in
+	// order), so they are read at the same time: a round trip to AWS is most of the time it takes.
+	for {
+		var ready []*shard
+		for _, s := range st.shards {
+			if p := st.shards[s.parent]; !s.done && (p == nil || p.done) {
+				ready = append(ready, s)
+			}
 		}
-		slices.Sort(ids)
-		for _, id := range ids {
-			s := st.shards[id]
-			if s.done {
-				continue
-			}
-			if p := st.shards[s.parent]; p != nil && !p.done {
-				continue
-			}
-			if err := d.readShard(ctx, st, s); err != nil {
-				return fmt.Errorf("shard %s: %w", id, err)
-			}
-			if s.done {
-				progress = true
-				if err := d.discover(ctx, st); err != nil { // its children
-					return err
+		if len(ready) == 0 {
+			break
+		}
+		slices.SortFunc(ready, func(a, b *shard) int { return strings.Compare(a.id, b.id) })
+		var (
+			wg    sync.WaitGroup
+			errMu sync.Mutex
+			first error
+			sem   = make(chan struct{}, maxParallel)
+		)
+		for _, s := range ready {
+			wg.Go(func() {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				if err := d.readShard(ctx, st, s); err != nil {
+					errMu.Lock()
+					if first == nil {
+						first = fmt.Errorf("shard %s: %w", s.id, err)
+					}
+					errMu.Unlock()
 				}
-				break // the shards changed
-			}
+			})
+		}
+		wg.Wait()
+		if first != nil {
+			return first
+		}
+		ended := slices.ContainsFunc(ready, func(s *shard) bool { return s.done })
+		if !ended {
+			break
+		}
+		if err := d.discover(ctx, st); err != nil { // the children of the shards that ended
+			return err
 		}
 	}
 	if took := d.now().Sub(start); took > slowFollow {
@@ -267,13 +288,20 @@ func (d *Dynamo) follow(ctx context.Context) error {
 	return nil
 }
 
+func (st *stream) count(calls, changes int) {
+	st.mu.Lock()
+	st.calls += calls
+	st.changes += changes
+	st.mu.Unlock()
+}
+
 // iterator asks for a new iterator for s: after the last change applied, or from the start.
 func (d *Dynamo) iterator(ctx context.Context, st *stream, s *shard) error {
 	in := &dynamodbstreams.GetShardIteratorInput{StreamArn: &st.arn, ShardId: &s.id, ShardIteratorType: stypes.ShardIteratorTypeTrimHorizon}
 	if s.seq != "" {
 		in.ShardIteratorType, in.SequenceNumber = stypes.ShardIteratorTypeAfterSequenceNumber, &s.seq
 	}
-	st.calls++
+	st.count(1, 0)
 	it, err := d.streams.GetShardIterator(ctx, in)
 	if err != nil {
 		if _, ok := errors.AsType[*stypes.TrimmedDataAccessException](err); ok {
@@ -293,7 +321,7 @@ func (d *Dynamo) readShard(ctx context.Context, st *stream, s *shard) error {
 				return err
 			}
 		}
-		st.calls++
+		st.count(1, 0)
 		out, err := d.streams.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{ShardIterator: &s.iter, Limit: aws.Int32(1000)})
 		if err != nil {
 			if _, ok := errors.AsType[*stypes.TrimmedDataAccessException](err); ok {
@@ -306,13 +334,16 @@ func (d *Dynamo) readShard(ctx context.Context, st *stream, s *shard) error {
 			}
 			return err
 		}
+		st.mu.Lock()
 		for _, rec := range out.Records {
 			if err := d.apply(rec); err != nil {
+				st.mu.Unlock()
 				return fmt.Errorf("%w: %w", errFatal, err)
 			}
 			s.seq = aws.ToString(rec.Dynamodb.SequenceNumber)
 			st.changes++
 		}
+		st.mu.Unlock()
 		if out.NextShardIterator == nil {
 			s.done, s.iter = true, ""
 			return nil

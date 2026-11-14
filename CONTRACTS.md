@@ -184,7 +184,7 @@ func (d *Dynamo) Records(ctx context.Context) ([]Record, error)
 // from TRIM_HORIZON (so changes the scan missed or saw are replayed: replacing a record whole and keeping
 // each item's changes in order converge), parent first, resumed by AFTER_SEQUENCE_NUMBER. The iterator of the
 // last page is kept (renewed once if it has expired), so a refresh with nothing new is one GetRecords per open
-// shard; the shard list (DescribeStream) is asked for every 5 min and when a shard ends. A page with no records
+// shard, the shards that are ready (parent done) read concurrently (8 at most); the shard list (DescribeStream) is asked for every 5 min and when a shard ends. A page with no records
 // is read through (3 in a row) until a shard has been read up to its end once, then one is enough;
 // `callsPerShard` bounds one call. Failures that may pass keep the state and return an error (Store keeps the old snapshot); after 3
 // in a row, or at once for the unrecoverable (trimmed records, a vanished unfinished shard, a stream that is

@@ -83,7 +83,7 @@ in the policy is for), so there is nothing to set. How it uses it:
   the scan missed or caught.
 - It does this at every start (so a restart never loses anything), and again
   every 6 hours as a check. In between, a refresh with nothing new is one
-  `GetRecords` call for each open shard (usually one or two), and the list of
+  `GetRecords` call for each open shard (usually a few, read at the same time), and the list of
   shards is asked for again every 5 minutes, or at once when a shard ends.
   If a refresh takes more than 2 seconds the log says how many requests it
   made; `GALLERY_DEBUG=1` shows every one.

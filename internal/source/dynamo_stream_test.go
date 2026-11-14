@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,8 @@ type fakeTable struct {
 
 	scans, describes, gets int
 	streamDescribes        int
+	delay                  time.Duration // how long a GetRecords call takes, outside the table's lock
+	inflight, maxInflight  atomic.Int32
 	iterators              int
 	gen                    int                                        // iterators issued before the last expire() are refused
 	consistent             []bool                                     // ConsistentRead of every scan
@@ -264,6 +267,11 @@ func (f *fakeTable) GetShardIterator(_ context.Context, in *dynamodbstreams.GetS
 }
 
 func (f *fakeTable) GetRecords(_ context.Context, in *dynamodbstreams.GetRecordsInput, _ ...func(*dynamodbstreams.Options)) (*dynamodbstreams.GetRecordsOutput, error) {
+	if n := f.inflight.Add(1); n > f.maxInflight.Load() {
+		f.maxInflight.Store(n)
+	}
+	time.Sleep(f.delay)
+	f.inflight.Add(-1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gets++
@@ -545,6 +553,36 @@ func TestStreamExpiredIteratorsAreRenewed(t *testing.T) {
 	e.want(t, "1:1=one", "1:2=two", "1:3=three") // and when nothing has been read from a shard yet
 	if e.f.scans != 1 {
 		t.Fatalf("%d scans: an expired iterator is not a reason to scan\n%s", e.f.scans, e.logs)
+	}
+}
+
+// Shards that are open side by side are read at the same time, not one after the other.
+func TestStreamReadsOpenShardsInParallel(t *testing.T) {
+	e := newStreamEnv(t)
+	for i := range 4 {
+		e.f.shards = append(e.f.shards, &fakeShard{id: fmt.Sprintf("shard-%d", i+1)})
+	}
+	e.f.mu.Lock()
+	for i, s := range e.f.shards { // one change in each of the five open shards
+		id := fmt.Sprintf("1:%d", i)
+		e.f.seq++
+		s.records = append(s.records, stypes.Record{EventName: stypes.OperationTypeInsert, Dynamodb: &stypes.StreamRecord{
+			SequenceNumber: aws.String(fmt.Sprintf("%08d", e.f.seq)),
+			Keys:           map[string]stypes.AttributeValue{"id": &stypes.AttributeValueMemberS{Value: id}},
+			NewImage:       map[string]stypes.AttributeValue{"id": &stypes.AttributeValueMemberS{Value: id}, "prompt": &stypes.AttributeValueMemberS{Value: "p"}},
+		}})
+	}
+	e.f.mu.Unlock()
+	e.f.enabled = true
+	e.want(t) // the scan sees an empty table
+	e.f.delay = 30 * time.Millisecond
+	e.f.maxInflight.Store(0)
+	e.want(t, "1:0=p", "1:1=p", "1:2=p", "1:3=p", "1:4=p")
+	if got := e.f.maxInflight.Load(); got < 3 {
+		t.Fatalf("at most %d GetRecords calls at once for 5 shards", got)
+	}
+	if e.f.scans != 1 {
+		t.Fatalf("%d scans", e.f.scans)
 	}
 }
 
