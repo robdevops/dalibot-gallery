@@ -6,7 +6,7 @@ from its DynamoDB table or from the SQLite database of a self-hosted bot,
 and shows every image as an edge-to-edge grid of square tiles, newest first,
 with infinite scroll and a full-size viewer.
 
-- One tile per image.
+- One tile per image. The style in the viewer's caption line ("Ukiyo-e") is a link to the images of that style, `/?style=ukiyoe`; in that gallery it links back to all of them.
 - Thumbnails are WebP, centre-cropped squares at 240 px and 480 px, made with
   libvips and cached on disk. The full-size image is the original Telegram JPEG, unchanged.
 - The browser talks to the gallery, and the gallery fetches the image

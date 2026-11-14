@@ -51,6 +51,7 @@ dialog::backdrop{background:#000d}
 .bare .nav,.bare .meta{opacity:0;visibility:hidden}
 #cap{max-height:4.2em;overflow:auto}
 #cmd{margin-top:.25rem;color:#aaa;font-size:.85rem}
+#cmd a{color:inherit;text-underline-offset:.2em}
 #strip{position:relative;display:flex;justify-content:safe center;gap:4px;margin:.6rem 0 0;padding:0;overflow-x:auto;list-style:none}
 #strip:empty{display:none}
 #strip img{display:block;width:3.5rem;height:3.5rem}

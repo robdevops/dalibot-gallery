@@ -1526,3 +1526,95 @@ func TestNewRejectsBadDeps(t *testing.T) {
 		t.Error("New accepted empty Deps")
 	}
 }
+
+// ?style= narrows the listing, the "N new" count and the page without JavaScript to one style.
+func TestStyleFilter(t *testing.T) {
+	e := newEnv(t, records(150), nil) // 150 records; every third has a Monet too
+	snap := e.store.Snapshot()
+	var monet []string
+	for _, tl := range snap.Newest(1000) {
+		if tl.Style == "monet" {
+			monet = append(monet, tl.Key)
+		}
+	}
+	if len(monet) != 50 {
+		t.Fatalf("%d monet tiles", len(monet))
+	}
+
+	for _, limit := range []int{1, 7, 60, 120} {
+		var got []string
+		target := fmt.Sprintf("/api/tiles?style=monet&limit=%d", limit)
+		for range 300 {
+			_, p := e.page(target)
+			for _, tile := range p.Tiles {
+				if tile.Style != "monet" {
+					t.Fatalf("a %s tile in the monet listing", tile.Style)
+				}
+				got = append(got, tile.Key)
+			}
+			if p.Newest == nil || *p.Newest != snap.Style("monet").Newest(1)[0].Cursor() {
+				t.Fatalf("newest %v", p.Newest)
+			}
+			if p.Next == nil {
+				break
+			}
+			target = fmt.Sprintf("/api/tiles?style=monet&limit=%d&cursor=%s", limit, url.QueryEscape(*p.Next))
+		}
+		if strings.Join(got, ",") != strings.Join(monet, ",") {
+			t.Errorf("limit %d: %d tiles, want the %d monet tiles in order", limit, len(got), len(monet))
+		}
+	}
+
+	// "N new" counts the style's tiles only.
+	_, all := e.page("/api/tiles?style=monet&limit=1")
+	_, p := e.page("/api/tiles/new?style=monet&since=" + url.QueryEscape(*all.Newest))
+	if *p.Count != 0 {
+		t.Errorf("nothing new: %d", *p.Count)
+	}
+	_, p = e.page("/api/tiles/new?style=monet")
+	if *p.Count != len(monet) {
+		t.Errorf("count of all: %d, want %d", *p.Count, len(monet))
+	}
+	_, p = e.page("/api/tiles/new?style=monet&tiles=1")
+	if len(p.Tiles) != len(monet) || p.Tiles[0].Style != "monet" {
+		t.Errorf("tiles=1: %d tiles", len(p.Tiles))
+	}
+
+	// A style that nobody has is an empty list; a malformed one is refused, on every route that takes one.
+	_, p = e.page("/api/tiles?style=nosuchstyle")
+	if len(p.Tiles) != 0 || p.Next != nil {
+		t.Errorf("a style with no images: %d tiles, next %v", len(p.Tiles), p.Next)
+	}
+	for _, bad := range []string{"Monet", "a%20b", "mo%2Fnet", "%3Cb%3E", strings.Repeat("a", 33), "a%3Bb"} {
+		for _, route := range []string{"/api/tiles?style=", "/api/tiles/new?style=", "/?style="} {
+			if resp, _ := e.get(route+bad, basic); resp.StatusCode != 400 {
+				t.Errorf("%s%s: %d", route, bad, resp.StatusCode)
+			}
+		}
+	}
+
+	// The page without JavaScript: the first page of that style, and "Load more" keeps the style.
+	resp, body := e.get("/?style=monet", basic)
+	html := string(body)
+	if resp.StatusCode != 200 || !strings.Contains(html, "<title>Monet · Gallery</title>") || !strings.Contains(html, `<h1 class="sr">Monet · Gallery</h1>`) {
+		t.Fatalf("narrowed page: %d\n%.400s", resp.StatusCode, html)
+	}
+	for _, key := range monet[:3] {
+		if !strings.Contains(html, "/img/"+key+".jpg") {
+			t.Errorf("the monet page lacks %s", key)
+		}
+	}
+	for _, tl := range snap.Newest(1000) {
+		if tl.Style != "monet" && strings.Contains(html, "/img/"+tl.Key+".jpg") {
+			t.Fatalf("a %s tile on the monet page", tl.Style)
+		}
+	}
+	// 50 tiles fit one page, so there is no more; with the whole listing there is, and it carries no style.
+	if strings.Contains(html, "Load more") {
+		t.Error("Load more on a one-page listing")
+	}
+	_, body = e.get("/", basic)
+	if !strings.Contains(string(body), "<title>Gallery</title>") || strings.Contains(string(body), "style=") {
+		t.Errorf("the whole listing mentions a style")
+	}
+}

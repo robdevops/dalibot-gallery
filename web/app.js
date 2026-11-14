@@ -15,6 +15,8 @@ const cols = +getComputedStyle(grid).getPropertyValue('--cols') || 2
 let v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
 
 const enc = encodeURIComponent
+const style = new URLSearchParams(location.search).get('style') || '' // a listing of one style
+const sq = style ? '&style=' + enc(style) : ''
 const still = () => matchMedia('(prefers-reduced-motion:reduce)').matches
 const say = s => { $('live').textContent = s }
 const src = (key, size) => '/img/' + key + (size ? '-' + size + '.webp?v=' + v : '.jpg')
@@ -98,7 +100,7 @@ async function more() {
   if (busy || done) return
   busy = 1
   try {
-    const j = await get('/api/tiles?limit=' + PER + (next ? '&cursor=' + enc(next) : ''))
+    const j = await get('/api/tiles?limit=' + PER + sq + (next ? '&cursor=' + enc(next) : ''))
     if (!next) since = j.newest || ''
     v = j.v
     const first = !data.size, n = add(j.tiles)
@@ -125,7 +127,7 @@ const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) 
 async function poll() {
   if (!v) return
   try {
-    const n = (await get('/api/tiles/new?since=' + enc(since))).count
+    const n = (await get('/api/tiles/new?since=' + enc(since) + sq)).count
     if (n && pill.hidden) say(n + ' new images')
     pill.textContent = n + ' new'
     pill.hidden = !n
@@ -140,7 +142,7 @@ function watch() {
 }
 pill.onclick = async () => {
   try {
-    const j = await get('/api/tiles/new?tiles=1&since=' + enc(since))
+    const j = await get('/api/tiles/new?tiles=1&since=' + enc(since) + sq)
     if (j.count > j.tiles.length || j.v != v) return location.reload()
     add(j.tiles, 1)
     since = j.newest || since
@@ -194,7 +196,14 @@ function show(key) {
     if (z > 1) zoom(1)
   }
   full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
-  $('cmd').textContent = t ? '/' + t.command + ' · ' + t.label : ''
+  // The style is a link to the images of that style; while they are shown, to all of them.
+  const a = el('a')
+  if (t) {
+    a.href = t.style == style ? '/' : '/?style=' + enc(t.style)
+    a.title = t.style == style ? 'Show all images' : 'Show only ' + t.label + ' images'
+    a.textContent = t.label
+  }
+  $('cmd').replaceChildren(...(t ? ['/' + t.command + ' · ', a] : []))
   // Mark and centre it in the strip.
   const all = keys(), i = all.indexOf(key), c = strip.children[i]?.firstChild
   if (i > all.length - 10) more()

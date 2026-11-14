@@ -89,7 +89,7 @@ func TestAdminOnlyParts(t *testing.T) {
 	type data struct {
 		V                                string
 		Tiles                            []indexTile
-		Next                             string
+		Next, Style, Title               string
 		Admin, AdminLogin, SignOut, Hide bool
 	}
 	parts := []string{`<link rel="stylesheet" href="/admin.css">`, `<script src="/admin.js" defer></script>`, `<a href="/admin/hidden">Hidden images</a>`}
@@ -175,11 +175,11 @@ func TestIndexTemplate(t *testing.T) {
 	data := struct {
 		V                          string
 		Tiles                      []indexTile
-		Next                       string
+		Next, Style, Title         string
 		Admin, AdminLogin, SignOut bool
 		Hide                       bool
 	}{
-		V: "1",
+		V: "1", Title: "Gallery",
 		Tiles: []indexTile{{
 			Key: "RQ2AvWdtw2pN5Bhv0Y3CdX", Alt: `a "fox" <b>`,
 			Src240: "/img/RQ2AvWdtw2pN5Bhv0Y3CdX-240.webp?v=1",
@@ -207,6 +207,18 @@ func TestIndexTemplate(t *testing.T) {
 	for _, not := range []string{"data-admin", "/login", "/logout", "<footer", "Admin", "Sign out"} {
 		if strings.Contains(s, not) {
 			t.Errorf("index.html for an ordinary visitor contains %q", not)
+		}
+	}
+	// Narrowed to a style: the title, and the link keeps the style.
+	narrow := data
+	narrow.Style, narrow.Title = "ukiyoe", "Ukiyo-e · Gallery"
+	out.Reset()
+	if err := tpl.Execute(&out, narrow); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`<title>Ukiyo-e · Gallery</title>`, `<h1 class="sr">Ukiyo-e · Gallery</h1>`, `<a href="/?cursor=abc_DEF-1&amp;style=ukiyoe">Load more</a>`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("index.html narrowed to a style lacks %q", want)
 		}
 	}
 	data.Next, data.Tiles = "", nil

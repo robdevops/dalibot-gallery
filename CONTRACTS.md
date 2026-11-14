@@ -194,6 +194,7 @@ func (s *Snapshot) Records() int
 func (s *Snapshot) Built() time.Time               // zero for the empty start-up snapshot
 func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, err error)
 func (s *Snapshot) NewSince(cursor string) (count int, newest string, err error)
+func (s *Snapshot) Style(style string) *Snapshot    // a view of the tiles of one style: Page, NewSince and Newest only; "" is s itself; made once per style with tiles, an empty shared view otherwise
 func (s *Snapshot) Newest(n int) []Tile            // first n tiles; for the warmer and for /api/tiles/new
 func (s *Snapshot) Tile(key string) (Tile, bool)
 func (s *Snapshot) Has(key string) bool            // is this key listed (may everyone with view access be served it)?
@@ -505,6 +506,7 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
 
 - `limit`: optional integer; default 60; values above 120 are treated as 120; less than 1 or not an integer is `400`.
 - `cursor`: optional; the `next` of an earlier response. Absent or empty starts at the newest tile.
+- `style`: optional; a style key (`[a-z0-9_-]{1,32}`, e.g. `ukiyoe`) narrows the listing to the tiles of that style, in the same order, one per record (so a page is a page of tiles, not whole records). A style with no tiles is an empty listing; any other value is `400 {"error":"bad style"}`. Cursors are sort positions and mean the same with or without a style; `newest` is the cursor of the first tile of the narrowed listing. `/api/tiles/new` and `/` take the same parameter (`/` answers `400 bad style` as plain text).
 
 ```json
 {
@@ -638,11 +640,11 @@ The first page is server-rendered **inside `<noscript>`** only; with JavaScript 
   <ul class="grid">
     {{range .Tiles}}<li class="tile"><a href="{{.Full}}"><img src="{{.Src240}}" srcset="{{.Src240}} 240w, {{.Src480}} 480w" sizes="(min-width:1600px) 17vw, (min-width:1200px) 20vw, (min-width:768px) 25vw, (min-width:480px) 34vw, 50vw" width="240" height="240" loading="lazy" decoding="async" alt="{{.Alt}}"></a></li>{{end}}
   </ul>
-  {{if .Next}}<p class="more"><a href="/?cursor={{.Next}}">Load more</a></p>{{end}}
+  {{if .Next}}<p class="more"><a href="/?cursor={{.Next}}{{if .Style}}&amp;style={{.Style}}{{end}}">Load more</a></p>{{end}}
 </noscript>
 ```
 
-With JavaScript, `?cursor=` in the page URL is ignored.
+With JavaScript, `?cursor=` in the page URL is ignored; `?style=` is not: `app.js` adds it to its requests, and the server puts `<title>` and the `sr` `<h1>` as `{{.Title}}` ("Gallery", or "Ukiyo-e · Gallery"). In the viewer the style label in `#cmd` is a link: to `/?style=<key>`, or to `/` (title "Show all images") when that style is the one shown.
 
 **The admin flag.** For an admin the server renders `<html lang="en" data-admin="1">`; for everyone else `<html lang="en">`, with no attribute. Script reads it as `document.documentElement.dataset.admin`. It is a hint for the page: the server checks the level on every request. Admin-only script must be a separate file served only at admin level, so that `app.js` + `app.css` stay within their budget and other visitors download nothing extra.
 

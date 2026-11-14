@@ -1,5 +1,5 @@
 // The lightbox: open, arrow keys, strip of neighbours, Esc, backdrop, focus, deep links.
-const { test, expect, apiTiles, domKeys, watch } = require('./helpers')
+const { test, expect, apiTiles, domKeys, watch, basic } = require('./helpers')
 
 const dialog = page => page.locator('dialog#lb')
 const fullKey = page => page.locator('#full').evaluate(i => i.dataset.key)
@@ -955,4 +955,51 @@ test('lightbox fits a phone screen', async ({ browser, baseURL }, testInfo) => {
   } finally {
     await context.close()
   }
+})
+
+// The style in the viewer is a link: it narrows the gallery to that style, and in the narrowed gallery it widens it again.
+test('the style of the open image links to the images of that style, and back to all', async ({ page }) => {
+  const api = await apiTiles(page.request)
+  const t = api.tiles.find(x => x.style !== '_')
+  expect(t, 'the dev stack has an image in a style').toBeTruthy()
+  const same = api.tiles.filter(x => x.style === t.style).map(x => x.key)
+  expect(same.length).toBeLessThan(api.tiles.length)
+
+  await page.locator(`.tile[data-key="${t.key}"] a`).click()
+  await loaded(page, t.key)
+  const link = page.locator('#cmd a')
+  await expect(link).toHaveText(t.label)
+  await expect(link).toHaveAttribute('href', `/?style=${t.style}`)
+  await link.click()
+
+  // The gallery of that style: its tiles only, in order, and the title says so.
+  await page.waitForSelector('#grid .tile')
+  expect(new URL(page.url()).search).toBe(`?style=${t.style}`)
+  await expect(page).toHaveTitle(`${t.label} · Gallery`)
+  await expect(dialog(page)).toBeHidden()
+  await expect.poll(async () => (await domKeys(page)).join()).toBe(same.join())
+
+  // In it the style links back to everything, and the arrow keys stay within the style.
+  await page.locator(`.tile[data-key="${same[0]}"] a`).click()
+  await loaded(page, same[0])
+  const back = page.locator('#cmd a')
+  await expect(back).toHaveAttribute('href', '/')
+  await expect(back).toHaveAttribute('title', 'Show all images')
+  if (same.length > 1) {
+    await page.keyboard.press('ArrowRight')
+    await loaded(page, same[1])
+  }
+  await back.click()
+  await page.waitForSelector('#grid .tile')
+  expect(new URL(page.url()).search).toBe('')
+  await expect(page).toHaveTitle('Gallery')
+  expect((await domKeys(page)).length).toBeGreaterThan(same.length)
+})
+
+test('a style that does not exist shows an empty gallery, a malformed one a plain error', async ({ page }) => {
+  await page.goto('/?style=nosuchstyle')
+  await expect(page.locator('#end')).toHaveText('No images yet')
+  expect(await domKeys(page)).toEqual([])
+  const bad = await page.request.get('/?style=%3Cb%3E', { headers: basic() })
+  expect(bad.status()).toBe(400)
 })

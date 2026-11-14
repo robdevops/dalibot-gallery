@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/robdevops/dalibot-gallery/internal/source"
+	"github.com/robdevops/dalibot-gallery/internal/styles"
 )
 
 // tilesResponse is the body of GET /api/tiles.
@@ -64,6 +66,21 @@ func (s *Server) tilesFor(level access, tiles []source.Tile) []source.Tile {
 	return tiles
 }
 
+// styleRE is what a style key may look like in a request. Whether the gallery has any
+// images of it is another matter: a style with none is an empty listing.
+var styleRE = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+
+// styled narrows snap to the style named by the request's style parameter, if it has one.
+func styled(snap *source.Snapshot, style string) (*source.Snapshot, bool) {
+	if style == "" {
+		return snap, true
+	}
+	if !styleRE.MatchString(style) {
+		return nil, false
+	}
+	return snap.Style(style), true
+}
+
 func (s *Server) handleTiles(w http.ResponseWriter, r *http.Request, level access) {
 	q := r.URL.Query()
 	limit := DefaultLimit
@@ -75,7 +92,11 @@ func (s *Server) handleTiles(w http.ResponseWriter, r *http.Request, level acces
 		}
 		limit = min(n, MaxLimit)
 	}
-	snap := s.store.Snapshot()
+	snap, ok := styled(s.store.Snapshot(), q.Get("style"))
+	if !ok {
+		s.jsonError(w, r, http.StatusBadRequest, "bad style")
+		return
+	}
 	tiles, next, err := snap.Page(q.Get("cursor"), limit)
 	if err != nil {
 		s.jsonError(w, r, http.StatusBadRequest, "bad cursor")
@@ -88,7 +109,11 @@ func (s *Server) handleTiles(w http.ResponseWriter, r *http.Request, level acces
 
 func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, level access) {
 	q := r.URL.Query()
-	snap := s.store.Snapshot()
+	snap, ok := styled(s.store.Snapshot(), q.Get("style"))
+	if !ok {
+		s.jsonError(w, r, http.StatusBadRequest, "bad style")
+		return
+	}
 	count, newest, err := snap.NewSince(q.Get("since"))
 	if err != nil {
 		s.jsonError(w, r, http.StatusBadRequest, "bad cursor")
@@ -107,6 +132,9 @@ type indexData struct {
 	V     string
 	Tiles []indexTile
 	Next  string // sealed cursor of the next page, "" at the end
+	// Style: the style the listing is narrowed to ("" for all), and Title the page's title
+	// and heading: "Gallery", or "Ukiyo-e · Gallery".
+	Style, Title string
 	// Admin: the visitor has admin access. The page carries it as
 	// <html data-admin="1">, which is how the script knows without asking.
 	Admin bool
@@ -127,18 +155,26 @@ type indexTile struct {
 // handleIndex renders the shell. The first page of tiles is inside <noscript>,
 // with a "Load more" link carrying ?cursor=.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, level access) {
-	snap := s.store.Snapshot()
+	style := r.URL.Query().Get("style")
+	snap, ok := styled(s.store.Snapshot(), style)
+	if !ok {
+		plain(w, http.StatusBadRequest, "bad style\n")
+		return
+	}
 	tiles, next, err := snap.Page(r.URL.Query().Get("cursor"), DefaultLimit)
 	if err != nil {
 		plain(w, http.StatusBadRequest, "bad cursor\n")
 		return
 	}
 	data := indexData{
-		V: s.tag, Next: next, Tiles: make([]indexTile, 0, len(tiles)),
+		V: s.tag, Next: next, Tiles: make([]indexTile, 0, len(tiles)), Style: style, Title: "Gallery",
 		Admin:      level == accessAdmin,
 		AdminLogin: s.cfg.AdminEnabled() && level < accessAdmin,
 		SignOut:    s.cookieAccess(r) > accessNone,
 		Hide:       level == accessAdmin && s.adminRoutes(),
+	}
+	if style != "" {
+		data.Title = styles.Label(style) + " · Gallery"
 	}
 	for _, t := range tiles {
 		data.Tiles = append(data.Tiles, indexTile{

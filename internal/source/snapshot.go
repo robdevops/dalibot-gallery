@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robdevops/dalibot-gallery/internal/styles"
@@ -182,6 +183,45 @@ type Snapshot struct {
 	// listing order. They are in no tile and no page.
 	hidden      []Tile
 	hiddenByKey map[string]int // key -> index in hidden
+
+	// A view (see Style) holds only the tiles of one style, at most one a record.
+	flat    bool
+	viewsMu sync.Mutex
+	views   map[string]*Snapshot // style -> view, for the styles that have tiles
+}
+
+// noView is the view of a style that has no tiles.
+var noView = &Snapshot{flat: true}
+
+// Style returns the part of the snapshot that holds the tiles of one style: a
+// listing in the same order, for Page, NewSince and Newest, and nothing else.
+// It has one tile per record, so a page of it is a page of tiles. A style with
+// no tiles, known or not, gives an empty view. An empty key gives s itself.
+// Views are made once and kept with the snapshot.
+func (s *Snapshot) Style(style string) *Snapshot {
+	if style == "" {
+		return s
+	}
+	s.viewsMu.Lock()
+	defer s.viewsMu.Unlock()
+	if v, ok := s.views[style]; ok {
+		return v
+	}
+	var tiles []Tile
+	for _, t := range s.tiles {
+		if t.Style == style {
+			tiles = append(tiles, t)
+		}
+	}
+	if tiles == nil {
+		return noView // not kept: a request cannot make the snapshot grow by asking for styles that are not there
+	}
+	if s.views == nil {
+		s.views = map[string]*Snapshot{}
+	}
+	v := &Snapshot{tiles: tiles, flat: true}
+	s.views[style] = v
+	return v
 }
 
 // emptySnapshot is what a Store serves before its first successful refresh.
@@ -405,7 +445,10 @@ func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, er
 	}
 	end := start
 	for end < len(s.tiles) && end-start < limit {
-		recordEnd := end + len(s.tiles[end].Styles) - s.tiles[end].pos
+		recordEnd := end + 1
+		if !s.flat {
+			recordEnd = end + len(s.tiles[end].Styles) - s.tiles[end].pos
+		}
 		if end > start && recordEnd-start > limit {
 			break
 		}

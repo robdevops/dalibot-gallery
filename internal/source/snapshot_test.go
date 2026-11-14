@@ -669,3 +669,105 @@ func TestWithoutIDs(t *testing.T) {
 		t.Errorf("WithoutIDs(nil) = %v", got)
 	}
 }
+
+func TestStyleView(t *testing.T) {
+	_, s := fixtureSnapshot(t)
+	all := s.Newest(1000)
+	styles := map[string]bool{}
+	for _, tl := range all {
+		styles[tl.Style] = true
+	}
+	if len(styles) < 3 {
+		t.Fatalf("the fixture has %d styles; the test needs a few", len(styles))
+	}
+	if s.Style("") != s {
+		t.Error("no style should be the snapshot itself")
+	}
+	for style := range styles {
+		v := s.Style(style)
+		if s.Style(style) != v {
+			t.Errorf("%s: the view is made again at every call", style)
+		}
+		var want []string
+		for _, tl := range all {
+			if tl.Style == style {
+				want = append(want, tl.Key)
+			}
+		}
+		if got := keysOf(v.Newest(1000)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: view %v, want %v", style, got, want)
+		}
+		// Paging a view: every size, no duplicates, no gaps, a page is a page of tiles.
+		for limit := 1; limit <= len(want)+1; limit++ {
+			var got []string
+			cursor := ""
+			for range 1000 {
+				tiles, next, err := v.Page(cursor, limit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(tiles) > limit || (len(tiles) == 0 && next != "") {
+					t.Fatalf("%s limit %d: a page of %d, next %q", style, limit, len(tiles), next)
+				}
+				got = append(got, keysOf(tiles)...)
+				if next == "" {
+					break
+				}
+				cursor = next
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s limit %d: paged %v, want %v", style, limit, got, want)
+			}
+		}
+		// A cursor from the whole listing works in the view: it continues after that place.
+		for i, tl := range all {
+			var after []string
+			for _, o := range all[i+1:] {
+				if o.Style == style && o.ID != tl.ID {
+					after = append(after, o.Key)
+				}
+			}
+			tiles, _, err := v.Page(tl.Cursor(), 1000)
+			if err != nil || !reflect.DeepEqual(keysOf(tiles), after) {
+				t.Fatalf("%s: from %s: %v (%v), want %v", style, tl.Key, keysOf(tiles), err, after)
+			}
+		}
+		// New since a cursor counts the view's tiles only.
+		n, newest, err := v.NewSince(all[len(all)-1].Cursor())
+		if err != nil || n != len(want)-btoi(all[len(all)-1].Style == style) || newest != v.Newest(1)[0].Cursor() {
+			t.Errorf("%s: NewSince = %d, %q, %v", style, n, newest, err)
+		}
+	}
+	// A style with no tiles is empty, and asking does not grow the snapshot.
+	before := len(s.views)
+	for _, none := range []string{"nosuchstyle", "ukiyoe-not-here", "x"} {
+		v := s.Style(none)
+		if tiles, next, err := v.Page("", 10); len(tiles) != 0 || next != "" || err != nil {
+			t.Errorf("%s: %d tiles, next %q, err %v", none, len(tiles), next, err)
+		}
+		if n, newest, err := v.NewSince(""); n != 0 || newest != "" || err != nil {
+			t.Errorf("%s: NewSince %d %q %v", none, n, newest, err)
+		}
+	}
+	if len(s.views) != before {
+		t.Errorf("views grew from %d to %d for styles that have no tiles", before, len(s.views))
+	}
+	if _, _, err := s.Style("monet").Page("%%", 5); err == nil {
+		t.Error("a bad cursor was accepted by a view")
+	}
+}
+
+func keysOf(tiles []Tile) []string {
+	var out []string
+	for _, t := range tiles {
+		out = append(out, t.Key)
+	}
+	return out
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

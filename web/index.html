@@ -15,7 +15,7 @@
 <meta property="og:image:height" content="480">
 <meta property="og:image:alt" content="A caricature of Salvador Dalí">
 <meta name="twitter:card" content="summary">
-<title>Gallery</title>
+<title>{{.Title}}</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
@@ -23,7 +23,7 @@
 <script src="/admin.js" defer></script>
 {{end}}</head>
 <body>
-<h1 class="sr">Gallery</h1>
+<h1 class="sr">{{.Title}}</h1>
 <button type="button" class="pill" id="pill" hidden></button>
 <main>
 <ul class="grid" id="grid" aria-label="Gallery"></ul>
@@ -31,7 +31,7 @@
   <ul class="grid">
     {{range .Tiles}}<li class="tile"><a href="{{.Full}}"><img src="{{.Src240}}" srcset="{{.Src240}} 240w, {{.Src480}} 480w" sizes="(min-width:1600px) 17vw, (min-width:1200px) 20vw, (min-width:768px) 25vw, (min-width:480px) 34vw, 50vw" width="240" height="240" loading="lazy" decoding="async" alt="{{.Alt}}"></a></li>{{end}}
   </ul>
-  {{if .Next}}<p class="more"><a href="/?cursor={{.Next}}">Load more</a></p>{{end}}
+  {{if .Next}}<p class="more"><a href="/?cursor={{.Next}}{{if .Style}}&amp;style={{.Style}}{{end}}">Load more</a></p>{{end}}
 </noscript>
 <p class="end" id="end"></p>
 </main>
