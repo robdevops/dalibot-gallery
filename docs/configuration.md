@@ -7,6 +7,11 @@ like the rest, and all are listed in `.env.example`.
 | Variable | Default | Notes |
 |---|---|---|
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | For a local Bot API server or tests. |
+| `AWS_REGION` | `ap-southeast-1` | With `dynamodb` only. Falls back to `AWS_DEFAULT_REGION`. |
+| `DALIBOT_TABLE` | `dalibot` | With `dynamodb` only. The bot's AWS DynamoDB table. |
+| `GALLERY_STORE_DAYS` | `90` | Must equal the bot's `DALIBOT_STORE_DAYS`. The table has no creation time, so the gallery dates each record as `ttl − GALLERY_STORE_DAYS × 86400`. A wrong value shifts every date by the difference. Records with a `created` attribute (pictures imported by forwarding them to the bot) use that date instead. With `sqlite` the date is the time the row was last written, and this setting only decides when a row counts as expired. |
+| `GALLERY_LISTEN` | `127.0.0.1:8080` | `host:port`. The container image sets `0.0.0.0:8080`. |
+| `GALLERY_TRUSTED_PROXIES` | `127.0.0.0/8,::1` | Comma list of IP addresses or CIDR ranges of your reverse proxies, as the gallery sees them. Only from these peers is `X-Forwarded-For` believed (for the login limiter and the log). It grants no access. `none` trusts nobody. `deploy/compose.yaml` sets it to its network's gateway. See [reverse-proxy.md](reverse-proxy.md). |
 | `GALLERY_DEFAULT_COMMAND` | `dream` | Shown for records that carry no command. Display only. |
 | `GALLERY_CHATS` | (empty) | Comma list of chat ids to show (negative for groups). Empty shows every chat. |
 | `GALLERY_REFRESH` | `60s` | How often the bot's records are re-read. A duration or a number of seconds, 5 s to 24 h. |
@@ -20,11 +25,6 @@ like the rest, and all are listed in `.env.example`.
 
 `GALLERY_SOURCE` and `GALLERY_SQLITE_PATH`, for a self-hosted bot that keeps
 its records in SQLite, are described in [SQLite](sqlite.md).
-
-`GALLERY_AUTH` no longer exists. If it is set to anything, the gallery
-refuses to start; `GALLERY_PUBLIC=1` replaces `GALLERY_AUTH=off`. See
-[Who can view and who can administer](../README.md#who-can-view-and-who-can-administer)
-and [Upgrading](../README.md#upgrading).
 
 The binary takes no arguments apart from `-healthcheck` (exit 0 if the
 running gallery's `/healthz` answers 200) and `-version`.

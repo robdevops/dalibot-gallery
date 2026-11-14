@@ -24,8 +24,8 @@ Whatever proxy you use:
 - **The proxy grants no access.** The gallery decides who may view and who
   is an admin from the session cookie or the Basic password alone. Do not
   have the proxy add an `Authorization` header for visitors; for a gallery
-  without a password use `GALLERY_PUBLIC=1` (see the
-  [README](../README.md#a-public-gallery-behind-a-proxy)). If the proxy has
+  without a password use `GALLERY_PUBLIC=1` (see
+  [Who can view](../README.md#who-can-view-and-who-can-administer)). If the proxy has
   its own Basic auth, it forwards the visitor's `Authorization` header to the
   gallery, which, when an admin token is set, reads the password as a guess
   at the tokens. The same password on every request counts only once a
@@ -61,5 +61,11 @@ Whatever proxy you use:
   the per-client limit (the overall limit still applies) and write false
   addresses to the log. If the proxy is not listed, nothing breaks, but all
   visitors count as one client and share 5 wrong tokens per minute.
+- **A public gallery** (`GALLERY_PUBLIC=1`) serves everyone who can reach
+  it. Keep the gallery's own port away from anyone who should not see it:
+  the default `GALLERY_LISTEN` is loopback and the Compose file publishes the
+  port on `127.0.0.1` only. To limit who can view, do it at the proxy
+  (`allow` / `deny`, its own password or SSO), or use `GALLERY_TOKEN`
+  instead.
 - Nothing else is needed: no WebSockets, no path rewriting, and the only
   request bodies are the login form and the empty sign-out.
