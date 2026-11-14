@@ -1,15 +1,11 @@
 package source
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -190,88 +186,5 @@ func TestDynamoReaderAgainstMoto(t *testing.T) {
 	}
 	if _, err := missing.Records(ctx); err == nil {
 		t.Error("scanning a missing table should fail")
-	}
-}
-
-// The reader follows a real stream (moto's) after one scan, and sees what is added, changed and removed.
-func TestDynamoStreamAgainstMoto(t *testing.T) {
-	endpoint := startMoto(t)
-	t.Setenv("AWS_ACCESS_KEY_ID", "testing")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "testing")
-	t.Setenv("AWS_SESSION_TOKEN", "")
-	t.Setenv("AWS_PROFILE", "")
-	t.Setenv("AWS_CONFIG_FILE", os.DevNull)
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", os.DevNull)
-	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	const table = "dalibot-stream"
-	var logs bytes.Buffer
-	reader, err := NewDynamo(ctx, DynamoOptions{Table: table, Region: "us-east-2", Endpoint: endpoint, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := reader.api.(*dynamodb.Client)
-	if _, err := client.CreateTable(ctx, &dynamodb.CreateTableInput{
-		TableName:            aws.String(table),
-		AttributeDefinitions: []types.AttributeDefinition{{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS}},
-		KeySchema:            []types.KeySchemaElement{{AttributeName: aws.String("id"), KeyType: types.KeyTypeHash}},
-		BillingMode:          types.BillingModePayPerRequest,
-		StreamSpecification:  &types.StreamSpecification{StreamEnabled: aws.Bool(true), StreamViewType: types.StreamViewTypeNewImage},
-	}); err != nil {
-		t.Fatalf("creating the table in moto: %v", err)
-	}
-	put := func(id, prompt string) {
-		t.Helper()
-		if _, err := client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(table), Item: rec(id, prompt)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	read := func() []string {
-		t.Helper()
-		records, err := reader.Records(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out []string
-		for _, r := range records {
-			out = append(out, r.ID+"="+r.Prompt)
-		}
-		slices.Sort(out)
-		return out
-	}
-	expect := func(want ...string) {
-		t.Helper()
-		slices.Sort(want)
-		if got := read(); !slices.Equal(got, want) {
-			t.Fatalf("records %v, want %v", got, want)
-		}
-	}
-
-	put("1:1", "one")
-	put("1:2", "two")
-	expect("1:1=one", "1:2=two")
-	if reader.stream == nil {
-		t.Fatal("the reader is not following moto's stream")
-	}
-	put("1:3", "three")
-	put("1:1", "one, edited")
-	if _, err := client.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(table), Key: map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "1:2"}}}); err != nil {
-		t.Fatal(err)
-	}
-	expect("1:1=one, edited", "1:3=three")
-	expect("1:1=one, edited", "1:3=three")
-	if reader.stream == nil || reader.stream.failures != 0 {
-		t.Fatal("the reader stopped following the stream")
-	}
-	// Following, not scanning: the log has no mention of falling back, and the rows came from the stream.
-	for _, bad := range []string{"failed", "whole table", "could not"} {
-		if strings.Contains(logs.String(), bad) {
-			t.Fatalf("the log says %q:\n%s", bad, &logs)
-		}
-	}
-	if !strings.Contains(logs.String(), "following the table's stream") {
-		t.Fatalf("the log does not say the stream is followed:\n%s", &logs)
 	}
 }

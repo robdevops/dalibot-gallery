@@ -50,6 +50,6 @@
   no security headers; see [Security model](security.md).
 - Rebuild the container image often to pick up security updates to Alpine,
   libvips and its codecs.
-- The whole table (or every row of the SQLite database) is read on every
-  refresh and the listing is held in memory; this suits a store bounded by a
+- The whole table (or every row of the SQLite database) is read at every
+  refresh (only while the gallery is in use) and the listing is held in memory; this suits a store bounded by a
   TTL, not an unbounded one.

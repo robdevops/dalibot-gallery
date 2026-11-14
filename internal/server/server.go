@@ -311,13 +311,18 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.serveAsset(w, r, a)
 		return
 	}
-	// Handlers that answer differently to an admin are given the level.
+	// Handlers that answer differently to an admin are given the level. A page and the listing
+	// are what someone looking at the gallery asks for: the store reads the bot's records only
+	// while there is such a request (Store.Touch), and not at all while nobody looks.
 	switch {
 	case p == "/":
+		s.store.Touch()
 		s.handleIndex(w, r, level)
 	case p == "/api/tiles":
+		s.store.Touch()
 		s.handleTiles(w, r, level)
 	case p == "/api/tiles/new":
+		s.store.Touch()
 		s.handleNew(w, r, level)
 	case strings.HasPrefix(p, "/img/"):
 		s.handleImage(w, r, p[len("/img/"):], admin)

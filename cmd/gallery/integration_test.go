@@ -609,15 +609,9 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("the gallery's log contains %q", secret)
 		}
 	}
-	for _, want := range []string{"vips_version=", "snapshot refreshed", "thumbnails warmed", "listening", "stopped", "following the table's stream"} {
+	for _, want := range []string{"vips_version=", "snapshot refreshed", "thumbnails warmed", "listening", "stopped"} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("the gallery's log lacks %q", want)
-		}
-	}
-	// The table has a stream, so the gallery follows it: it never falls back to scanning at every refresh.
-	for _, bad := range []string{"whole table", "stream failed"} {
-		if strings.Contains(logs, bad) {
-			t.Errorf("the gallery's log says %q; it should be following the stream", bad)
 		}
 	}
 

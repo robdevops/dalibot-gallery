@@ -37,7 +37,9 @@ It reads it and nothing else.
 - When a read fails (the file is missing, unreadable or stays locked), the
   gallery keeps showing the previous listing and logs the error, exactly as
   it does when a DynamoDB scan fails. `/healthz` answers 503 once no read has
-  succeeded for three refresh intervals, and until the first one succeeds.
+  succeeded for three refresh intervals while the gallery is in use, and
+  until the first one succeeds. A gallery nobody has looked at since its last
+  read is healthy however old that is.
   The gallery starts even if the file does not exist yet, and picks it up
   when it appears.
 

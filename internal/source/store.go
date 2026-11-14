@@ -18,6 +18,9 @@ type Store struct {
 
 	snap    atomic.Pointer[Snapshot]
 	success atomic.Int64 // unix nanoseconds of the last successful refresh; 0 = never
+	use     atomic.Int64 // unix nanoseconds of the last Touch; 0 = never
+	attempt atomic.Int64 // unix nanoseconds of the start of the last read Run made
+	wake    chan struct{}
 
 	refreshMu sync.Mutex // one refresh at a time
 	// buildMu guards records and the order of swaps: every snapshot is built
@@ -34,7 +37,7 @@ func NewStore(src Source, opt Options, log *slog.Logger) *Store {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	st := &Store{src: src, opt: opt, log: log}
+	st := &Store{src: src, opt: opt, log: log, wake: make(chan struct{}, 1)}
 	st.snap.Store(emptySnapshot)
 	return st
 }
@@ -106,13 +109,37 @@ func (st *Store) swapped(snap *Snapshot) {
 	}
 }
 
-// Run refreshes every interval until ctx is cancelled, starting with a refresh
-// straight away unless one has already succeeded. A failed refresh is logged
-// and the previous snapshot is kept. Each refresh is given at most
-// max(interval, 30 s) to finish.
+// Touch says that someone is looking at the gallery: a page or the listing was asked for. Run
+// reads the source only while that is so (see Run). Cheap, and safe from any goroutine.
+func (st *Store) Touch() {
+	st.use.Store(time.Now().UnixNano())
+	select {
+	case st.wake <- struct{}{}:
+	default:
+	}
+}
+
+// wanted reports whether someone has looked at the gallery since the last good read, so that
+// what they saw may be out of date.
+func (st *Store) wanted() bool {
+	u := st.use.Load()
+	return u != 0 && u >= st.success.Load()
+}
+
+// Run keeps the snapshot up to date until ctx is cancelled. It reads the source straight away
+// unless a read has already succeeded, and after that only while the gallery is in use:
+//
+//   - every interval, if there has been a Touch since the last good read (so while it is used
+//     it is read at most once an interval, and a failed read is tried again at the next one);
+//   - at once on a Touch that finds the snapshot older than an interval, so the first visit
+//     after a quiet spell does not wait for the timer.
+//
+// A gallery nobody is looking at makes no requests of the bot's table at all. A failed read is
+// logged and the previous snapshot is kept. Each read is given at most max(interval, 30 s).
 func (st *Store) Run(ctx context.Context, interval time.Duration) {
 	timeout := max(interval, 30*time.Second)
 	refresh := func() {
+		st.attempt.Store(time.Now().UnixNano())
 		rctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		if err := st.Refresh(rctx); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
@@ -133,7 +160,16 @@ func (st *Store) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			refresh()
+			if st.wanted() {
+				refresh()
+			}
+		case <-st.wake:
+			// Not again within an interval of the last read, even if it failed: a failing source
+			// must not be asked at every request.
+			if st.wanted() && time.Since(time.Unix(0, st.attempt.Load())) >= interval {
+				refresh()
+				t.Reset(interval)
+			}
 		}
 	}
 }
@@ -156,8 +192,8 @@ func (st *Store) Age() time.Duration {
 	return time.Since(time.Unix(0, ns))
 }
 
-// Healthy reports whether a refresh has succeeded within maxAge
-// (/healthz uses 3 x GALLERY_REFRESH).
+// Healthy reports whether a refresh has succeeded within maxAge (/healthz uses 3 x
+// GALLERY_REFRESH), or whether nobody has looked since the last one, so that none was due.
 func (st *Store) Healthy(maxAge time.Duration) bool {
-	return st.success.Load() != 0 && st.Age() < maxAge
+	return st.success.Load() != 0 && (st.Age() < maxAge || !st.wanted())
 }

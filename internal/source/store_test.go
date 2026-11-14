@@ -96,8 +96,12 @@ func TestStoreRefreshAndFailure(t *testing.T) {
 	if !st.Healthy(time.Minute) || st.Age() > time.Minute || st.LastRefresh().IsZero() {
 		t.Error("store should be healthy after a refresh")
 	}
+	if !st.Healthy(0) {
+		t.Error("nobody has looked since the refresh, so none is due: healthy however old")
+	}
+	st.Touch()
 	if st.Healthy(0) {
-		t.Error("Healthy(0) must be false")
+		t.Error("Healthy(0) must be false once someone has looked since the refresh")
 	}
 	if !strings.Contains(logs.String(), "tiles=19") || strings.Contains(logs.String(), "FIXTURE") {
 		t.Errorf("refresh log: %s", logs.String())
@@ -146,13 +150,9 @@ func TestStoreRun(t *testing.T) {
 		src := &flakySource{records: records}
 		var logs lockedBuffer
 		st := NewStore(src, f.options(), slog.New(slog.NewTextHandler(&logs, nil)))
-		// The values Run's goroutine writes are still locked or atomic: Wait orders
-		// the test after Run, but the race detector wants every access ordered.
 		var swapCount atomic.Int32
 		st.OnSwap(func(*Snapshot) { swapCount.Add(1) })
 		swaps := func() int32 { return swapCount.Load() }
-		// synctest.Sleep lets virtual time pass and returns once the refreshes
-		// that fell due are over.
 
 		ctx, cancel := context.WithCancel(t.Context())
 		var run sync.WaitGroup
@@ -161,43 +161,94 @@ func TestStoreRun(t *testing.T) {
 		if swaps() != 1 {
 			t.Fatalf("after the start-up refresh: %d swaps, want 1", swaps())
 		}
-		synctest.Sleep(interval)
+
+		// Nobody is looking: the source is not read, however long it takes, and that is healthy.
+		calls := src.callCount()
+		synctest.Sleep(100 * interval)
+		if src.callCount() != calls || swaps() != 1 || !st.Healthy(3*interval) {
+			t.Fatalf("an idle gallery read the source: %d calls (was %d), %d swaps, healthy %v", src.callCount(), calls, swaps(), st.Healthy(3*interval))
+		}
+
+		// The first visit after a quiet spell finds the snapshot old, and it is read at once.
+		st.Touch()
+		synctest.Wait()
 		if swaps() != 2 {
-			t.Fatalf("after a timed refresh: %d swaps, want 2", swaps())
+			t.Fatalf("a visit after a quiet spell: %d swaps, want 2", swaps())
 		}
 		if st.Snapshot().Len() != 19 {
 			t.Fatalf("len = %d", st.Snapshot().Len())
 		}
-
-		// The source starts failing: Run logs it and keeps serving the old snapshot.
-		src.set(nil, errors.New("ProvisionedThroughputExceededException"))
+		// Not again within the interval, however often it is looked at...
+		for range 50 {
+			st.Touch()
+		}
+		synctest.Wait()
+		if swaps() != 2 {
+			t.Fatalf("a read within the interval of the last: %d swaps, want 2", swaps())
+		}
+		// ...but at the end of it, because it has been looked at since.
 		synctest.Sleep(interval)
+		if swaps() != 3 {
+			t.Fatalf("a timed read after a look: %d swaps, want 3", swaps())
+		}
+		// And then it is quiet again.
+		synctest.Sleep(10 * interval)
+		if swaps() != 3 {
+			t.Fatalf("a read with nobody looking: %d swaps, want 3", swaps())
+		}
+
+		// Used steadily, it is read once an interval.
+		for range 3 {
+			synctest.Sleep(interval / 2)
+			st.Touch()
+			synctest.Sleep(interval / 2)
+		}
+		if swaps() != 6 {
+			t.Fatalf("3 intervals of use: %d swaps, want 6", swaps())
+		}
+
+		// The source starts failing while it is used: Run logs it, keeps the old snapshot, tries again at each
+		// interval (not at every request), and the store turns unhealthy when it stays so.
+		synctest.Sleep(2 * interval) // quiet again, and the last read is more than an interval old
+		base := swaps()
+		src.set(nil, errors.New("ProvisionedThroughputExceededException"))
+		before := src.callCount()
+		st.Touch()
+		synctest.Wait()
+		for range 100 {
+			st.Touch()
+		}
+		synctest.Wait()
+		if src.callCount() != before+1 {
+			t.Fatalf("%d reads of a failing source for a burst of visits, want 1", src.callCount()-before)
+		}
 		if !strings.Contains(logs.String(), "keeping the previous snapshot") {
 			t.Fatal("failure was not logged")
 		}
-		if st.Snapshot().Len() != 19 || swaps() != 2 {
+		if st.Snapshot().Len() != 19 || swaps() != base {
 			t.Error("snapshot lost after a failed refresh")
 		}
-		if !st.Healthy(3 * interval) {
-			t.Error("store should still be healthy after 1 missed refresh")
+		synctest.Sleep(interval)
+		if got := src.callCount() - before; got != 2 {
+			t.Fatalf("%d reads of a failing source after an interval, want 2", got)
 		}
-		// Health goes stale while refreshes fail.
-		synctest.Sleep(2 * interval)
+		synctest.Sleep(3 * interval)
 		if st.Healthy(3 * interval) {
-			t.Error("store should be unhealthy after 3 missed refreshes")
+			t.Error("store should be unhealthy after 3 missed refreshes while it is looked at")
 		}
 		// ...and recovers.
 		src.set(records, nil)
 		synctest.Sleep(interval)
-		if swaps() != 3 || !st.Healthy(3*interval) {
-			t.Errorf("store should be healthy again (%d swaps, want 3)", swaps())
+		if swaps() != base+1 || !st.Healthy(3*interval) {
+			t.Errorf("store should be healthy again (%d swaps, want %d)", swaps(), base+1)
 		}
 
 		cancel()
 		run.Wait() // the bubble reports a deadlock if Run does not stop
-		calls := src.callCount()
+		calls = src.callCount()
+		st.Touch()
 		synctest.Sleep(10 * interval)
-		if swaps() != 3 || src.callCount() != calls {
+		if swaps() != base+1 || src.callCount() != calls {
 			t.Error("refreshes continued after cancel")
 		}
 	})
