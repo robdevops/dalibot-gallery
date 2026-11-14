@@ -182,9 +182,11 @@ func (d *Dynamo) Records(ctx context.Context) ([]Record, error)
 // NEW_AND_OLD_IMAGES, and DescribeStream allowed), every later call reads the stream and applies INSERT/MODIFY
 // (the new image replaces the record) and REMOVE (by key) to the picture of the table. Every shard is read
 // from TRIM_HORIZON (so changes the scan missed or saw are replayed: replacing a record whole and keeping
-// each item's changes in order converge), parent first, resumed by AFTER_SEQUENCE_NUMBER, a new iterator at
-// every call (nothing expires). A page with no records is read through (3 in a row), `callsPerShard` bounds
-// one call. Failures that may pass keep the state and return an error (Store keeps the old snapshot); after 3
+// each item's changes in order converge), parent first, resumed by AFTER_SEQUENCE_NUMBER. The iterator of the
+// last page is kept (renewed once if it has expired), so a refresh with nothing new is one GetRecords per open
+// shard; the shard list (DescribeStream) is asked for every 5 min and when a shard ends. A page with no records
+// is read through (3 in a row) until a shard has been read up to its end once, then one is enough;
+// `callsPerShard` bounds one call. Failures that may pass keep the state and return an error (Store keeps the old snapshot); after 3
 // in a row, or at once for the unrecoverable (trimmed records, a vanished unfinished shard, a stream that is
 // off, a record that cannot be applied), the picture is dropped, the table scanned and the stream joined again;
 // a stream dropped twice within 10 min is left alone for 1 h. A table with no usable stream is scanned at every

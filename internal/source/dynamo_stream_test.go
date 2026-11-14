@@ -32,6 +32,9 @@ type fakeTable struct {
 	seq     int
 
 	scans, describes, gets int
+	streamDescribes        int
+	iterators              int
+	gen                    int                                        // iterators issued before the last expire() are refused
 	consistent             []bool                                     // ConsistentRead of every scan
 	beforeScan             func()                                     // runs after the scan has read the table, before it answers
 	staleScan              map[string]map[string]types.AttributeValue // when set, what every scan returns: a scan that is behind
@@ -134,6 +137,12 @@ func (f *fakeTable) split(child string) {
 	f.shards = append(f.shards, &fakeShard{id: child, parent: parent.id})
 }
 
+func (f *fakeTable) expire() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gen++
+}
+
 func (f *fakeTable) failing(op string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -186,6 +195,7 @@ func (f *fakeTable) DescribeTable(context.Context, *dynamodb.DescribeTableInput,
 func (f *fakeTable) DescribeStream(_ context.Context, in *dynamodbstreams.DescribeStreamInput, _ ...func(*dynamodbstreams.Options)) (*dynamodbstreams.DescribeStreamOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.streamDescribes++
 	if err := f.fail["DescribeStream"]; err != nil {
 		return nil, err
 	}
@@ -229,13 +239,14 @@ func (f *fakeTable) shard(id string) *fakeShard {
 	return nil
 }
 
-// An iterator is "shard|index".
+// An iterator is "generation|shard|index".
 func (f *fakeTable) GetShardIterator(_ context.Context, in *dynamodbstreams.GetShardIteratorInput, _ ...func(*dynamodbstreams.Options)) (*dynamodbstreams.GetShardIteratorOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.fail["GetShardIterator"]; err != nil {
 		return nil, err
 	}
+	f.iterators++
 	s := f.shard(*in.ShardId)
 	idx := 0
 	switch in.ShardIteratorType {
@@ -249,7 +260,7 @@ func (f *fakeTable) GetShardIterator(_ context.Context, in *dynamodbstreams.GetS
 	default:
 		panic("fake: the gallery asked for an iterator type it should not use: " + string(in.ShardIteratorType))
 	}
-	return &dynamodbstreams.GetShardIteratorOutput{ShardIterator: aws.String(fmt.Sprintf("%s|%d", s.id, idx))}, nil
+	return &dynamodbstreams.GetShardIteratorOutput{ShardIterator: aws.String(fmt.Sprintf("%d|%s|%d", f.gen, s.id, idx))}, nil
 }
 
 func (f *fakeTable) GetRecords(_ context.Context, in *dynamodbstreams.GetRecordsInput, _ ...func(*dynamodbstreams.Options)) (*dynamodbstreams.GetRecordsOutput, error) {
@@ -260,8 +271,12 @@ func (f *fakeTable) GetRecords(_ context.Context, in *dynamodbstreams.GetRecords
 		return nil, err
 	}
 	p := strings.Split(*in.ShardIterator, "|")
-	idx, _ := strconv.Atoi(p[1])
-	s := f.shard(p[0])
+	gen, _ := strconv.Atoi(p[0])
+	if gen < f.gen {
+		return nil, &stypes.ExpiredIteratorException{}
+	}
+	idx, _ := strconv.Atoi(p[2])
+	s := f.shard(p[1])
 	if idx < len(s.records) { // a page with nothing in it, though there are records: how many is remembered by position
 		if s.empty == nil {
 			s.empty = map[int]int{}
@@ -271,13 +286,13 @@ func (f *fakeTable) GetRecords(_ context.Context, in *dynamodbstreams.GetRecords
 		}
 		if s.empty[idx] > 0 {
 			s.empty[idx]--
-			return &dynamodbstreams.GetRecordsOutput{NextShardIterator: aws.String(fmt.Sprintf("%s|%d", s.id, idx))}, nil
+			return &dynamodbstreams.GetRecordsOutput{NextShardIterator: aws.String(fmt.Sprintf("%d|%s|%d", f.gen, s.id, idx))}, nil
 		}
 	}
 	end := min(idx+int(aws.ToInt32(in.Limit)), len(s.records))
 	out := &dynamodbstreams.GetRecordsOutput{Records: s.records[idx:end]}
 	if !(s.closed && end >= len(s.records)) {
-		out.NextShardIterator = aws.String(fmt.Sprintf("%s|%d", s.id, end))
+		out.NextShardIterator = aws.String(fmt.Sprintf("%d|%s|%d", f.gen, s.id, end))
 	}
 	return out, nil
 }
@@ -425,6 +440,7 @@ func TestStreamShardsAreReadParentFirst(t *testing.T) {
 	}
 	// A finished shard that the stream has trimmed away is forgotten, not an error.
 	e.f.shards[0].hidden = true
+	e.now = e.now.Add(rediscoverEvery) // the list of shards is asked for again
 	e.f.put("1:4", "four")
 	e.want(t, "1:1=new, in the child", "1:2=two", "1:3=three", "1:4=four")
 	if e.f.scans != 1 || len(e.d.stream.shards) != 2 {
@@ -460,7 +476,7 @@ func TestStreamReadsThroughEmptyPagesAndLongBacklogs(t *testing.T) {
 	e.f.emptyPages = emptyPages + 2
 	e.f.put("3:1", "late")
 	var seen bool
-	for range 4 {
+	for range 8 {
 		if slices.Contains(e.ids(t), "3:1=late") {
 			seen = true
 			break
@@ -468,6 +484,67 @@ func TestStreamReadsThroughEmptyPagesAndLongBacklogs(t *testing.T) {
 	}
 	if !seen || e.f.scans != 1 {
 		t.Fatalf("seen %v after %d scans", seen, e.f.scans)
+	}
+}
+
+// A refresh with nothing new is one request for each open shard, and nothing else.
+func TestStreamQuietRefreshIsOneRequestPerOpenShard(t *testing.T) {
+	e := newStreamEnv(t)
+	e.f.put("1:1", "one")
+	e.want(t, "1:1=one")
+	e.want(t, "1:1=one") // reads the shard up to its end, and learns where the end is
+	e.f.mu.Lock()
+	gets, its, descs := e.f.gets, e.f.iterators, e.f.streamDescribes
+	e.f.mu.Unlock()
+	for range 5 {
+		e.want(t, "1:1=one")
+	}
+	e.f.mu.Lock()
+	defer e.f.mu.Unlock()
+	if e.f.gets-gets != 5 || e.f.iterators != its || e.f.streamDescribes != descs {
+		t.Fatalf("5 quiet refreshes took %d GetRecords, %d iterators, %d DescribeStream; want 5, 0, 0", e.f.gets-gets, e.f.iterators-its, e.f.streamDescribes-descs)
+	}
+}
+
+// The list of shards is asked for again every few minutes, and when a shard has ended.
+func TestStreamRediscoversShards(t *testing.T) {
+	e := newStreamEnv(t)
+	e.f.put("1:1", "one")
+	e.want(t, "1:1=one")
+	e.want(t, "1:1=one")
+	e.f.mu.Lock()
+	before := e.f.streamDescribes
+	e.f.mu.Unlock()
+	e.now = e.now.Add(rediscoverEvery)
+	e.want(t, "1:1=one")
+	e.f.mu.Lock()
+	if e.f.streamDescribes != before+1 {
+		t.Fatalf("%d DescribeStream calls after the interval, want %d", e.f.streamDescribes, before+1)
+	}
+	e.f.mu.Unlock()
+	// A shard ends: its children are found at once, and what they hold is read in the same refresh.
+	e.f.split("shard-1")
+	e.f.put("1:2", "two")
+	e.want(t, "1:1=one", "1:2=two")
+	if e.f.scans != 1 {
+		t.Fatalf("%d scans", e.f.scans)
+	}
+}
+
+// An iterator is good for 15 minutes. A refresh that finds it spent asks for another.
+func TestStreamExpiredIteratorsAreRenewed(t *testing.T) {
+	e := newStreamEnv(t)
+	e.f.put("1:1", "one")
+	e.want(t, "1:1=one")
+	e.f.put("1:2", "two")
+	e.want(t, "1:1=one", "1:2=two")
+	e.f.expire()
+	e.f.put("1:3", "three")
+	e.want(t, "1:1=one", "1:2=two", "1:3=three")
+	e.f.expire()
+	e.want(t, "1:1=one", "1:2=two", "1:3=three") // and when nothing has been read from a shard yet
+	if e.f.scans != 1 {
+		t.Fatalf("%d scans: an expired iterator is not a reason to scan\n%s", e.f.scans, e.logs)
 	}
 }
 
@@ -550,11 +627,18 @@ func TestStreamTransientErrorsKeepTheState(t *testing.T) {
 	for _, op := range []string{"GetRecords", "DescribeStream", "GetShardIterator"} {
 		t.Run(op, func(t *testing.T) {
 			e := newStreamEnv(t)
+			// The shards are listed every rediscoverEvery: for that call, make it due at every read.
+			tick := func() {
+				if op == "DescribeStream" {
+					e.now = e.now.Add(rediscoverEvery)
+				}
+			}
 			e.f.put("1:1", "one")
 			e.want(t, "1:1=one")
 			e.f.failing(op, errors.New("ThrottlingException"))
 			e.f.put("1:2", "two")
 			for range maxFailures - 1 {
+				tick()
 				if _, err := e.d.Records(context.Background()); err == nil {
 					t.Fatal("a failed read returned no error")
 				}
@@ -563,6 +647,7 @@ func TestStreamTransientErrorsKeepTheState(t *testing.T) {
 				t.Fatalf("%d scans: throttling is no reason to scan", e.f.scans)
 			}
 			e.f.failing(op, nil)
+			tick()
 			e.want(t, "1:1=one", "1:2=two")
 			if e.f.scans != 1 {
 				t.Fatalf("%d scans after it passed:\n%s", e.f.scans, e.logs)
@@ -570,9 +655,11 @@ func TestStreamTransientErrorsKeepTheState(t *testing.T) {
 			// The count starts again after a success.
 			e.f.failing(op, errors.New("ThrottlingException"))
 			for range maxFailures - 1 {
+				tick()
 				_, _ = e.d.Records(context.Background())
 			}
 			e.f.failing(op, nil)
+			tick()
 			e.want(t, "1:1=one", "1:2=two")
 			if e.f.scans != 1 {
 				t.Fatalf("%d scans", e.f.scans)
@@ -659,6 +746,7 @@ func TestStreamLosingAShardMeansScanning(t *testing.T) {
 	e.f.shards = append(e.f.shards, &fakeShard{id: "shard-new"})
 	e.f.shards[0].closed = true
 	e.f.put("1:2", "two")
+	e.now = e.now.Add(rediscoverEvery) // the list of shards is asked for again
 	e.want(t, "1:1=one", "1:2=two")
 	if e.f.scans != 2 {
 		t.Fatalf("%d scans\n%s", e.f.scans, e.logs)

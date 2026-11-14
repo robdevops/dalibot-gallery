@@ -82,9 +82,11 @@ in the policy is for), so there is nothing to set. How it uses it:
   replaces the item whole, so the picture ends up as the table is, whatever
   the scan missed or caught.
 - It does this at every start (so a restart never loses anything), and again
-  every 6 hours as a check. In between, each refresh is one `DescribeStream`
-  and a `GetRecords` call or two for each shard, which is a few small requests
-  a minute.
+  every 6 hours as a check. In between, a refresh with nothing new is one
+  `GetRecords` call for each open shard (usually one or two), and the list of
+  shards is asked for again every 5 minutes, or at once when a shard ends.
+  If a refresh takes more than 2 seconds the log says how many requests it
+  made; `GALLERY_DEBUG=1` shows every one.
 - A request that fails in a way that may pass, such as throttling, keeps what
   the gallery has and is tried again at the next refresh. After three failures
   in a row, or at once for something that cannot pass (the records it had not
@@ -183,11 +185,14 @@ of creating a user, and leave `AWS_ACCESS_KEY_ID` and
 With the stream enabled, the gallery scans the table once at start-up (and
 every 6 hours, as a check; those scans are strongly consistent, which costs
 twice as much per item) and then reads only the changes: per refresh, one
-`DescribeStream` and a `GetRecords` call or two for each shard. DynamoDB gives
+`GetRecords` call for each open shard. DynamoDB gives
 a monthly allowance of stream reads, and a gallery refreshing every minute
 is far below it (check the current pricing for your region).
 
-Without the stream, every refresh is a scan of the whole table, billed as
+The saving depends on the size of the table, and a small table has little to
+save: 134 items of about 2 KB scanned every minute is about 50,000 read units
+a day, roughly 50 US cents a month. The stream earns its keep from a few
+thousand items up. Without the stream, every refresh is a scan of the whole table, billed as
 read capacity for every item (half a read unit per 4 KB, as the scan is
 eventually consistent). A table of 5,000 items of about 1 KB scanned every
 minute is roughly 900,000 read units a day. On a table with provisioned

@@ -54,8 +54,13 @@ const (
 	maxFailures = 3
 	// callsPerShard bounds the GetRecords calls for one shard in one refresh; the rest is read at the next.
 	callsPerShard = 100
-	// emptyPages: an empty page can come before more records, so a shard is read through this many in a row.
+	// emptyPages: an empty page can come before more records, so a shard that has not been read up to its end
+	// before is read through this many in a row. Once it has, one empty page means there is nothing new.
 	emptyPages = 3
+	// rediscoverEvery is how often the list of shards is asked for again, besides whenever a shard has ended.
+	rediscoverEvery = 5 * time.Minute
+	// slowFollow: reading the stream that takes longer than this is logged.
+	slowFollow = 2 * time.Second
 )
 
 // TableAPI is the DynamoDB operation, besides Scan, that finds the table's stream.
@@ -72,14 +77,19 @@ type StreamsAPI interface {
 
 // stream is the state of one followed stream.
 type stream struct {
-	arn      string
-	shards   map[string]*shard
-	failures int // refreshes in a row that failed in a way that may pass
+	arn          string
+	shards       map[string]*shard
+	failures     int       // refreshes in a row that failed in a way that may pass
+	discoveredAt time.Time // when the list of shards was last asked for
+	calls        int       // requests made by the current follow
+	changes      int       // changes applied by the current follow
 }
 
 type shard struct {
 	id, parent string
 	seq        string // the last sequence number applied; empty: nothing yet, read from the start
+	iter       string // the iterator to read on with, if it is still good; empty: ask for one
+	tip        bool   // read up to its end before: one empty page is enough to stop
 	done       bool   // read to its end
 }
 
@@ -187,6 +197,8 @@ func (d *Dynamo) discover(ctx context.Context, st *stream) error {
 			break
 		}
 	}
+	st.discoveredAt = d.now()
+	st.calls++
 	present := map[string]bool{}
 	for _, sh := range all {
 		id := aws.ToString(sh.ShardId)
@@ -207,20 +219,26 @@ func (d *Dynamo) discover(ctx context.Context, st *stream) error {
 	return nil
 }
 
-// follow reads the changes the stream holds and applies them to d.items.
+// follow reads the changes the stream holds and applies them to d.items. A refresh with nothing new
+// is one GetRecords call for each open shard; the list of shards is asked for only when one has
+// ended (it may have children) and every rediscoverEvery.
 func (d *Dynamo) follow(ctx context.Context) error {
 	st := d.stream
-	if err := d.discover(ctx, st); err != nil {
-		return err
+	st.calls, st.changes = 0, 0
+	start := d.now()
+	if d.now().Sub(st.discoveredAt) >= rediscoverEvery {
+		if err := d.discover(ctx, st); err != nil {
+			return err
+		}
 	}
-	ids := make([]string, 0, len(st.shards))
-	for id := range st.shards {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
 	// A shard waits for its parent. Reading one to its end can free its children, so go round again.
 	for progress := true; progress; {
 		progress = false
+		ids := make([]string, 0, len(st.shards))
+		for id := range st.shards {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
 		for _, id := range ids {
 			s := st.shards[id]
 			if s.done {
@@ -232,17 +250,30 @@ func (d *Dynamo) follow(ctx context.Context) error {
 			if err := d.readShard(ctx, st, s); err != nil {
 				return fmt.Errorf("shard %s: %w", id, err)
 			}
-			progress = progress || s.done
+			if s.done {
+				progress = true
+				if err := d.discover(ctx, st); err != nil { // its children
+					return err
+				}
+				break // the shards changed
+			}
 		}
+	}
+	if took := d.now().Sub(start); took > slowFollow {
+		d.log.Info("reading the table's stream was slow", "duration", took.Round(time.Millisecond), "requests", st.calls, "changes", st.changes, "shards", len(st.shards))
+	} else {
+		d.log.Debug("read the table's stream", "duration", took.Round(time.Millisecond), "requests", st.calls, "changes", st.changes, "shards", len(st.shards))
 	}
 	return nil
 }
 
-func (d *Dynamo) readShard(ctx context.Context, st *stream, s *shard) error {
+// iterator asks for a new iterator for s: after the last change applied, or from the start.
+func (d *Dynamo) iterator(ctx context.Context, st *stream, s *shard) error {
 	in := &dynamodbstreams.GetShardIteratorInput{StreamArn: &st.arn, ShardId: &s.id, ShardIteratorType: stypes.ShardIteratorTypeTrimHorizon}
 	if s.seq != "" {
 		in.ShardIteratorType, in.SequenceNumber = stypes.ShardIteratorTypeAfterSequenceNumber, &s.seq
 	}
+	st.calls++
 	it, err := d.streams.GetShardIterator(ctx, in)
 	if err != nil {
 		if _, ok := errors.AsType[*stypes.TrimmedDataAccessException](err); ok {
@@ -250,12 +281,28 @@ func (d *Dynamo) readShard(ctx context.Context, st *stream, s *shard) error {
 		}
 		return err
 	}
-	iter, empty := it.ShardIterator, 0
+	s.iter = aws.ToString(it.ShardIterator)
+	return nil
+}
+
+func (d *Dynamo) readShard(ctx context.Context, st *stream, s *shard) error {
+	renewed, empty := false, 0
 	for range callsPerShard {
-		out, err := d.streams.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{ShardIterator: iter, Limit: aws.Int32(1000)})
+		if s.iter == "" {
+			if err := d.iterator(ctx, st, s); err != nil {
+				return err
+			}
+		}
+		st.calls++
+		out, err := d.streams.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{ShardIterator: &s.iter, Limit: aws.Int32(1000)})
 		if err != nil {
 			if _, ok := errors.AsType[*stypes.TrimmedDataAccessException](err); ok {
 				return fmt.Errorf("%w: %w", errFatal, err)
+			}
+			// An iterator is good for 15 minutes. If this one is not, ask for another, once.
+			if _, ok := errors.AsType[*stypes.ExpiredIteratorException](err); ok && !renewed {
+				renewed, s.iter = true, ""
+				continue
 			}
 			return err
 		}
@@ -264,24 +311,23 @@ func (d *Dynamo) readShard(ctx context.Context, st *stream, s *shard) error {
 				return fmt.Errorf("%w: %w", errFatal, err)
 			}
 			s.seq = aws.ToString(rec.Dynamodb.SequenceNumber)
+			st.changes++
 		}
 		if out.NextShardIterator == nil {
-			s.done = true
+			s.done, s.iter = true, ""
 			return nil
 		}
-		iter = out.NextShardIterator
-		if empty = (empty + 1) * boolInt(len(out.Records) == 0); empty >= emptyPages {
+		s.iter = *out.NextShardIterator
+		if len(out.Records) > 0 {
+			empty = 0
+			continue
+		}
+		if empty++; empty >= emptyPages || s.tip {
+			s.tip = true
 			return nil // caught up; whatever comes is read at the next refresh
 		}
 	}
 	return nil
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // apply puts one change into the picture of the table.
