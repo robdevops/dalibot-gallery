@@ -99,6 +99,7 @@ trash.onclick = async () => {
     else dlg.close()
   }
   say('Image hidden')
+  navigator.vibrate?.(30) // a small buzz where the device has one (not iOS)
   setTimeout(() => { busy = 0 }, 500)
 }
 })()

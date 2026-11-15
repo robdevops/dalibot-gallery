@@ -104,6 +104,8 @@ test.describe('a gallery that needs the token to view', () => {
 
   test('the admin hides an image with one press of the trash can, and restores it from the page of hidden images', async ({ page, request }) => {
     const paths = requested(page)
+    // Record the buzz instead of making one.
+    await page.addInitScript(() => { window.buzz = []; navigator.vibrate = p => { window.buzz.push(p); return true } })
     await signInAsAdmin(page, 'Access token')
     for (const f of ADMIN_FILES) expect(paths, f).toContain(f)
     const before = await domKeys(page)
@@ -132,6 +134,7 @@ test.describe('a gallery that needs the token to view', () => {
     await expect(page.getByRole('button', { name: /Cancel|Hide image|Undo/ })).toHaveCount(0)
     await expect(page.locator('#adm, #undo')).toHaveCount(0)
     expect(await hiddenKeys(request)).toEqual([target])
+    expect(await page.evaluate(() => window.buzz), 'a small vibration on hiding').toEqual([30])
     expect(await listedKeys(request, basic())).not.toContain(target)
     expect((await request.get(`/img/${target}.jpg`, { headers: basic() })).status()).toBe(404)
 
