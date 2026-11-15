@@ -324,6 +324,16 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   await page.locator('#full').click()
   await expect.poll(shown).toEqual(overlays.map(() => true))
 
+  // While a tap has hidden them, a tap where the caption and strip were closes the viewer.
+  await page.locator('#full').click()
+  await expect.poll(shown).toEqual(overlays.map(() => false))
+  const meta = await page.locator('.meta').boundingBox()
+  await page.mouse.click(meta.x + meta.width / 2, meta.y + meta.height / 2)
+  await expect(dialog(page)).toBeHidden()
+  await page.locator(`.tile[data-key="${keys[5]}"] a`).click()
+  await loaded(page, keys[5])
+  await expect.poll(shown).toEqual(overlays.map(() => true))
+
   // Hidden, then closed with Esc: they are back the next time the viewer opens.
   await page.locator('#full').click()
   await page.keyboard.press('Escape')

@@ -55,17 +55,20 @@ test('a moving image can be caught by a finger, and a flick carries it to the ne
     expect(await fullKey(page)).toBe(keys[4])
 
     // Let go of a drag that is carrying it to the next image, and touch again while it moves: it stops where it
-    // was caught, and the finger takes it from there, to wherever the finger goes.
+    // was caught, and the finger takes it from there, to wherever the finger goes. The image it was on its way
+    // to is the open one from then on (so a further swipe goes on from it), standing where it was caught.
     await touch('touchStart', 300)
     for (const x of [250, 200, 150, 100]) { await touch('touchMove', x, 12); await frame() }
     await touch('touchEnd', 0, 12) // on its way to the next image
     await expect.poll(shift, { intervals: [5] }).toBeLessThan(-215) // it has begun to move on
-    const caught = await shift()
+    const caught = await shift() + stage.width // where the next image was
     await touch('touchStart', 200)
     await page.waitForTimeout(100) // held: it does not go on
+    expect(await fullKey(page)).toBe(keys[5])
+    await expect(page.locator('#peek')).toHaveAttribute('src', `/img/${keys[4]}.jpg`) // the one before, beside it
     const held = await shift()
-    expect(held).toBeLessThanOrEqual(caught) // it did not come back
-    expect(Math.abs(held - caught)).toBeLessThan(160) // and stopped soon after
+    expect(held).toBeLessThanOrEqual(caught + 1) // it did not come back
+    expect(caught - held).toBeLessThan(160) // and stopped soon after
     await page.waitForTimeout(100)
     expect(await shift()).toBe(held)
     await touch('touchMove', 260) // dragged back to the right by 60 px: the canvas follows
@@ -355,4 +358,49 @@ test('the mouse holds and swipes the large image as a finger does', async ({ pag
   await mouse('mouseReleased', cx - 150, 250)
   await page.waitForTimeout(500)
   expect(await page.locator('#full').evaluate(i => i.style.transform)).toMatch(/scale\(1\.5\)$/)
+})
+
+// A swipe can follow a swipe at once, without waiting for each to come to rest: each goes on from the image
+// the last one was on its way to.
+test('swipe after swipe goes on without waiting for the last to come to rest', async ({ browser, baseURL }, testInfo) => {
+  const context = await browser.newContext({
+    baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 },
+    hasTouch: true, isMobile: true,
+  })
+  const page = await context.newPage()
+  try {
+    await page.goto('/')
+    await page.waitForSelector('#grid .tile')
+    const keys = await domKeys(page)
+    await page.locator('#grid .tile a').nth(3).tap()
+    await loaded(page, keys[3])
+    const cdp = await context.newCDPSession(page)
+    const stage = await page.locator('#full').boundingBox()
+    const y = Math.round(stage.y + stage.height / 2)
+    let clock = Date.now() / 1000
+    const touch = (type, x, ms = 16) => {
+      clock += ms / 1000
+      return cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type == 'touchEnd' ? [] : [{ x, y, id: 0 }], timestamp: clock })
+    }
+    const moving = () => page.evaluate(() => !!document.getElementById('full').style.transform)
+    // Three quick flicks to the left, each begun while the last is still moving.
+    for (let i = 0; i < 3; i++) {
+      await touch('touchStart', 300)
+      for (const x of [270, 235, 200]) { await touch('touchMove', x, 12); await page.waitForTimeout(20) }
+      await touch('touchEnd', 0, 12)
+      if (i < 2) expect(await moving(), `flick ${i + 1} is still moving when the next begins`).toBe(true)
+    }
+    await loaded(page, keys[6]) // three on, none lost and none twice
+    await expect(page).toHaveURL(new RegExp(`#/p/${keys[6]}$`))
+    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(0)
+    // And back, two at once.
+    for (let i = 0; i < 2; i++) {
+      await touch('touchStart', 80)
+      for (const x of [110, 145, 180]) { await touch('touchMove', x, 12); await page.waitForTimeout(20) }
+      await touch('touchEnd', 0, 12)
+    }
+    await loaded(page, keys[4])
+  } finally {
+    await context.close()
+  }
 })

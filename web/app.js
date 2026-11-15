@@ -244,9 +244,9 @@ function zoom(nz, x, y, smooth) {
   z = nz
   pan(0, 0, smooth)
 }
-function show(key) {
+function show(key, keep) {
   const t = data.get(key)
-  if (anim || x) { // moved by other means (a key, the strip) while it was moving
+  if ((anim || x) && !keep) { // moved by other means (a key, the strip) while it was moving
     stop()
     x = 0
     draw()
@@ -284,9 +284,9 @@ function show(key) {
 strip.onscroll = () => { // near its end: load more
   if (strip.scrollLeft + strip.clientWidth > strip.scrollWidth - 900) more()
 }
-function go(key) {
+function go(key, keep) {
   history.replaceState(null, '', '#/p/' + key)
-  show(key)
+  show(key, keep)
 }
 // The key d tiles from the open one.
 function near(d) {
@@ -398,7 +398,8 @@ full.ondblclick = e => {
     zoom(z > 1 ? 1 : 2, e.clientX, e.clientY, 1)
   }
 }
-dlg.onclick = e => { if (e.target == dlg) dlg.close() }
+// A click outside the box closes; so does one where the caption and strip were, while a tap has hidden them.
+dlg.onclick = e => { if (e.target == dlg || dlg.classList.contains('bare') && !e.target.closest('.stage')) dlg.close() }
 // Arrow keys: the next or previous image, or, while zoomed, move the image. Space is the next
 // image (Shift+Space the previous), except on a strip thumbnail, where it picks that one.
 // + and = zoom in, - zooms out, 0 is normal size.
@@ -417,7 +418,7 @@ addEventListener('keydown', e => {
 // ahead) a width to either side, and a finger sets x. On letting go, x carries on at the speed
 // of the finger, as a spring, to the nearest place of rest: here (0) or a neighbour (+-W). A
 // touch while it moves catches it where it is. One finger, starting on the image, not zoomed.
-let sx = NaN, sy = 0, x = 0, anim = 0, pend = 0, trail = []
+let sx = NaN, sy = 0, x = 0, anim = 0, pend = 0, trail = [], target = 0, g0 = 0
 const W = () => full.offsetWidth
 const peek = el('img') // the neighbour on the side x points to; one picture does for both
 peek.id = 'peek'
@@ -451,8 +452,10 @@ function still0() { // the canvas back at rest, without a spring
 // A finger or the mouse takes hold of the canvas at (cx, cy); ok: it may swipe from here.
 function grab(cx, cy, ok) {
   if (anim || x) dragged = 1 // caught while moving: the click that follows is no click
+  hop() // on its way to the next image: that one is the open one now, so the next swipe goes on from it
   stop() // catch it
-  sx = ok && !pend && z == 1 && !pinched() ? cx - x : NaN
+  sx = ok && z == 1 && !pinched() ? cx - x : NaN
+  g0 = x // where this hold began
   sy = cy
   trail = []
 }
@@ -478,6 +481,7 @@ const move = e => {
 // which never passes `to`. On reaching a neighbour it takes the place of the large image.
 function run(to, v) {
   const k = 800, c = 2 * Math.sqrt(k), x0 = x
+  target = to
   let t0 = 0
   const frame = t => {
     const dt = t0 ? Math.min((t - t0) / 1e3, .032) : 0
@@ -503,14 +507,27 @@ function arrive(to) {
   if (k) go(k)
   else draw()
 }
-// The wheel of a touchpad: a push to the next or previous image. False if there is none, or one is moving.
+// While the canvas is on its way to a neighbour, that neighbour becomes the open image at once, the
+// canvas moved by a width so that nothing jumps: a swipe can follow a swipe without waiting.
+function hop() {
+  const k = anim && target && near(target < 0 ? 1 : -1)
+  if (!k) return
+  stop()
+  x -= target
+  target = 0
+  go(k, 1)
+  draw()
+}
+// The wheel of a touchpad: a push to the next or previous image (from wherever one is moving to). False if there is none.
 function fling(d) {
-  if (anim || pend || !near(d)) return false
+  hop()
+  if (!near(d)) return false
+  stop()
   run(-d * W(), -d * 2200)
   return true
 }
 function release(e) {
-  if (z > 1 || !pend && !e.touches.length) letGo(e.type == 'touchend', e.timeStamp)
+  if (z > 1 || !e.touches.length) letGo(e.type == 'touchend', e.timeStamp)
 }
 // Let go at time ts (live: by lifting the finger or the button, not by being interrupted).
 function letGo(live, ts) {
@@ -523,7 +540,9 @@ function letGo(live, ts) {
   live = live && sx == sx
   const tr = trail.filter(q => ts - q[0] < 100) // the last moments: held still before letting go is no flick
   const v = live && tr.length > 1 ? Math.max(-4e3, Math.min(4e3, (tr.at(-1)[1] - tr[0][1]) / (tr.at(-1)[0] - tr[0][0] || 1) * 1e3)) : 0
-  const p = x + v * .15, d = p < 0 ? 1 : -1 // where it is heading, and which way that is
+  // Where it is heading, from its place of rest and from where this hold began (after a swipe that
+  // was still moving, the image now open can be far to one side): the larger counts.
+  const a = x + v * .15, b = a - g0, p = Math.abs(b) > Math.abs(a) ? b : a, d = p < 0 ? 1 : -1
   const far = live && Math.abs(p) > W() * .35 // far enough, or fast enough, to leave the image
   sx = NaN
   if (far && !near(d)) step(d) // past the last loaded image: load more
@@ -573,7 +592,7 @@ dlg.addEventListener('wheel', e => {
     wmin = x
     wup = 0
     wdir = Math.sign(wx)
-    anim || fling(wdir) || step(wdir)
+    fling(wdir) || step(wdir)
   }
 }, { passive: false })
 function settle() {
