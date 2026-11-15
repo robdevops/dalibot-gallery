@@ -48,8 +48,8 @@ const (
 	permanentTTL = 24 * time.Hour // failure cache: HTTP 400, file over the cap
 	// Everything else is remembered for temporaryMin, and for twice as long each time the same file
 	// fails again right after, up to temporaryTTL: a blip is tried again at once, a lasting fault is not hammered.
-	temporaryMin = 10 * time.Second
-	temporaryTTL = 5 * time.Minute
+	temporaryMin = 5 * time.Second
+	temporaryTTL = 30 * time.Second
 
 	// maxRetryWait bounds how long a fetch sleeps for a 429. A longer
 	// retry_after fails at once (and is cached for that long).
@@ -402,7 +402,7 @@ func (c *Client) remember(fileID string, e *Error) {
 	if prev, ok := c.failures[fileID]; ok && time.Since(prev.until) < temporaryTTL { // failing again soon after the last time
 		n = prev.n + 1
 	}
-	ttl := min(temporaryMin<<min(n, 5), temporaryTTL) // 10 s, 20 s, 40 s, 80 s, 160 s, 5 min
+	ttl := min(temporaryMin<<min(n, 5), temporaryTTL) // 5 s, 10 s, 20 s, 30 s
 	if e.Permanent {
 		ttl = permanentTTL
 	} else if e.RetryAfter > ttl {
