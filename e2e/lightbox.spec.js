@@ -1083,3 +1083,58 @@ test('the buttons go after 2 s; the caption and strip stay until a tap', async (
     await context.close()
   }
 })
+
+// The caption shows one line, so the strip stays where it is from image to image; a longer caption fades
+// out at the end of its line and opens on a tap.
+test('a long caption shows one line and opens on a tap; the strip does not move', async ({ page }) => {
+  const long = 'a lighthouse on a cliff in a storm at night, waves breaking over the rocks, rain in the lamp light, gulls, a ship far out, ' +
+    'painted in thick oils as a ukiyo-e woodblock print with a wide frame and a long story under it that goes on and on'
+  await page.route(u => u.pathname === '/api/tiles', async route => {
+    const r = await route.fetch(), j = await r.json()
+    if (j.tiles[4]) j.tiles[4].caption = long
+    route.fulfill({ response: r, json: j })
+  })
+  await page.goto('/')
+  await page.waitForSelector('#grid .tile')
+  const keys = await domKeys(page)
+  const cap = page.locator('#cap')
+  const stripTop = async () => Math.round((await page.locator('#strip').boundingBox()).y)
+
+  await page.locator(`.tile[data-key="${keys[3]}"] a`).click()
+  await loaded(page, keys[3])
+  const top = await stripTop()
+  const line = (await cap.boundingBox()).height
+  await expect(cap).not.toHaveClass(/long/)
+
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[4])
+  await expect(cap).toHaveClass(/long/)
+  expect((await cap.boundingBox()).height).toBe(line) // one line
+  expect(await stripTop()).toBe(top) // the strip has not moved
+  expect(await cap.evaluate(c => getComputedStyle(c).maskImage)).toContain('gradient') // it fades out
+  await expect(cap).toHaveAttribute('aria-expanded', 'false')
+
+  // A tap opens it (the controls stay as they are), another closes it.
+  const bare = () => dialog(page).evaluate(d => d.classList.contains('bare'))
+  const was = await bare()
+  await cap.click({ position: { x: 20, y: 5 } })
+  await expect(cap).toHaveClass(/open/)
+  await expect(cap).toHaveAttribute('aria-expanded', 'true')
+  expect((await cap.boundingBox()).height).toBeGreaterThan(line * 2)
+  await expect(cap).toContainText('goes on and on')
+  expect(await bare()).toBe(was)
+  await expect(dialog(page)).toBeVisible()
+  await cap.click({ position: { x: 20, y: 5 } })
+  await expect(cap).not.toHaveClass(/open/)
+
+  // Opened, then on to the next image: closed again, one line, the strip where it was.
+  await cap.click({ position: { x: 20, y: 5 } })
+  await expect(cap).toHaveClass(/open/)
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[5])
+  await expect(cap).not.toHaveClass(/open/)
+  expect((await cap.boundingBox()).height).toBe(line)
+  expect(await stripTop()).toBe(top)
+  // The grey line below it is one line too, whatever it holds.
+  expect(await page.locator('#cmd').evaluate(c => getComputedStyle(c).whiteSpace)).toBe('nowrap')
+})

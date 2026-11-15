@@ -202,9 +202,27 @@ function linked(text) {
   return [out, hits]
 }
 // The caption, its style words linked, after a note if there is one.
+// One line; a longer one opens on a tap or Enter, and is closed again for the next image.
 function caption(note) {
-  $('cap').replaceChildren(...(note ? [note] : []), ...linked(full.alt)[0])
+  const c = $('cap')
+  c.replaceChildren(...(note ? [note] : []), ...linked(full.alt)[0])
+  c.classList.remove('open')
+  fits()
 }
+function fits() {
+  const c = $('cap'), long = c.classList.contains('open') || c.scrollHeight > c.clientHeight + 1
+  c.classList.toggle('long', long)
+  c.tabIndex = long ? 0 : -1
+  if (long) c.setAttribute('aria-expanded', c.classList.contains('open'))
+  else c.removeAttribute('aria-expanded')
+}
+$('cap').onclick = e => {
+  const c = $('cap')
+  if (e.target.closest('a') || !c.classList.contains('long')) return
+  c.classList.toggle('open')
+  fits()
+}
+$('cap').onkeydown = e => { if (e.key == 'Enter') $('cap').onclick(e) }
 
 // Lightbox
 const keys = () => [...grid.querySelectorAll('.tile')].map(e => e.dataset.key)
@@ -254,7 +272,7 @@ function show(key, keep) {
   if (cur != key) tries = 0
   cur = key
   if (full.dataset.key != key) {
-    if (peeked != key) { // the stand-in after a swipe is for its own image only
+    if (peeked != key) { // a stand-in is for its own image only
       pend = 0
       peek.style.visibility = ''
     }
@@ -552,7 +570,10 @@ dlg.ontouchend = dlg.ontouchcancel = release
 dlg.ontouchmove = move
 visualViewport.onresize = touch
 // The limits of a zoomed image depend on the size of its frame.
-addEventListener('resize', () => { if (z > 1) pan(0, 0) })
+addEventListener('resize', () => {
+  if (z > 1) pan(0, 0)
+  if (dlg.open) fits()
+})
 
 // A two-finger sideways swipe on a touchpad arrives as wheel events with a
 // horizontal delta, followed by momentum that dies away. One swipe moves one

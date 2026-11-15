@@ -58,8 +58,11 @@ dialog::backdrop{background:#000d}
 .bare .nav,.bare .meta,.calm .nav{opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s .2s}
 /* After the rules it overrides, which have the same weight. */
 @media (prefers-reduced-motion:reduce){#full,.nav,.meta,.bare .nav,.bare .meta,.calm .nav{transition:none}.tile.lost{animation:none;background:#222}}
-#cap{max-height:4.2em;overflow:auto}
-#cmd{margin-top:.25rem;color:#aaa;font-size:.85rem}
+/* One line each, so the strip stays put; a longer caption fades out and opens on a tap. */
+#cap{height:1.4em;line-height:1.4;overflow:hidden}
+#cap.long{cursor:pointer;mask-image:linear-gradient(90deg,#000 calc(100% - 4em),#0000)}
+#cap.open{height:auto;max-height:40svh;overflow:auto;mask-image:none}
+#cmd{margin-top:.25rem;color:#aaa;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #cmd a{color:inherit;text-underline-offset:.2em}
 #strip{position:relative;display:flex;justify-content:safe center;gap:4px;margin:.6rem 0 0;padding:0;overflow-x:auto;list-style:none}
 #strip:empty{display:none}
