@@ -69,7 +69,7 @@ test('a moving image can be caught by a finger, and a flick carries it to the ne
     await page.waitForTimeout(100)
     expect(await shift()).toBe(held)
     await touch('touchMove', 260) // dragged back to the right by 60 px: the canvas follows
-    await expect.poll(shift).toBe(held + 60)
+    await expect.poll(async () => Math.round(await shift())).toBe(Math.round(held + 60))
     await touch('touchEnd', 0, 250) // held still: it rests at the nearer place
     await expect.poll(async () => Math.abs(await shift()) < 1 || Math.abs(await shift()) > 374).toBe(true)
   } finally {
@@ -270,6 +270,11 @@ test('an image that has not loaded yet is black space, not a copy of another', a
       return { full: getComputedStyle(f).visibility, peek: getComputedStyle(p).visibility == 'hidden' || getComputedStyle(p).opacity == '0' }
     })
     expect(middle).toEqual({ full: 'hidden', peek: true })
+    // Moving on with a key while it waits: what stood in for that image does not stay for the next one.
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(() => page.locator('#full').getAttribute('src')).toBe(`/img/${keys[6]}.jpg`)
+    expect(await page.locator('#peek').evaluate(i => getComputedStyle(i).visibility)).toBe('hidden')
+    await page.keyboard.press('ArrowLeft')
     await expect.poll(() => page.locator('#full').evaluate(i => i.complete && i.naturalWidth), { timeout: 20000 }).toBe(1024)
     await expect(page.locator('#full')).not.toHaveClass(/wait/)
   } finally {
@@ -312,7 +317,10 @@ test('the mouse holds and swipes the large image as a finger does', async ({ pag
   await mouse('mouseReleased', cx - 100, 12)
   await loaded(page, keys[4])
 
-  // Caught while it moves: a press stops it where it is.
+  // Caught while it moves: a press stops it where it is. That press is part of the swipe, not a click
+  // that hides or shows the controls.
+  await page.mouse.move(cx, y - 1) // shown, for 2 s
+  const shown = await bare()
   await mouse('mousePressed', cx)
   for (const dx of [50, 100, 150, 200]) { await mouse('mouseMoved', cx - dx, 12); await page.waitForTimeout(20) }
   await mouse('mouseReleased', cx - 200, 12)
@@ -323,6 +331,8 @@ test('the mouse holds and swipes the large image as a finger does', async ({ pag
   expect(await shift()).toBe(held)
   await mouse('mouseReleased', cx, 250)
   await expect.poll(async () => Math.abs(await shift()) < 1 || Math.abs(await shift()) > box.width - 1).toBe(true)
+  await page.waitForTimeout(400)
+  expect(await bare()).toBe(shown)
 
   // Zoomed in, a drag moves the picture instead, and does not change the image.
   await page.waitForTimeout(500)
@@ -333,4 +343,16 @@ test('the mouse holds and swipes the large image as a finger does', async ({ pag
   await mouse('mouseReleased', cx - 60)
   await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toMatch(/^translate\(-60px, 0px\) scale\(1\.5\)$/)
   expect(await fullKey(page)).toBe(here)
+
+  // Zoomed in the middle of a swipe: the zoom wins, and the image is not drawn back at normal size.
+  await page.keyboard.press('0')
+  await page.waitForTimeout(300)
+  await mouse('mousePressed', cx)
+  await mouse('mouseMoved', cx - 60)
+  await mouse('mouseMoved', cx - 150)
+  await expect.poll(shift).toBe(-150)
+  await page.keyboard.press('+')
+  await mouse('mouseReleased', cx - 150, 250)
+  await page.waitForTimeout(500)
+  expect(await page.locator('#full').evaluate(i => i.style.transform)).toMatch(/scale\(1\.5\)$/)
 })

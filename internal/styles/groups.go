@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // A Group is what a gallery can be narrowed to with ?style=<key>: each of the bot's style buttons,
@@ -39,12 +41,12 @@ var groups = func() []Group {
 		{"vangogh", "Van Gogh", "vangogh", "Van Gogh"},
 		{"oilpainting", "Oil painting", "oilpainting", "oil painting|oil paintings|oil on canvas"},
 		{"cartoon", "Cartoon", "cartoon", "cartoon|cartoons"},
-		{"comicbook", "Comic book", "comicbook", "comic book|comic books|comic|comics"},
-		{"render3d", "3D render", "render3d", "3D render|3D rendering|3D rendered|3D"},
+		{"comicbook", "Comic book", "comicbook", "comic book|comic books|comic strip|comic strips"},
+		{"render3d", "3D render", "render3d", "3D render|3D renders|3D rendering|3D rendered|3D model|CGI"},
 		{"popart", "Pop art", "popart", "pop art"},
 		{"cyberpunk", "Cyberpunk", "cyberpunk", "cyberpunk"},
 		{"ukiyoe", "Ukiyo-e", "ukiyoe", "ukiyo-e|ukiyoe|woodblock|woodcut"},
-		{"bw", "Black & white", "bw", "black & white|black and white|monochrome|greyscale|grayscale"},
+		{"bw", "Black & white", "bw", "in black & white|black & white photo|black & white photograph|black & white film|monochrome|greyscale|grayscale"},
 		// Not buttons: kinds of picture people name. Pixel art takes in the 8-bit and EGA buttons, and
 		// Impressionist the Monet button, the impressionist the bot can be asked for by name.
 		{"pixelart", "Pixel art", "8bit ega", "pixel art|pixel|pixels|pixelated|pixellated"},
@@ -122,54 +124,46 @@ func equal(a, b []string) bool {
 	return true
 }
 
-// Words splits text into lower-case words without accents: runs of letters and digits, with "&"
-// as the word "and". So "Dalí" is "dali", "8-bit" is "8 bit", "black & white" is "black and white",
-// and "photo" is not found in "photorealistic". web/app.js does the same to the captions it links.
+// Words splits text into words as web/app.js does, so that a caption's links and the galleries they
+// lead to agree: runs of letters and numbers (a mark or anything else ends one), "&" as the word "and",
+// each folded: compatibility-decomposed (NFKD), marks dropped, lower case. So "Dalí" is "dali", "8-bit"
+// is "8 bit", "black & white" is "black and white", "ＥＧＡ" is "ega", and "photo" is not found in
+// "photorealistic".
 func Words(text string) []string {
 	var out []string
-	var w strings.Builder
-	flush := func() {
-		if w.Len() > 0 {
-			out = append(out, w.String())
-			w.Reset()
+	start := -1
+	flush := func(end int) {
+		if start >= 0 {
+			out = append(out, fold(text[start:end]))
+			start = -1
 		}
 	}
-	for _, r := range strings.ToLower(text) {
-		switch r = plain(r); {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			w.WriteRune(r)
+	for i, r := range text {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
+			if start < 0 {
+				start = i
+			}
 		case r == '&':
-			flush()
+			flush(i)
 			out = append(out, "and")
 		default:
-			flush()
+			flush(i)
 		}
 	}
-	flush()
+	flush(len(text))
 	return out
 }
 
-// plain takes the accent off a lower-case Latin letter (what Unicode decomposition does for these).
-func plain(r rune) rune {
-	if r < 0xe0 || r > 0x17f {
-		return r
-	}
-	if p, ok := accents[r]; ok {
-		return p
-	}
-	return r
-}
-
-var accents = func() map[rune]rune {
-	m := map[rune]rune{}
-	for _, s := range []string{"aàáâãäåāăą", "cçćĉċč", "dď", "eèéêëēĕėęě", "gĝğġģ", "hĥ", "iìíîïĩīĭįı", "jĵ", "kķ", "lĺļľ", "nñńņňŉ", "oòóôõöōŏő", "rŕŗř", "sśŝşš", "tţť", "uùúûüũūŭůűų", "wŵ", "yýÿŷ", "zźżž"} {
-		r := []rune(s)
-		for _, c := range r[1:] {
-			m[c] = r[0]
+func fold(w string) string {
+	var b strings.Builder
+	for _, r := range norm.NFKD.String(w) {
+		if !unicode.Is(unicode.M, r) {
+			b.WriteRune(r)
 		}
 	}
-	return m
-}()
+	return strings.ToLower(b.String())
+}
 
 // GroupsJSON is the groups as the page uses them, to link the words of a caption:
 // [[key, label, [[word, ...], ...]], ...]. One list, here, for the server and the page.

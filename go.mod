@@ -12,6 +12,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.53
 	golang.org/x/image v0.41.0
 	golang.org/x/sync v0.20.0
+	golang.org/x/text v0.37.0
 )
 
 require (
@@ -29,5 +30,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
 	github.com/aws/smithy-go v1.28.9 // indirect
 	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
 )

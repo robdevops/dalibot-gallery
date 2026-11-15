@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -707,7 +708,8 @@ func TestStyleView(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(tiles) > limit || (len(tiles) == 0 && next != "") {
+				oneRecord := len(tiles) > 0 && !slices.ContainsFunc(tiles, func(o Tile) bool { return o.ID != tiles[0].ID })
+				if len(tiles) > limit && !oneRecord || (len(tiles) == 0 && next != "") {
 					t.Fatalf("%s limit %d: a page of %d, next %q", style, limit, len(tiles), next)
 				}
 				got = append(got, keysOf(tiles)...)
@@ -720,11 +722,11 @@ func TestStyleView(t *testing.T) {
 				t.Fatalf("%s limit %d: paged %v, want %v", style, limit, got, want)
 			}
 		}
-		// A cursor from the whole listing works in the view: it continues after that very tile.
+		// A cursor from the whole listing works in the view: it continues after that record.
 		for i, tl := range all {
 			var after []string
 			for _, o := range all[i+1:] {
-				if styles.In(style, o.Style, o.Alt()) {
+				if o.ID != tl.ID && styles.In(style, o.Style, o.Alt()) {
 					after = append(after, o.Key)
 				}
 			}

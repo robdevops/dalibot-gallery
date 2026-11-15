@@ -196,8 +196,8 @@ var noView = &Snapshot{flat: true}
 // Style returns the part of the snapshot that holds the tiles of one style group
 // (styles.In: made with one of its buttons, or a prompt or caption that names it):
 // a listing in the same order, for Page, NewSince and Newest, and nothing else.
-// It may hold several tiles of one record; it is paged by tile all the same, and
-// a cursor names a tile's place, which every view shares. A style with
+// It may hold several tiles of one record; like the whole listing, it is paged by
+// whole records, and a cursor means the same in every view. A style with
 // no tiles, known or not, gives an empty view. An empty key gives s itself.
 // Views are made once and kept with the snapshot.
 func (s *Snapshot) Style(style string) *Snapshot {
@@ -215,7 +215,7 @@ func (s *Snapshot) Style(style string) *Snapshot {
 			tiles = append(tiles, t)
 		}
 	}
-	if tiles == nil {
+	if _, group := styles.GroupOf(style); tiles == nil && !group {
 		return noView // not kept: a request cannot make the snapshot grow by asking for styles that are not there
 	}
 	if s.views == nil {
@@ -438,11 +438,9 @@ func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, er
 		if err != nil {
 			return nil, "", err
 		}
-		// Past the whole record the cursor names, wherever in it the cursor points. A view of a
-		// style group may hold several tiles of one record: it goes on after the very tile.
-		if !s.flat {
-			p.pos = math.MaxInt
-		}
+		// Past the whole record the cursor names, wherever in it the cursor points (a record's
+		// own order can change between two pages: its current style, or an image hidden).
+		p.pos = math.MaxInt
 		start = s.after(p)
 	}
 	if limit < 1 {
@@ -453,6 +451,10 @@ func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, er
 		recordEnd := end + 1
 		if !s.flat {
 			recordEnd = end + len(s.tiles[end].Styles) - s.tiles[end].pos
+		} else { // a view holds a record's tiles that are in it, next to each other
+			for recordEnd < len(s.tiles) && s.tiles[recordEnd].ID == s.tiles[end].ID {
+				recordEnd++
+			}
 		}
 		if end > start && recordEnd-start > limit {
 			break

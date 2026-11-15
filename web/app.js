@@ -21,8 +21,7 @@ const still = () => matchMedia('(prefers-reduced-motion:reduce)').matches
 const say = s => { $('live').textContent = s }
 const src = (key, size) => '/img/' + key + (size ? '-' + size + '.webp?v=' + v : '.jpg')
 const node = key => grid.querySelector('[data-key="' + key + '"]')
-// Whether img already shows the picture at url (one the browser had): while another is on its way, the
-// one it showed before still counts as loaded.
+// Whether img shows the picture at url (while another is on its way, the old one counts as loaded).
 const ready = (img, url) => img.complete && img.naturalWidth && img.currentSrc.endsWith(url)
 
 async function get(url) {
@@ -232,6 +231,11 @@ function touch() {
 }
 // Zoom to nz, keeping the screen point (x, y) where it is (the centre if not given).
 function zoom(nz, x, y, smooth) {
+  if (anim || canvas()) { // a swipe under way ends here
+    stop()
+    sx = NaN
+    still0()
+  }
   const r = full.parentNode.getBoundingClientRect()
   const mx = x == null ? 0 : x - r.left - r.width / 2, my = y == null ? 0 : y - r.top - r.height / 2
   nz = Math.max(1, Math.min(4, nz))
@@ -250,6 +254,10 @@ function show(key) {
   if (cur != key) tries = 0
   cur = key
   if (full.dataset.key != key) {
+    if (peeked != key) { // the stand-in after a swipe is for its own image only
+      pend = 0
+      peek.style.visibility = ''
+    }
     full.dataset.key = key
     full.src = src(key)
     full.className = ready(full, src(key)) ? '' : 'wait' // black until loaded
@@ -305,6 +313,10 @@ dlg.onclose = () => {
   cur = ''
   pushed = 0
   clearTimeout(idle)
+  stop() // whatever was moving or held
+  x = held = pend = 0
+  sx = NaN
+  draw()
   dlg.className = '' // the buttons and caption are shown again next time
   if (z > 1) zoom(1)
   a?.focus()
@@ -314,11 +326,11 @@ dlg.onclose = () => {
 // else is a drag, not a click. With a mouse a click waits a moment, in case it is the first
 // of a double click (which zooms): otherwise the buttons would flash off and on.
 let drag = null, dragged = 0, down = [0, 0], mouse = 0, timer2 = 0, idle = 0
-// They also go by themselves after 2 s of quiet, and come back on a tap, a move of the mouse or a
-// key. They stay while the mouse is over them or one of them has the keyboard's focus.
+// They also go after 2 s of quiet, and come back on a tap, a mouse move or a key; they stay
+// while the mouse is over them or one has the keyboard's focus.
 const bare = () => dlg.classList.toggle('bare') ? clearTimeout(idle) : wake(0)
 function wake(show) {
-  if (show && dlg.classList.contains('bare')) dlg.classList.remove('bare') // (a write even of the same class is a change to watch)
+  if (show && dlg.classList.contains('bare')) dlg.classList.remove('bare') // no write when there is no change
   clearTimeout(idle)
   idle = setTimeout(rest, 2e3)
 }
@@ -427,14 +439,20 @@ function stop() {
   cancelAnimationFrame(anim)
   anim = 0
 }
+const canvas = () => x
+function still0() { // the canvas back at rest, without a spring
+  x = 0
+  draw()
+}
 // A finger or the mouse takes hold of the canvas at (cx, cy); ok: it may swipe from here.
 function grab(cx, cy, ok) {
+  if (anim || x) dragged = 1 // caught while moving: the click that follows is no click
   stop() // catch it
   sx = ok && !pend && z == 1 && !pinched() ? cx - x : NaN
   sy = cy
   trail = []
 }
-// It moved to (cx, cy) at time ts. True if that moves the canvas (sideways, past a few px, or already moving).
+// It moved to (cx, cy) at time ts. True if that moves the canvas.
 function follow(cx, cy, ts) {
   const dx = cx - sx // NaN: not a swipe
   if (dx != dx || z > 1 || !x && (Math.abs(dx) <= 10 || Math.abs(dx) <= Math.abs(cy - sy))) return false
@@ -489,17 +507,16 @@ function fling(d) {
   return true
 }
 function release(e) {
-  if (z > 1) { // zoomed during a swipe: the zoom wins
-    sx = NaN
-    stop()
-    x = 0
-    draw()
-    return pan(0, 0)
-  }
-  if (!pend && !e.touches.length) letGo(e.type == 'touchend', e.timeStamp)
+  if (z > 1 || !pend && !e.touches.length) letGo(e.type == 'touchend', e.timeStamp)
 }
 // Let go at time ts (live: by lifting the finger or the button, not by being interrupted).
 function letGo(live, ts) {
+  if (z > 1) { // zoomed during a swipe: the zoom wins
+    sx = NaN
+    stop()
+    still0()
+    return pan(0, 0)
+  }
   live = live && sx == sx
   const tr = trail.filter(q => ts - q[0] < 100) // the last moments: held still before letting go is no flick
   const v = live && tr.length > 1 ? Math.max(-4e3, Math.min(4e3, (tr.at(-1)[1] - tr[0][1]) / (tr.at(-1)[0] - tr[0][0] || 1) * 1e3)) : 0

@@ -40,8 +40,13 @@ func TestIn(t *testing.T) {
 		{"popart", "_", "Pop-Art portrait", true},
 		{"popart", "_", "a pop song about art", false}, // the words, in order, next to each other
 		{"bw", "_", "a street in black and white", true},
-		{"bw", "_", "a street, black & white", true},
+		{"bw", "_", "a black & white photo of a street", true},
+		{"bw", "_", "a black and white cat", false}, // the colour of the subject, not the picture's
 		{"render3d", "_", "a 3D render of a car", true},
+		{"render3d", "_", "a vase from a 3D printer", false},
+		{"comicbook", "_", "a comic scene", false},
+		{"comicbook", "_", "as a comic book page", true},
+		{"ega", "_", "a cat, ＥＧＡ palette", true}, // full-width letters fold as the page folds them
 		// Whole words only.
 		{"photo", "_", "a photograph of a dog", true},
 		{"photo", "_", "a photorealistic dog", false},
@@ -76,7 +81,7 @@ func TestGroups(t *testing.T) {
 		if !ok || g.Label != s.Label || Label(s.Key) != s.Label {
 			t.Errorf("%s: group %v %+v", s.Key, ok, g)
 		}
-		if !g.Names(Words(s.Label)) && s.Key != "stamp" && s.Key != "handdrawn" {
+		if !g.Names(Words(s.Label)) && s.Key != "stamp" && s.Key != "handdrawn" && s.Key != "bw" { // "black & white" alone is often the subject's colours
 			t.Errorf("%s: its label %q does not name it", s.Key, s.Label)
 		}
 	}

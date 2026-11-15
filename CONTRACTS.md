@@ -194,7 +194,7 @@ func (s *Snapshot) Records() int
 func (s *Snapshot) Built() time.Time               // zero for the empty start-up snapshot
 func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, err error)
 func (s *Snapshot) NewSince(cursor string) (count int, newest string, err error)
-func (s *Snapshot) Style(style string) *Snapshot    // a view of one style group (styles.In: its button's style key, or its words in the tile's caption, else prompt): Page (by tile; a cursor goes on after that very tile), NewSince and Newest only; "" is s itself; made once per group with tiles, an empty shared view otherwise
+func (s *Snapshot) Style(style string) *Snapshot    // a view of one style group (styles.In: its button's style key, or its words in the tile's caption, else prompt): Page (by whole records, like the whole listing; a cursor means the same in every view), NewSince and Newest only; "" is s itself; made once per group with tiles, an empty shared view otherwise
 func (s *Snapshot) Newest(n int) []Tile            // first n tiles; for the warmer and for /api/tiles/new
 func (s *Snapshot) Tile(key string) (Tile, bool)
 func (s *Snapshot) Has(key string) bool            // is this key listed (may everyone with view access be served it)?
@@ -506,7 +506,7 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
 
 - `limit`: optional integer; default 60; values above 120 are treated as 120; less than 1 or not an integer is `400`.
 - `cursor`: optional; the `next` of an earlier response. Absent or empty starts at the newest tile.
-- `style`: optional; a style group key (`[a-z0-9_-]{1,32}`, e.g. `ukiyoe`, `pixelart`) narrows the listing to the tiles of that group, in the same order: a tile is in it when it was made with one of the group's buttons or its caption (else its prompt) names one of the group's terms (`internal/styles/groups.go`; words are letters and digits, lower case, without accents, `&` as `and`, matched whole and in order). Several tiles of one record can be in a group, so a page of a group is a page of tiles, and its cursor goes on after that very tile. A key that is no group (`_`, or a style the bot added since) takes the tiles of that style key only; one with no tiles is an empty listing; any other value is `400 {"error":"bad style"}`. `newest` is the cursor of the first tile of the narrowed listing. `/api/tiles/new` and `/` take the same parameter (`/` answers `400 bad style` as plain text).
+- `style`: optional; a style group key (`[a-z0-9_-]{1,32}`, e.g. `ukiyoe`, `pixelart`) narrows the listing to the tiles of that group, in the same order: a tile is in it when it was made with one of the group's buttons or its caption (else its prompt) names one of the group's terms (`internal/styles/groups.go`; words are runs of letters and numbers, each NFKD-decomposed without marks and in lower case, `&` as `and`, matched whole and in order; `app.js` splits them the same way). Several tiles of one record can be in a group; a page of a group holds whole records, like the whole listing, so a cursor means the same with or without a style. A key that is no group (`_`, or a style the bot added since) takes the tiles of that style key only; one with no tiles is an empty listing; any other value is `400 {"error":"bad style"}`. `newest` is the cursor of the first tile of the narrowed listing. `/api/tiles/new` and `/` take the same parameter (`/` answers `400 bad style` as plain text).
 
 ```json
 {
