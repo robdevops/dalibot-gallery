@@ -177,7 +177,7 @@ calls `getUpdates`, `setWebhook`, `deleteWebhook` or any send or set method,
 so it cannot take the bot's updates or change the bot. A test fails if the
 fake Telegram server sees any other path. Downloads are capped at 20 MiB,
 with timeouts, at most 4 at a time; failures are remembered (24 h for a file
-Telegram rejects, 5 minutes otherwise) and the tile shows a plain placeholder.
+Telegram rejects; otherwise 10 seconds, doubling each time the same file fails again, up to 5 minutes, and forgotten after a success) and the tile shows a plain stand-in. The page draws such a tile as waiting and asks again after 2 s, 4 s, 8 s and so on, and a large image that fails says "Image unavailable, trying again" and does the same.
 
 **DynamoDB.** Read-only by policy and by code: the gallery only calls `Scan`.
 Whatever the source, the only files the gallery writes are its cache and

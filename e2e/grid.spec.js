@@ -1,4 +1,6 @@
 // The grid: flush square tiles at every width, newest first, infinite scroll.
+const fs = require('fs')
+const path = require('path')
 const { test, expect, apiTiles, domKeys, gridGeometry, nonWhitePixels, viewportImagesLoaded } = require('./helpers')
 
 // [width, height, deviceScaleFactor, expected columns]. 1001 and 1366 give
@@ -84,7 +86,7 @@ async function whitePNG(context) {
   const p = await context.newPage()
   await p.setViewportSize({ width: 64, height: 64 })
   await p.setContent('<body style="margin:0;background:#fff">')
-  png = await p.screenshot({ clip: { x: 0, y: 0, width: 16, height: 16 } })
+  png = await p.screenshot({ clip: { x: 0, y: 0, width: 32, height: 32 } })
   await p.close()
   return png
 }
@@ -209,3 +211,25 @@ for (const how of ['scrolling', 'polling']) {
     watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/status of 400/.test(p)))
   })
 }
+
+// A thumbnail the server could not make arrives as a 16 px stand-in. The tile is then drawn as waiting
+// (not as a black hole) and asked for again until it works.
+test('a tile whose thumbnail failed waits, asks again, and shows the image when it works', async ({ page }) => {
+  const stand = fs.readFileSync(path.join(__dirname, '..', 'internal', 'imaging', 'placeholder.webp'))
+  const key = (await apiTiles(page.request)).tiles[0].key
+  let asked = 0
+  await page.route(u => u.pathname === `/img/${key}-240.webp` || u.pathname === `/img/${key}-480.webp`, async route => {
+    if (asked++ < 2) return route.fulfill({ status: 200, contentType: 'image/webp', headers: { 'Cache-Control': 'no-store', 'X-Gallery-Placeholder': '1' }, body: stand })
+    return route.continue()
+  })
+  await page.goto('/')
+  const li = page.locator(`.tile[data-key="${key}"]`)
+  await expect(li).toHaveClass(/lost/)
+  expect(await li.locator('img').evaluate(i => getComputedStyle(i).visibility)).toBe('hidden')
+  // The first retry comes after about 2 s.
+  await expect(li).not.toHaveClass(/lost/, { timeout: 15_000 })
+  await expect.poll(() => li.locator('img').evaluate(i => i.naturalWidth)).toBeGreaterThanOrEqual(240)
+  expect(asked).toBeGreaterThan(2)
+  // A tile that is there is not touched: no waiting class on any other.
+  expect(await page.locator('.tile.lost').count()).toBe(0)
+})

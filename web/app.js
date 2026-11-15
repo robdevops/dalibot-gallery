@@ -12,7 +12,7 @@ const PER = 60 // tiles per batch: divisible by 2 to 6 columns
 const LINK = /^#\/p\/([\w-]{22})$/
 const data = new Map() // key -> tile
 const cols = +getComputedStyle(grid).getPropertyValue('--cols') || 2
-let v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
+let tries = 0, v = '', next = '', since = '', busy = 0, done = 0, tail = null, cur = '', pushed = 0, seek = 0, timer = 0
 
 const enc = encodeURIComponent
 const style = new URLSearchParams(location.search).get('style') || '' // a listing of one style
@@ -33,6 +33,7 @@ async function get(url) {
 
 function tile(t, i) { // i: place in the first row, else -1
   const li = el('li', 'tile'), a = el('a'), img = el('img')
+  let n = 0
   li.dataset.key = t.key
   a.href = '#/p/' + t.key
   img.alt = t.caption || t.prompt
@@ -41,8 +42,20 @@ function tile(t, i) { // i: place in the first row, else -1
   img.loading = i < 0 ? 'lazy' : 'eager'
   if (i >= 0 && i < 4) img.fetchPriority = 'high'
   img.sizes = (i < 0 ? 'auto, ' : '') + SIZES
-  img.srcset = src(t.key, 240) + ' 240w, ' + src(t.key, 480) + ' 480w'
-  img.src = src(t.key, 240)
+  const load = () => {
+    const q = n ? '&r=' + n : ''
+    img.srcset = src(t.key, 240) + q + ' 240w, ' + src(t.key, 480) + q + ' 480w'
+    img.src = src(t.key, 240) + q
+  }
+  // A thumbnail the server could not make is a 16 px stand-in, or an error. Show the tile as waiting
+  // (not as a black hole), and ask again, less and less often.
+  const check = ok => {
+    li.classList.toggle('lost', !ok)
+    if (!ok && n < 12) setTimeout(() => { if (li.isConnected) { n++; load() } }, Math.min(2e3 * 2 ** n, 6e4))
+  }
+  img.onload = () => check(img.naturalWidth > 16)
+  img.onerror = () => check(0)
+  load()
   a.append(img)
   li.append(a)
   return li
@@ -188,6 +201,7 @@ function zoom(nz, x, y, smooth) {
 }
 function show(key) {
   const t = data.get(key)
+  if (cur != key) tries = 0
   cur = key
   if (full.dataset.key != key) {
     full.dataset.key = key
@@ -412,6 +426,7 @@ function settle() {
 // it at once. The browser keeps them: originals never change.
 const ahead = [new Image(), new Image()]
 full.onload = () => {
+  $('cap').textContent = full.alt
   settle()
   ;[1, -1].forEach((d, i) => {
     const k = near(d)
@@ -420,10 +435,14 @@ full.onload = () => {
 }
 full.onerror = () => {
   settle()
+  const key = full.dataset.key
   full.dataset.key = '' // retry next time
   if (dlg.open && !data.has(cur)) { // a dead deep link
     dlg.close()
     say('Image not found')
+  } else if (dlg.open && tries < 8) { // Telegram may have failed for a moment: say so, and ask again
+    $('cap').textContent = 'Image unavailable, trying again. ' + full.alt
+    setTimeout(() => { if (dlg.open && cur == key && !full.dataset.key) { tries++; show(key) } }, Math.min(3e3 * 2 ** tries, 3e4))
   }
 }
 $('x').onclick = () => dlg.close()

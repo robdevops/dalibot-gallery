@@ -762,31 +762,62 @@ func TestFailureCache(t *testing.T) {
 		}
 	})
 
-	bubble(t, "other errors are cached for 5 min", func(t *testing.T) {
+	bubble(t, "other errors are cached briefly, and longer each time they repeat", func(t *testing.T) {
 		for _, status := range []int{401, 403, 404, 500, 502} {
 			f, c := newBubbleFake(t)
 			f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, status, "nope", 0) }, nil)
-			_, err := c.Fetch(context.Background(), "id")
-			e := asError(t, err)
-			if e.Permanent || e.Status != status || e.Cached || !errors.Is(err, ErrTemporary) || errors.Is(err, ErrPermanent) {
-				t.Errorf("%d first: %+v", status, e)
+			// 10 s, 20 s, 40 s, 80 s, 160 s, and then 5 min however often.
+			waits := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 5 * time.Minute, 5 * time.Minute}
+			if status != 500 {
+				waits = waits[:2]
 			}
-			time.Sleep(5*time.Minute - time.Second)
-			_, err = c.Fetch(context.Background(), "id")
-			if e := asError(t, err); !e.Cached || e.Status != status || e.Permanent {
-				t.Errorf("%d cached: %+v", status, e)
+			for i, wait := range waits {
+				calls := f.getFiles.Load()
+				_, err := c.Fetch(context.Background(), "id")
+				e := asError(t, err)
+				if e.Permanent || e.Status != status || e.Cached || !errors.Is(err, ErrTemporary) || errors.Is(err, ErrPermanent) {
+					t.Fatalf("%d, failure %d: %+v", status, i+1, e)
+				}
+				if g := f.getFiles.Load(); g != calls+1 {
+					t.Fatalf("%d, failure %d: getFile calls = %d, want %d", status, i+1, g, calls+1)
+				}
+				time.Sleep(wait - time.Second)
+				_, err = c.Fetch(context.Background(), "id")
+				if e := asError(t, err); !e.Cached || e.Status != status || e.Permanent {
+					t.Errorf("%d, failure %d, just before %s: %+v", status, i+1, wait, e)
+				}
+				if g := f.getFiles.Load(); g != calls+1 {
+					t.Errorf("%d: a cached failure made a request (%d calls)", status, g)
+				}
+				time.Sleep(2 * time.Second) // over: asked again at the top of the loop
 			}
-			if g := f.getFiles.Load(); g != 1 {
-				t.Errorf("%d: getFile calls = %d, want 1", status, g)
-			}
-			time.Sleep(2 * time.Second)
-			_, err = c.Fetch(context.Background(), "id")
-			if e := asError(t, err); e.Cached {
-				t.Errorf("%d after expiry: still cached", status)
-			}
-			if g := f.getFiles.Load(); g != 2 {
-				t.Errorf("%d: getFile calls = %d, want 2", status, g)
-			}
+		}
+		// A file that works again starts over at the shortest wait.
+		f, c := newBubbleFake(t)
+		f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 500, "nope", 0) }, nil)
+		for range 3 {
+			_, _ = c.Fetch(context.Background(), "id")
+			time.Sleep(5 * time.Minute)
+		}
+		f.set(okGetFile(testPath), nil)
+		if _, err := c.Fetch(context.Background(), "id"); err != nil {
+			t.Fatal(err)
+		}
+		f.set(func(w http.ResponseWriter, _ *http.Request, _ string) { apiError(w, 500, "nope", 0) }, nil)
+		time.Sleep(time.Hour)
+		_, _ = c.Fetch(context.Background(), "id")
+		time.Sleep(11 * time.Second)
+		if _, err := c.Fetch(context.Background(), "id"); asError(t, err).Cached {
+			t.Error("after a success the first failure should be remembered for 10 s only")
+		}
+		// A failure long after the last one is a new one too.
+		time.Sleep(time.Hour)
+		calls := f.getFiles.Load()
+		_, _ = c.Fetch(context.Background(), "id")
+		time.Sleep(11 * time.Second)
+		_, _ = c.Fetch(context.Background(), "id")
+		if g := f.getFiles.Load(); g != calls+2 {
+			t.Errorf("getFile calls = %d, want %d: a failure after a quiet hour starts at 10 s", g, calls+2)
 		}
 	})
 

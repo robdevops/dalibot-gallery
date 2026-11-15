@@ -253,7 +253,7 @@ func New(apiBase, token string, log *slog.Logger) *Client
 // Inside Fetch: singleflight per file_id, a global limit of 4 concurrent Telegram
 // fetches, timeouts of 10 s (getFile) and 30 s (download), one retry after
 // parameters.retry_after on HTTP 429 (bounded by ctx), and the failure cache
-// (permanent errors 24 h, others 5 min; a cached failure is returned without a request).
+// (permanent errors 24 h; others 10 s, doubling for each further failure of the same file in a row up to 5 min, `RetryAfter` if longer, and forgotten after a success; a cached failure is returned without a request).
 // Every error is a *Error and contains neither the token, a Telegram URL, the file_path nor the file_id.
 func (c *Client) Fetch(ctx context.Context, fileID string) ([]byte, error)
 

@@ -1003,3 +1003,18 @@ test('a style that does not exist shows an empty gallery, a malformed one a plai
   const bad = await page.request.get('/?style=%3Cb%3E', { headers: basic() })
   expect(bad.status()).toBe(400)
 })
+
+// Telegram may fail for a moment. The viewer says so, instead of staying black, and asks again.
+test('a large image that fails to load says so and is fetched again until it works', async ({ page, watched }) => {
+  const t = (await apiTiles(page.request)).tiles[3]
+  let asked = 0
+  await page.route(u => u.pathname === `/img/${t.key}.jpg`, route => ++asked <= 2 ? route.fulfill({ status: 502, body: 'image unavailable\n' }) : route.continue())
+  await page.locator(`.tile[data-key="${t.key}"] a`).click()
+  await expect(page.locator('#cap')).toContainText('Image unavailable, trying again.')
+  await expect(page.locator('#cap')).toContainText(t.caption || t.prompt)
+  await loaded(page, t.key) // after about 3 s and then 6 s
+  await expect(page.locator('#cap')).toHaveText(t.caption || t.prompt)
+  expect(asked).toBe(3)
+  // The browser logs the two refused requests; those are expected.
+  watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/status of 502/.test(p)))
+})

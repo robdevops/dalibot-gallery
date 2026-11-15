@@ -45,8 +45,11 @@ const (
 	downloadTimeout = 30 * time.Second
 	maxConcurrent   = 4 // concurrent Telegram fetches, process-wide per Client
 
-	permanentTTL = 24 * time.Hour  // failure cache: HTTP 400, file over the cap
-	temporaryTTL = 5 * time.Minute // failure cache: everything else
+	permanentTTL = 24 * time.Hour // failure cache: HTTP 400, file over the cap
+	// Everything else is remembered for temporaryMin, and for twice as long each time the same file
+	// fails again right after, up to temporaryTTL: a blip is tried again at once, a lasting fault is not hammered.
+	temporaryMin = 10 * time.Second
+	temporaryTTL = 5 * time.Minute
 
 	// maxRetryWait bounds how long a fetch sleeps for a 429. A longer
 	// retry_after fails at once (and is cached for that long).
@@ -168,6 +171,7 @@ type Client struct {
 type failure struct {
 	err   *Error
 	until time.Time
+	n     int // failures in a row for this file, before this one
 }
 
 // New returns a client. apiBase has no trailing slash (cfg.TelegramAPIBase).
@@ -347,6 +351,9 @@ func (c *Client) Fetch(ctx context.Context, fileID string) ([]byte, error) {
 			c.remember(fileID, e)
 			return nil, e
 		}
+		c.mu.Lock()
+		delete(c.failures, fileID) // it works: the next failure starts again at the shortest wait
+		c.mu.Unlock()
 		return data, nil
 	})
 	select {
@@ -381,8 +388,7 @@ func (c *Client) cachedFailure(fileID string) *Error {
 		return nil
 	}
 	if !time.Now().Before(f.until) {
-		delete(c.failures, fileID)
-		return nil
+		return nil // over; kept, to count how often it fails in a row (see remember)
 	}
 	cp := *f.err
 	cp.Cached = true
@@ -390,14 +396,18 @@ func (c *Client) cachedFailure(fileID string) *Error {
 }
 
 func (c *Client) remember(fileID string, e *Error) {
-	ttl := temporaryTTL
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	if prev, ok := c.failures[fileID]; ok && time.Since(prev.until) < temporaryTTL { // failing again soon after the last time
+		n = prev.n + 1
+	}
+	ttl := min(temporaryMin<<min(n, 5), temporaryTTL) // 10 s, 20 s, 40 s, 80 s, 160 s, 5 min
 	if e.Permanent {
 		ttl = permanentTTL
 	} else if e.RetryAfter > ttl {
 		ttl = min(e.RetryAfter, permanentTTL)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	now := time.Now()
 	if len(c.failures) >= maxFailures {
 		for k, f := range c.failures {
@@ -412,7 +422,7 @@ func (c *Client) remember(fileID string, e *Error) {
 			delete(c.failures, k)
 		}
 	}
-	c.failures[fileID] = failure{err: e, until: now.Add(ttl)}
+	c.failures[fileID] = failure{err: e, until: now.Add(ttl), n: n}
 }
 
 // fetch does the work of one flight: getFile, then the download, under the
