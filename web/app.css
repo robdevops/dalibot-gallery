@@ -49,6 +49,8 @@ dialog::backdrop{background:#000d}
 #prev,#next{top:50%;margin-top:-1.375rem}
 #prev{left:0}
 #next{right:0}
+/* On a touch screen the image is swiped: no arrows. */
+@media (hover:none) and (pointer:coarse){#prev,#next{display:none}}
 .meta{padding:.6rem .75rem .75rem}
 .meta p{margin:0;overflow-wrap:anywhere}
 /* Shown at once (so a key can reach them), faded out over 200 ms, then out of reach. */

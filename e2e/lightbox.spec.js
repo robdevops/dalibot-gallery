@@ -708,20 +708,23 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     // would swallow it; the page claims the gesture to prevent that.)
     await swipe(300, y, 80, y)
     await loaded(page, keys[1])
-    await page.getByRole('button', { name: 'Previous image' }).tap()
-    await loaded(page, keys[0])
-    await settled()
-    // The arrow buttons leave the image in place.
-    await page.getByRole('button', { name: 'Next image' }).tap()
-    await loaded(page, keys[1])
+    const hidden = () => dialog(page).evaluate(d => d.classList.contains('bare'))
+    const was = await hidden()
+    await page.locator('#full').tap()
+    await expect.poll(hidden).toBe(!was)
+    await page.locator('#full').tap()
+    await expect.poll(hidden).toBe(was)
     await settled()
     await expect(dialog(page)).toBeVisible()
 
     // A tap on the image hides the buttons and caption; a swipe leaves them as they are; a tap shows them.
     const bare = () => dialog(page).evaluate(d => d.classList.contains('bare'))
+    // On a touch screen there are no arrows: the image is swiped.
+    await expect(page.locator('#next')).toBeHidden()
+    await expect(page.locator('#prev')).toBeHidden()
     await page.locator('#full').tap()
     await expect.poll(bare).toBe(true)
-    await expect(page.locator('#next')).toBeHidden()
+    await expect(page.locator('#cap')).toBeHidden()
     await swipe(300, y, 80, y)
     await loaded(page, keys[2])
     await settled()
@@ -731,7 +734,8 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await settled()
     await page.locator('#full').tap()
     await expect.poll(bare).toBe(false)
-    await expect(page.locator('#next')).toBeVisible()
+    await expect(page.locator('#cap')).toBeVisible()
+    await expect(page.locator('#next')).toBeHidden()
 
     // A swipe and, while the image is still sliding away, a tap on Next: one step, not two.
     await swipe(300, y, 80, y)
@@ -833,7 +837,10 @@ test('lightbox fits a phone screen', async ({ browser, baseURL }, testInfo) => {
     const img = await page.locator('#full').boundingBox()
     expect(img.x).toBe(0)
     expect(Math.round(img.width)).toBe(375) // full width on a phone
-    for (const name of ['Close', 'Previous image', 'Next image']) {
+    // No arrows on a touch screen (the image is swiped); the close button is a full touch target inside the screen.
+    await expect(page.locator('#prev')).toBeHidden()
+    await expect(page.locator('#next')).toBeHidden()
+    for (const name of ['Close']) {
       const b = await page.getByRole('button', { name }).boundingBox()
       expect(b.width).toBeGreaterThanOrEqual(44) // touch target
       expect(b.height).toBeGreaterThanOrEqual(44)
@@ -1070,7 +1077,7 @@ test('the buttons go after 2 s; the caption and strip stay until a tap', async (
     await phone.locator('#full').tap()
     await expect.poll(() => seen(phone)).toEqual({ x: false, next: false, cap: false, strip: false })
     await phone.locator('#full').tap()
-    await expect.poll(() => seen(phone)).toEqual({ x: true, next: true, cap: true, strip: true })
+    await expect.poll(() => seen(phone)).toEqual({ x: true, next: false, cap: true, strip: true })
     await expect.poll(() => calm(phone), { timeout: 6000 }).toBe(true) // and the buttons go again
   } finally {
     await context.close()
