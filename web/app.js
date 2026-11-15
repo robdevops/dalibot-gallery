@@ -578,9 +578,9 @@ function settle() {
   pend = 0
   if (!x) peek.style.visibility = ''
 }
-// Once the large image is in, fetch the two after it and the two before, so that moving on shows
+// Once the large image is in, fetch the three after it and the three before, so that moving on shows
 // them at once. The browser keeps them: originals never change.
-const ahead = [1, -1, 2, -2].map(d => [d, new Image()])
+const ahead = [1, -1, 2, -2, 3, -3].map(d => [d, new Image()])
 full.onload = () => {
   caption()
   settle()

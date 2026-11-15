@@ -216,7 +216,7 @@ func TestIndexTemplate(t *testing.T) {
 	if err := tpl.Execute(&out, narrow); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`<title>Ukiyo-e · Gallery</title>`, `<h1 class="sr">Ukiyo-e · Gallery</h1>`, `<a href="/?cursor=abc_DEF-1&amp;style=ukiyoe">Load more</a>`} {
+	for _, want := range []string{`<title>Ukiyo-e · Gallery</title>`, `<h1 class="sr">Ukiyo-e · Gallery</h1>`, `<a href="/?cursor=abc_DEF-1&amp;style=ukiyoe">Load more</a>`, `<footer class="foot">`, `<a href="/">Reset filter</a>`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("index.html narrowed to a style lacks %q", want)
 		}

@@ -511,8 +511,8 @@ test('the next and previous large images are fetched ahead, so moving on does no
 
   await page.locator(`.tile[data-key="${keys[10]}"] a`).click()
   await loaded(page, keys[10])
-  // The open image first, then the two after it and the two before, and nothing else.
-  await expect.poll(() => fetched.slice().sort()).toEqual([keys[8], keys[9], keys[10], keys[11], keys[12]].sort())
+  // The open image first, then the three after it and the three before, and nothing else.
+  await expect.poll(() => fetched.slice().sort()).toEqual(keys.slice(7, 14).sort())
   expect(fetched[0]).toBe(keys[10])
   await expect.poll(() => page.evaluate(k => performance.getEntriesByName(location.origin + '/img/' + k + '.jpg').some(e => e.responseEnd > 0), keys[11])).toBe(true)
 
@@ -528,7 +528,7 @@ test('the next and previous large images are fetched ahead, so moving on does no
   const again = (await entries(keys[11])).slice(1) // none, or served from the browser's cache
   expect(again.every(size => size === 0)).toBe(true)
   // And the next one beyond is fetched in turn.
-  await expect.poll(() => fetched.includes(keys[13])).toBe(true)
+  await expect.poll(() => fetched.includes(keys[14])).toBe(true)
 })
 
 test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
@@ -992,6 +992,13 @@ test('style words in a caption link to the gallery of that style, also for image
   await expect(page).toHaveTitle('Ukiyo-e · Gallery')
   await expect.poll(async () => (await domKeys(page)).join()).toBe(group.slice(0, (await domKeys(page)).length).join())
   expect(await domKeys(page)).toContain(t.key)
+  // At the foot of a narrowed gallery, a way back to all of them.
+  const reset = page.locator('footer.foot').getByRole('link', { name: 'Reset filter' })
+  await expect(reset).toHaveAttribute('href', '/')
+  await reset.click()
+  await page.waitForSelector('#grid .tile')
+  expect(new URL(page.url()).search).toBe('')
+  await expect(page.locator('footer.foot').getByRole('link', { name: 'Reset filter' })).toHaveCount(0)
 
   // Another: watercolour, in the same way.
   const w = api.tiles.find(x => x.style === '_' && /watercolour/.test(x.caption || x.prompt))

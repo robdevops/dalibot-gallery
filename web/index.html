@@ -35,7 +35,8 @@
 </noscript>
 <p class="end" id="end"></p>
 </main>
-{{if or .SignOut .AdminLogin .Hide}}<footer class="foot">
+{{if or .SignOut .AdminLogin .Hide .Style}}<footer class="foot">
+{{if .Style}}<a href="/">Reset filter</a>{{end}}
 {{if .Hide}}<a href="/admin/hidden">Hidden images</a>{{end}}
 {{if .AdminLogin}}<a href="/login">Admin</a>{{end}}
 {{if .SignOut}}<form method="post" action="/logout"><button type="submit">Sign out</button></form>{{end}}

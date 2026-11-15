@@ -1615,8 +1615,11 @@ func TestStyleFilter(t *testing.T) {
 		t.Error("Load more on a one-page listing")
 	}
 	_, body = e.get("/", basic)
-	if !strings.Contains(string(body), "<title>Gallery</title>") || strings.Contains(string(body), "style=") {
+	if !strings.Contains(string(body), "<title>Gallery</title>") || strings.Contains(string(body), "style=") || strings.Contains(string(body), "Reset filter") {
 		t.Errorf("the whole listing mentions a style")
+	}
+	if !strings.Contains(html, `<a href="/">Reset filter</a>`) {
+		t.Error("the narrowed page has no way back to all images")
 	}
 }
 
