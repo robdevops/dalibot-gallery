@@ -207,7 +207,7 @@ func (sd *seeder) add(item map[string]types.AttributeValue, records, tiles int) 
 var prompts = []string{
 	"a red fox in snow", "lighthouse in a storm", "tiny robot watering a bonsai", "a city made of books",
 	"an owl wearing a scarf", "tea party on the moon", "a whale above the clouds", "a neon-lit ramen stall at night",
-	"mountain cabin, first light", "a dragon asleep on a pile of socks", "a paper boat on a wide river", "still life with lemons",
+	"mountain cabin, first light", "a dragon asleep on a pile of socks", "a paper boat on a wide river, ukiyo-e", "still life with lemons, in watercolour",
 }
 
 // build makes about 150 items across the three chats, in the shapes the bot

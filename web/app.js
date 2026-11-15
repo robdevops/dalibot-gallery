@@ -21,6 +21,9 @@ const still = () => matchMedia('(prefers-reduced-motion:reduce)').matches
 const say = s => { $('live').textContent = s }
 const src = (key, size) => '/img/' + key + (size ? '-' + size + '.webp?v=' + v : '.jpg')
 const node = key => grid.querySelector('[data-key="' + key + '"]')
+// Whether img already shows the picture at url (one the browser had): while another is on its way, the
+// one it showed before still counts as loaded.
+const ready = (img, url) => img.complete && img.naturalWidth && img.currentSrc.endsWith(url)
 
 async function get(url) {
   const r = await fetch(url)
@@ -166,6 +169,44 @@ pill.onclick = async () => {
   } catch {}
 }
 
+// The style groups a gallery can be narrowed to, and the runs of words that name them: one list,
+// the server's (internal/styles). Words are split and folded as there: letters and digits, lower
+// case, no accents, "&" as "and".
+const groups = JSON.parse(dlg.dataset.groups || '[]') // [[key, label, [[word, ...], ...]], ...]
+const fold = w => w == '&' ? 'and' : w.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
+// A link to the gallery of one group; inside that gallery, back to all of them.
+function tag(key, label, text) {
+  const a = el('a')
+  a.href = key == style ? '/' : '/?style=' + enc(key)
+  a.title = key == style ? 'Show all images' : 'Show only ' + label + ' images'
+  a.textContent = text
+  return a
+}
+// The text with each run of words that names a group made a link to it (the longest run wins),
+// and the groups it named, first found first.
+function linked(text) {
+  const out = [], hits = [], ws = [...text.matchAll(/[\p{L}\p{N}]+|&/gu)].map(m => [m.index, m.index + m[0].length, fold(m[0])])
+  let at = 0
+  for (let i = 0; i < ws.length;) {
+    let best
+    for (const [key, label, terms] of groups) for (const t of terms) {
+      if (t.length > (best?.[2] || 0) && t.every((w, j) => ws[i + j]?.[2] == w)) best = [key, label, t.length]
+    }
+    if (!best) { i++; continue }
+    const a = ws[i][0], b = ws[i + best[2] - 1][1]
+    out.push(text.slice(at, a), tag(best[0], best[1], text.slice(a, b)))
+    hits.push(best)
+    at = b
+    i += best[2]
+  }
+  out.push(text.slice(at))
+  return [out, hits]
+}
+// The caption, its style words linked, after a note if there is one.
+function caption(note) {
+  $('cap').replaceChildren(...(note ? [note] : []), ...linked(full.alt)[0])
+}
+
 // Lightbox
 const keys = () => [...grid.querySelectorAll('.tile')].map(e => e.dataset.key)
 
@@ -210,24 +251,23 @@ function show(key) {
   cur = key
   if (full.dataset.key != key) {
     full.dataset.key = key
-    full.className = 'wait' // hidden until loaded
     full.src = src(key)
+    full.className = ready(full, src(key)) ? '' : 'wait' // black until loaded
     if (z > 1) zoom(1)
   }
-  full.alt = $('cap').textContent = t ? t.caption || t.prompt : ''
-  // The style is a link to the images of that style; while they are shown, to all of them.
-  const a = el('a')
-  if (t) {
-    a.href = t.style == style ? '/' : '/?style=' + enc(t.style)
-    a.title = t.style == style ? 'Show all images' : 'Show only ' + t.label + ' images'
-    a.textContent = t.label
-  }
-  $('cmd').replaceChildren(...(t ? ['/' + t.command + ' · ', a] : []))
+  full.alt = t ? t.caption || t.prompt : ''
+  caption()
+  // The style is a link to its gallery: the button's, or else the first group the caption names.
+  const g = t && (t.style != '_' ? [t.style, t.label] : linked(full.alt)[1][0] || [t.style, t.label])
+  $('cmd').replaceChildren(...(t ? ['/' + t.command + ' · ', tag(g[0], g[1], g[1])] : []))
   // Mark and centre it in the strip.
   const all = keys(), i = all.indexOf(key), c = strip.children[i]?.firstChild
   if (i > all.length - 10) more()
   strip.querySelector('[aria-current]')?.removeAttribute('aria-current')
-  if (!dlg.open) dlg.showModal()
+  if (!dlg.open) {
+    dlg.showModal()
+    wake(1)
+  } else wake(0) // another image: the clock starts again, hidden controls stay hidden
   if (c) {
     c.setAttribute('aria-current', 'true')
     strip.scrollLeft = c.offsetLeft - strip.clientWidth / 2 + 28
@@ -264,6 +304,7 @@ dlg.onclose = () => {
   const a = node(cur)?.firstChild
   cur = ''
   pushed = 0
+  clearTimeout(idle)
   dlg.className = '' // the buttons and caption are shown again next time
   if (z > 1) zoom(1)
   a?.focus()
@@ -272,24 +313,53 @@ dlg.onclose = () => {
 // Dragging moves the zoomed image, with the mouse or a finger. A press that ends somewhere
 // else is a drag, not a click. With a mouse a click waits a moment, in case it is the first
 // of a double click (which zooms): otherwise the buttons would flash off and on.
-let drag = null, dragged = 0, down = [0, 0], mouse = 0, timer2 = 0
-const bare = () => dlg.classList.toggle('bare')
+let drag = null, dragged = 0, down = [0, 0], mouse = 0, timer2 = 0, idle = 0
+// They also go by themselves after 2 s of quiet, and come back on a tap, a move of the mouse or a
+// key. They stay while the mouse is over them or one of them has the keyboard's focus.
+const bare = () => dlg.classList.toggle('bare') ? clearTimeout(idle) : wake(0)
+function wake(show) {
+  if (show && dlg.classList.contains('bare')) dlg.classList.remove('bare') // (a write even of the same class is a change to watch)
+  clearTimeout(idle)
+  idle = setTimeout(rest, 2e3)
+}
+function rest() {
+  if (!dlg.open) return
+  if (dlg.querySelector('.nav:focus-visible, .meta :focus-visible') || mouse && dlg.querySelector('.nav:hover, .meta:hover')) return wake(0)
+  dlg.classList.add('bare')
+}
+dlg.addEventListener('pointermove', e => { if (mouse = e.pointerType == 'mouse') wake(!e.buttons) }) // a drag moves the image, not the controls
+dlg.addEventListener('pointerdown', e => { mouse = e.pointerType == 'mouse' })
+strip.addEventListener('scroll', () => wake(0)) // being looked through
+$('cap').onscroll = () => wake(0) // a long caption being read
 full.onclick = e => {
   clearTimeout(timer2)
   if (dragged || e.detail && Math.max(Math.abs(e.clientX - down[0]), Math.abs(e.clientY - down[1])) > 6) dragged = 0
   else if (mouse && e.detail) timer2 = setTimeout(bare, 250)
   else bare()
 }
+// With the mouse (or a touchpad pressed down) the image is held and swiped like it is with a
+// finger, through the same canvas; zoomed in, it is panned instead.
+let held = 0 // the mouse is swiping
 full.onpointerdown = e => {
   dragged = 0
   down = [e.clientX, e.clientY]
   mouse = e.pointerType == 'mouse'
-  if (z > 1 && !e.button && !e.ctrlKey) {
-    drag = down
-    full.setPointerCapture(e.pointerId)
+  if (e.button || e.ctrlKey) return
+  if (z > 1) drag = down // zoomed: a finger or the mouse moves the picture
+  else if (e.pointerType == 'touch') return // a finger swipes through its own events
+  else {
+    e.preventDefault() // no text selection, no dragging the picture out
+    grab(e.clientX, e.clientY, 1)
+    held = 1
   }
+  full.setPointerCapture(e.pointerId)
 }
 full.onpointermove = e => {
+  if (held) {
+    if (!(e.buttons & 1)) return letGo(held = 0, e.timeStamp) // the release never reached us
+    if (follow(e.clientX, e.clientY, e.timeStamp)) dragged = 1
+    return
+  }
   if (!drag) return
   if (!(e.buttons & 1)) return void (drag = null) // the release never reached us
   const dx = e.clientX - drag[0], dy = e.clientY - drag[1]
@@ -299,7 +369,12 @@ full.onpointermove = e => {
     pan(dx, dy)
   }
 }
-full.onpointerup = full.onpointercancel = full.onlostpointercapture = () => { drag = null }
+full.onpointerup = full.onpointercancel = full.onlostpointercapture = e => {
+  drag = null
+  if (!held) return
+  held = 0
+  letGo(e.type == 'pointerup', e.timeStamp)
+}
 // A double click with the mouse zooms in on that spot, or back out.
 full.ondblclick = e => {
   if (mouse) {
@@ -319,7 +394,7 @@ addEventListener('keydown', e => {
   else if (a && z > 1) pan(a[0] * 80, a[1] * 80, 1)
   else if (a && a[0]) step(-a[0])
   else if (f != null) zoom(z * f, null, null, 1)
-  else return
+  else return wake(1) // Tab and the rest: the controls are wanted
   e.preventDefault()
 })
 // Swiping is direct control of a canvas: the large image sits at x, its neighbours (fetched
@@ -333,6 +408,7 @@ peek.id = 'peek'
 peek.alt = ''
 peek.draggable = false
 full.after(peek)
+peek.onload = () => peek.classList.remove('wait')
 let peeked = ''
 function draw() {
   full.style.transition = 'none'
@@ -340,7 +416,10 @@ function draw() {
   const d = x < 0 ? 1 : -1, k = x && near(d)
   peek.style.visibility = k ? 'visible' : ''
   if (k) {
-    if (peeked != k) peek.src = src(peeked = k)
+    if (peeked != k) { // black until it is in: never the picture it showed before
+      peek.src = src(peeked = k)
+      peek.classList.toggle('wait', !ready(peek, peek.getAttribute('src')))
+    }
     peek.style.transform = 'translateX(calc(' + d * 100 + '% + ' + x + 'px))'
   }
 }
@@ -348,22 +427,31 @@ function stop() {
   cancelAnimationFrame(anim)
   anim = 0
 }
+// A finger or the mouse takes hold of the canvas at (cx, cy); ok: it may swipe from here.
+function grab(cx, cy, ok) {
+  stop() // catch it
+  sx = ok && !pend && z == 1 && !pinched() ? cx - x : NaN
+  sy = cy
+  trail = []
+}
+// It moved to (cx, cy) at time ts. True if that moves the canvas (sideways, past a few px, or already moving).
+function follow(cx, cy, ts) {
+  const dx = cx - sx // NaN: not a swipe
+  if (dx != dx || z > 1 || !x && (Math.abs(dx) <= 10 || Math.abs(dx) <= Math.abs(cy - sy))) return false
+  // Past the first or last image it gives, but only a little.
+  x = Math.max(-W(), Math.min(W(), dx * (near(dx < 0 ? 1 : -1) ? 1 : .3)))
+  trail = trail.filter(p => ts - p[0] < 100).concat([[ts, x]])
+  draw()
+  wake(0)
+  return true
+}
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
-  stop() // catch it
-  sx = t[1] || pend || z > 1 || !full.parentNode.contains(e.target) || pinched() ? NaN : t[0].clientX - x
-  sy = t[0].clientY
-  trail = []
+  grab(t[0].clientX, t[0].clientY, !t[1] && full.parentNode.contains(e.target))
 }, { passive: true })
 const move = e => {
-  const t = e.touches[0], dx = t.clientX - sx // NaN: not a swipe
-  if (dx == dx && z == 1 && (x || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
-    if (e.cancelable) e.preventDefault() // or the next tap is eaten
-    // Past the first or last image it gives, but only a little.
-    x = Math.max(-W(), Math.min(W(), dx * (near(dx < 0 ? 1 : -1) ? 1 : .3)))
-    trail = trail.filter(p => e.timeStamp - p[0] < 100).concat([[e.timeStamp, x]])
-    draw()
-  }
+  const t = e.touches[0]
+  if (follow(t.clientX, t.clientY, e.timeStamp) && e.cancelable) e.preventDefault() // or the next tap is eaten
 }
 // Carry x to rest at `to` (0 or +-W), starting at speed v (px/s): a critically damped spring,
 // which never passes `to`. On reaching a neighbour it takes the place of the large image.
@@ -408,9 +496,12 @@ function release(e) {
     draw()
     return pan(0, 0)
   }
-  if (pend || e.touches.length) return
-  const live = sx == sx && e.type == 'touchend'
-  const tr = trail.filter(q => e.timeStamp - q[0] < 100) // the last moments: held still before letting go is no flick
+  if (!pend && !e.touches.length) letGo(e.type == 'touchend', e.timeStamp)
+}
+// Let go at time ts (live: by lifting the finger or the button, not by being interrupted).
+function letGo(live, ts) {
+  live = live && sx == sx
+  const tr = trail.filter(q => ts - q[0] < 100) // the last moments: held still before letting go is no flick
   const v = live && tr.length > 1 ? Math.max(-4e3, Math.min(4e3, (tr.at(-1)[1] - tr[0][1]) / (tr.at(-1)[0] - tr[0][0] || 1) * 1e3)) : 0
   const p = x + v * .15, d = p < 0 ? 1 : -1 // where it is heading, and which way that is
   const far = live && Math.abs(p) > W() * .35 // far enough, or fast enough, to leave the image
@@ -470,16 +561,16 @@ function settle() {
   pend = 0
   if (!x) peek.style.visibility = ''
 }
-// Once the large image is in, fetch the next and the previous one, so that moving on shows
-// it at once. The browser keeps them: originals never change.
-const ahead = [new Image(), new Image()]
+// Once the large image is in, fetch the two after it and the two before, so that moving on shows
+// them at once. The browser keeps them: originals never change.
+const ahead = [1, -1, 2, -2].map(d => [d, new Image()])
 full.onload = () => {
-  $('cap').textContent = full.alt
+  caption()
   settle()
-  ;[1, -1].forEach((d, i) => {
+  for (const [d, img] of ahead) {
     const k = near(d)
-    if (k) ahead[i].src = src(k)
-  })
+    if (k) img.src = src(k)
+  }
 }
 full.onerror = () => {
   settle()
@@ -489,7 +580,7 @@ full.onerror = () => {
     dlg.close()
     say('Image not found')
   } else if (dlg.open && tries < 8) { // Telegram may have failed for a moment: say so, and ask again
-    $('cap').textContent = 'Image unavailable, trying again. ' + full.alt
+    caption('Image unavailable, trying again. ')
     setTimeout(() => { if (dlg.open && cur == key && !full.dataset.key) { tries++; show(key) } }, Math.min(3e3 * 2 ** tries, 3e4))
   }
 }

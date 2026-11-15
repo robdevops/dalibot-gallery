@@ -77,6 +77,9 @@ func Label(key string) string {
 	if i, ok := index[key]; ok {
 		return table[i].Label
 	}
+	if g, ok := GroupOf(key); ok {
+		return g.Label
+	}
 	return titleCase(key)
 }
 

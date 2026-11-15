@@ -41,7 +41,7 @@
 {{if .SignOut}}<form method="post" action="/logout"><button type="submit">Sign out</button></form>{{end}}
 </footer>{{end}}
 <p class="sr" id="live" aria-live="polite"></p>
-<dialog id="lb" aria-label="Image viewer">
+<dialog id="lb" aria-label="Image viewer" data-groups="{{.Groups}}">
 <div class="box">
   <div class="stage">
     <img id="full" alt="" draggable="false">

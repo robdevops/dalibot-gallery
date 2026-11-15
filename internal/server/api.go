@@ -135,6 +135,9 @@ type indexData struct {
 	// Style: the style the listing is narrowed to ("" for all), and Title the page's title
 	// and heading: "Gallery", or "Ukiyo-e · Gallery".
 	Style, Title string
+	// Groups: the style groups and the words that name them (styles.GroupsJSON), for the
+	// script to link those words in a caption.
+	Groups string
 	// Admin: the visitor has admin access. The page carries it as
 	// <html data-admin="1">, which is how the script knows without asking.
 	Admin bool
@@ -167,7 +170,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, level acces
 		return
 	}
 	data := indexData{
-		V: s.tag, Next: next, Tiles: make([]indexTile, 0, len(tiles)), Style: style, Title: "Gallery",
+		V: s.tag, Next: next, Tiles: make([]indexTile, 0, len(tiles)), Style: style, Title: "Gallery", Groups: styles.GroupsJSON(),
 		Admin:      level == accessAdmin,
 		AdminLogin: s.cfg.AdminEnabled() && level < accessAdmin,
 		SignOut:    s.cookieAccess(r) > accessNone,

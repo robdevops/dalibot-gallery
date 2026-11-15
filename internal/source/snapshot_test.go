@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/robdevops/dalibot-gallery/internal/styles"
 	"maps"
 	"math/rand"
 	"reflect"
@@ -673,24 +674,24 @@ func TestWithoutIDs(t *testing.T) {
 func TestStyleView(t *testing.T) {
 	_, s := fixtureSnapshot(t)
 	all := s.Newest(1000)
-	styles := map[string]bool{}
+	present := map[string]bool{}
 	for _, tl := range all {
-		styles[tl.Style] = true
+		present[tl.Style] = true
 	}
-	if len(styles) < 3 {
-		t.Fatalf("the fixture has %d styles; the test needs a few", len(styles))
+	if len(present) < 3 {
+		t.Fatalf("the fixture has %d styles; the test needs a few", len(present))
 	}
 	if s.Style("") != s {
 		t.Error("no style should be the snapshot itself")
 	}
-	for style := range styles {
+	for style := range present {
 		v := s.Style(style)
 		if s.Style(style) != v {
 			t.Errorf("%s: the view is made again at every call", style)
 		}
 		var want []string
 		for _, tl := range all {
-			if tl.Style == style {
+			if styles.In(style, tl.Style, tl.Alt()) {
 				want = append(want, tl.Key)
 			}
 		}
@@ -719,11 +720,11 @@ func TestStyleView(t *testing.T) {
 				t.Fatalf("%s limit %d: paged %v, want %v", style, limit, got, want)
 			}
 		}
-		// A cursor from the whole listing works in the view: it continues after that place.
+		// A cursor from the whole listing works in the view: it continues after that very tile.
 		for i, tl := range all {
 			var after []string
 			for _, o := range all[i+1:] {
-				if o.Style == style && o.ID != tl.ID {
+				if styles.In(style, o.Style, o.Alt()) {
 					after = append(after, o.Key)
 				}
 			}
@@ -734,7 +735,7 @@ func TestStyleView(t *testing.T) {
 		}
 		// New since a cursor counts the view's tiles only.
 		n, newest, err := v.NewSince(all[len(all)-1].Cursor())
-		if err != nil || n != len(want)-btoi(all[len(all)-1].Style == style) || newest != v.Newest(1)[0].Cursor() {
+		if err != nil || n != len(want)-btoi(styles.In(style, all[len(all)-1].Style, all[len(all)-1].Alt())) || newest != v.Newest(1)[0].Cursor() {
 			t.Errorf("%s: NewSince = %d, %q, %v", style, n, newest, err)
 		}
 	}

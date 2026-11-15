@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1616,5 +1617,59 @@ func TestStyleFilter(t *testing.T) {
 	_, body = e.get("/", basic)
 	if !strings.Contains(string(body), "<title>Gallery</title>") || strings.Contains(string(body), "style=") {
 		t.Errorf("the whole listing mentions a style")
+	}
+}
+
+// A style group takes in the images whose caption or prompt names it, also those made without a
+// button (older ones, typed prompts, variations), and the page gets the words to link.
+func TestStyleGroupsByWords(t *testing.T) {
+	now := time.Now().Unix()
+	rec := func(i int, prompt string, imgs map[string]source.RawImage) source.Record {
+		return source.Record{ID: fmt.Sprintf("-1001:%d", 9000+i), Prompt: prompt, Command: "dream", Current: "_", TTL: now - int64(i) + 90*86400, Images: imgs}
+	}
+	base := func(i int, caption string) map[string]source.RawImage {
+		return map[string]source.RawImage{"_": {FileID: fileID(i, "base"), Caption: caption}}
+	}
+	recs := []source.Record{
+		rec(0, "a cat as a Japanese ukiyo-e woodblock print", base(0, "")),        // prompt only
+		rec(1, "a dog", base(1, "a dog, redrawn as a ukiyo-e print, from above")), // a variation's caption
+		rec(2, "a photorealistic owl", base(2, "")),                               // not 'photo'
+		rec(3, "a pixelated castle", base(3, "")),
+		rec(4, "a ship", map[string]source.RawImage{"_": {FileID: fileID(4, "base")}, "8bit": {FileID: fileID(4, "8bit"), Caption: "a ship, as 8-bit pixel art"}}),
+		rec(5, "a pond", map[string]source.RawImage{"_": {FileID: fileID(5, "base")}, "monet": {FileID: fileID(5, "monet")}}),
+	}
+	e := newEnv(t, recs, nil)
+	keys := func(style string) []string {
+		t.Helper()
+		_, p := e.page("/api/tiles?limit=120&style=" + style)
+		var out []string
+		for _, tl := range p.Tiles {
+			out = append(out, tl.ID+"/"+tl.Style)
+		}
+		return out
+	}
+	for style, want := range map[string][]string{
+		"ukiyoe":        {"-1001:9000/_", "-1001:9001/_"},
+		"photo":         nil,
+		"pixelart":      {"-1001:9003/_", "-1001:9004/8bit"},
+		"8bit":          {"-1001:9004/8bit"},
+		"impressionist": {"-1001:9005/monet"},
+		"_":             {"-1001:9000/_", "-1001:9001/_", "-1001:9002/_", "-1001:9003/_", "-1001:9004/_", "-1001:9005/_"},
+	} {
+		if got := keys(style); !slices.Equal(got, want) {
+			t.Errorf("?style=%s: %q, want %q", style, got, want)
+		}
+	}
+	// Paging a group with several tiles of one record: by tile, none lost, none twice.
+	_, p := e.page("/api/tiles?limit=1&style=pixelart")
+	_, q := e.page("/api/tiles?limit=1&style=pixelart&cursor=" + url.QueryEscape(*p.Next))
+	if len(p.Tiles) != 1 || len(q.Tiles) != 1 || p.Tiles[0].Key == q.Tiles[0].Key || q.Next != nil {
+		t.Errorf("paging: %d then %d tiles, next %v", len(p.Tiles), len(q.Tiles), q.Next)
+	}
+	// The page: the title of a group that is no button, and the words for the script.
+	_, body := e.get("/?style=pixelart", basic)
+	html := string(body)
+	if !strings.Contains(html, "<title>Pixel art · Gallery</title>") || !strings.Contains(html, `data-groups="[[&#34;monet&#34;,&#34;Monet&#34;,[[&#34;monet&#34;]]]`) {
+		t.Errorf("page: %.600s", html[strings.Index(html, "<title>"):])
 	}
 }

@@ -408,13 +408,17 @@ test('zoom with the keyboard and a double click; hold and drag to pan', async ({
   await page.keyboard.press('-')
   await page.keyboard.press('-')
   await settled(1) // not smaller than normal
-  // At normal size the pointer is an ordinary one and a drag does nothing.
+  // At normal size a drag takes hold of the whole image, as a finger does (swipe.spec.js has the rest):
+  // a short, slow one, held still before letting go, springs back and leaves it as it was. It is not a click.
   expect(await page.locator('#full').evaluate(i => i.style.cursor)).toBe('')
+  await page.mouse.move(cx, cy - 1) // the controls are shown, and stay for 2 s
+  expect(await bare()).toBe(false)
   await page.mouse.down()
-  await page.mouse.move(cx + 80, cy, { steps: 3 })
+  for (let i = 1; i <= 4; i++) { await page.mouse.move(cx + i * 20, cy); await page.waitForTimeout(40) }
+  await page.waitForTimeout(150)
   await page.mouse.up()
-  expect(await view()).toEqual({ z: 1, x: 0, y: 0 })
-  await expect.poll(bare).toBe(false) // nor does it count as a click
+  await expect.poll(view).toEqual({ z: 1, x: 0, y: 0 })
+  expect(await bare()).toBe(false) // nor does it count as a click
 
   // A double click zooms in on that spot, another zooms back out. The buttons and caption do not flash.
   await page.evaluate(() => {
@@ -507,8 +511,8 @@ test('the next and previous large images are fetched ahead, so moving on does no
 
   await page.locator(`.tile[data-key="${keys[10]}"] a`).click()
   await loaded(page, keys[10])
-  // The open image first, then its neighbours, and nothing else.
-  await expect.poll(() => fetched.slice().sort()).toEqual([keys[9], keys[10], keys[11]].sort())
+  // The open image first, then the two after it and the two before, and nothing else.
+  await expect.poll(() => fetched.slice().sort()).toEqual([keys[8], keys[9], keys[10], keys[11], keys[12]].sort())
   expect(fetched[0]).toBe(keys[10])
   await expect.poll(() => page.evaluate(k => performance.getEntriesByName(location.origin + '/img/' + k + '.jpg').some(e => e.responseEnd > 0), keys[11])).toBe(true)
 
@@ -523,8 +527,8 @@ test('the next and previous large images are fetched ahead, so moving on does no
   expect(Date.now() - start).toBeLessThan(1000)
   const again = (await entries(keys[11])).slice(1) // none, or served from the browser's cache
   expect(again.every(size => size === 0)).toBe(true)
-  // And the one after is fetched in turn.
-  await expect.poll(() => fetched.includes(keys[12])).toBe(true)
+  // And the next one beyond is fetched in turn.
+  await expect.poll(() => fetched.includes(keys[13])).toBe(true)
 })
 
 test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
@@ -778,12 +782,14 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     await expect.poll(() => fullKey(page)).not.toBe(open)
     await settled()
 
-    // A double tap does not zoom: on a touch screen that is the browser's business.
+    // A double tap does not zoom: on a touch screen that is the browser's business. Its two taps
+    // hide the controls and show them again (or the other way round): no change.
+    const before = await bare()
     await page.locator('#full').tap()
     await page.locator('#full').tap()
     await page.waitForTimeout(400)
     expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
-    await expect.poll(bare).toBe(false)
+    expect(await bare()).toBe(before)
     // But an image zoomed from a keyboard (a tablet with one, say) can be moved with a finger,
     // and a swipe does not change the image until it is back at normal size.
     const here = await fullKey(page)
@@ -835,7 +841,7 @@ test('the style of the open image links to the images of that style, and back to
   const api = await apiTiles(page.request)
   const t = api.tiles.find(x => x.style !== '_')
   expect(t, 'the dev stack has an image in a style').toBeTruthy()
-  const same = api.tiles.filter(x => x.style === t.style).map(x => x.key)
+  const same = (await (await page.request.get('/api/tiles?limit=120&style=' + t.style, { headers: basic() })).json()).tiles.map(x => x.key)
   expect(same.length).toBeLessThan(api.tiles.length)
 
   await page.locator(`.tile[data-key="${t.key}"] a`).click()
@@ -957,6 +963,86 @@ test('dragging the large image without letting go brings the next or previous on
     expect((await edge()).shown).toBe(false)
     await touch('touchEnd')
     await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+  } finally {
+    await context.close()
+  }
+})
+
+// The style words in a caption are links to the gallery of that style, also for images made without a style
+// button (a typed prompt, a variation, an older image): the gallery reads them from the caption.
+test('style words in a caption link to the gallery of that style, also for images made without a button', async ({ page }) => {
+  const api = await apiTiles(page.request)
+  const t = api.tiles.find(x => x.style === '_' && /ukiyo-e/.test(x.caption || x.prompt))
+  expect(t, 'the dev stack has an image whose prompt names ukiyo-e').toBeTruthy()
+  const group = (await (await page.request.get('/api/tiles?limit=120&style=ukiyoe', { headers: basic() })).json()).tiles.map(x => x.key)
+  expect(group).toContain(t.key)
+
+  await page.locator(`.tile[data-key="${t.key}"] a`).click()
+  await loaded(page, t.key)
+  const word = page.locator('#cap a')
+  await expect(word).toHaveText('ukiyo-e')
+  await expect(word).toHaveAttribute('href', '/?style=ukiyoe')
+  await expect(word).toHaveAttribute('title', 'Show only Ukiyo-e images')
+  await expect(page.locator('#cap')).toHaveText(t.caption || t.prompt) // the words are as they were
+  // No button made it, so the line below names the style its caption names.
+  await expect(page.locator('#cmd a')).toHaveText('Ukiyo-e')
+  await word.click()
+  await page.waitForSelector('#grid .tile')
+  expect(new URL(page.url()).search).toBe('?style=ukiyoe')
+  await expect(page).toHaveTitle('Ukiyo-e · Gallery')
+  await expect.poll(async () => (await domKeys(page)).join()).toBe(group.slice(0, (await domKeys(page)).length).join())
+  expect(await domKeys(page)).toContain(t.key)
+
+  // Another: watercolour, in the same way.
+  const w = api.tiles.find(x => x.style === '_' && /watercolour/.test(x.caption || x.prompt))
+  await page.goto('/#/p/' + w.key)
+  await loaded(page, w.key)
+  await expect(page.locator('#cap a')).toHaveAttribute('href', '/?style=watercolour')
+})
+
+// The buttons, caption and strip go by themselves after 2 s of quiet, and come back on a move of the mouse,
+// a tap or a key. They stay while the mouse is over one of them or one of them has the keyboard's focus.
+test('the controls go after 2 s of quiet and come back on a move of the mouse, a tap or a key', async ({ page, browser, baseURL }, testInfo) => {
+  const keys = await domKeys(page)
+  const bare = p => dialog(p).evaluate(d => d.classList.contains('bare'))
+  await page.locator(`.tile[data-key="${keys[2]}"] a`).click()
+  await loaded(page, keys[2])
+  const opened = Date.now()
+  await expect.poll(() => bare(page), { timeout: 6000 }).toBe(true)
+  expect(Date.now() - opened).toBeGreaterThan(1000)
+  // A move of the mouse brings them back, and they go again.
+  const box = await page.locator('#full').boundingBox()
+  await page.mouse.move(box.x + 40, box.y + 40)
+  expect(await bare(page)).toBe(false)
+  await expect.poll(() => bare(page), { timeout: 6000 }).toBe(true)
+  // Over a button, they stay.
+  await page.mouse.move(box.x + 60, box.y + 60)
+  await page.locator('#next').hover()
+  await page.waitForTimeout(2600)
+  expect(await bare(page)).toBe(false)
+  // Moving to another image with the keys leaves them as they are; they go once the mouse has left them.
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await expect.poll(() => bare(page), { timeout: 6000 }).toBe(true)
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[3])
+  expect(await bare(page)).toBe(true)
+  // Tab brings them back, and while one has the keyboard's focus they stay.
+  await page.keyboard.press('Tab')
+  expect(await bare(page)).toBe(false)
+  await page.waitForTimeout(2600)
+  expect(await bare(page)).toBe(false)
+
+  // On a touch screen a tap brings them back.
+  const context = await browser.newContext({ baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true })
+  const phone = await context.newPage()
+  try {
+    await phone.goto('/')
+    await phone.waitForSelector('#grid .tile')
+    await phone.locator('#grid .tile a').nth(2).tap()
+    await expect.poll(() => bare(phone), { timeout: 6000 }).toBe(true)
+    await phone.locator('#full').tap()
+    await expect.poll(() => bare(phone)).toBe(false)
+    await expect.poll(() => bare(phone), { timeout: 6000 }).toBe(true) // and they go again
   } finally {
     await context.close()
   }

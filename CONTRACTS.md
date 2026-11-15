@@ -194,7 +194,7 @@ func (s *Snapshot) Records() int
 func (s *Snapshot) Built() time.Time               // zero for the empty start-up snapshot
 func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, err error)
 func (s *Snapshot) NewSince(cursor string) (count int, newest string, err error)
-func (s *Snapshot) Style(style string) *Snapshot    // a view of the tiles of one style: Page, NewSince and Newest only; "" is s itself; made once per style with tiles, an empty shared view otherwise
+func (s *Snapshot) Style(style string) *Snapshot    // a view of one style group (styles.In: its button's style key, or its words in the tile's caption, else prompt): Page (by tile; a cursor goes on after that very tile), NewSince and Newest only; "" is s itself; made once per group with tiles, an empty shared view otherwise
 func (s *Snapshot) Newest(n int) []Tile            // first n tiles; for the warmer and for /api/tiles/new
 func (s *Snapshot) Tile(key string) (Tile, bool)
 func (s *Snapshot) Has(key string) bool            // is this key listed (may everyone with view access be served it)?
@@ -506,7 +506,7 @@ All JSON responses: `Content-Type: application/json; charset=utf-8`, `Cache-Cont
 
 - `limit`: optional integer; default 60; values above 120 are treated as 120; less than 1 or not an integer is `400`.
 - `cursor`: optional; the `next` of an earlier response. Absent or empty starts at the newest tile.
-- `style`: optional; a style key (`[a-z0-9_-]{1,32}`, e.g. `ukiyoe`) narrows the listing to the tiles of that style, in the same order, one per record (so a page is a page of tiles, not whole records). A style with no tiles is an empty listing; any other value is `400 {"error":"bad style"}`. Cursors are sort positions and mean the same with or without a style; `newest` is the cursor of the first tile of the narrowed listing. `/api/tiles/new` and `/` take the same parameter (`/` answers `400 bad style` as plain text).
+- `style`: optional; a style group key (`[a-z0-9_-]{1,32}`, e.g. `ukiyoe`, `pixelart`) narrows the listing to the tiles of that group, in the same order: a tile is in it when it was made with one of the group's buttons or its caption (else its prompt) names one of the group's terms (`internal/styles/groups.go`; words are letters and digits, lower case, without accents, `&` as `and`, matched whole and in order). Several tiles of one record can be in a group, so a page of a group is a page of tiles, and its cursor goes on after that very tile. A key that is no group (`_`, or a style the bot added since) takes the tiles of that style key only; one with no tiles is an empty listing; any other value is `400 {"error":"bad style"}`. `newest` is the cursor of the first tile of the narrowed listing. `/api/tiles/new` and `/` take the same parameter (`/` answers `400 bad style` as plain text).
 
 ```json
 {
@@ -644,7 +644,9 @@ The first page is server-rendered **inside `<noscript>`** only; with JavaScript 
 </noscript>
 ```
 
-With JavaScript, `?cursor=` in the page URL is ignored; `?style=` is not: `app.js` adds it to its requests, and the server puts `<title>` and the `sr` `<h1>` as `{{.Title}}` ("Gallery", or "Ukiyo-e · Gallery"). In the viewer the style label in `#cmd` is a link: to `/?style=<key>`, or to `/` (title "Show all images") when that style is the one shown.
+With JavaScript, `?cursor=` in the page URL is ignored; `?style=` is not: `app.js` adds it to its requests, and the server puts `<title>` and the `sr` `<h1>` as `{{.Title}}` ("Gallery", or "Ukiyo-e · Gallery") and the groups on the viewer as `<dialog id="lb" data-groups="{{.Groups}}">` (`styles.GroupsJSON()`: `[[key, label, [[word, ...], ...]], ...]`). In the viewer the words of the caption that name a group are links to `/?style=<key>` (split and folded as the server does; the longest run wins), and so is the style in `#cmd`: the button's, or for an image made without one the first group its caption names; a link to the group shown goes to `/` (title "Show all images").
+
+**Viewer.** The large image sits on a canvas at offset x with its neighbours a width to either side (`#peek` carries the one x points to). A finger (touch events) or the mouse (pointer events, a press of the primary button) sets x; on letting go a critically damped spring carries it, at the speed of the last 100 ms, to rest here or at a neighbour (past 35% of the width, counting 150 ms of speed); a press while it moves catches it; past the first or last loaded image it gives a third as far. Zoomed in (z > 1) a drag pans instead. `#peek` and `#full` are black (`.wait`) until they show the picture asked for (`complete`, `naturalWidth` and `currentSrc`: while a new picture is on its way the old one still counts as loaded). The two images after the open one and the two before are fetched ahead once it has loaded. The controls (`.nav`, `.meta`) hide by themselves (`.bare`) 2 s after the viewer opens or after the last activity and come back on a mouse move, a tap or a key other than the ones that move or zoom; they stay while the mouse is over one or one has `:focus-visible`; they are shown at once and faded out over 200 ms.
 
 **The admin flag.** For an admin the server renders `<html lang="en" data-admin="1">`; for everyone else `<html lang="en">`, with no attribute. Script reads it as `document.documentElement.dataset.admin`. It is a hint for the page: the server checks the level on every request. Admin-only script must be a separate file served only at admin level, so that `app.js` + `app.css` stay within their budget and other visitors download nothing extra.
 

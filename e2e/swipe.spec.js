@@ -209,3 +209,128 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await swipe(-1)
   await settledAt(keys[0])
 })
+
+// While the image beside it has not loaded, the space beside the large image is black: never the picture
+// shown before, nor the open one again. And after a swipe that ends before the new image is in, the middle
+// is black until it is.
+test('an image that has not loaded yet is black space, not a copy of another', async ({ browser, baseURL }, testInfo) => {
+  const context = await browser.newContext({
+    baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 },
+    hasTouch: true, isMobile: true,
+  })
+  const page = await context.newPage()
+  try {
+    await page.goto('/')
+    await page.waitForSelector('#grid .tile')
+    const keys = await domKeys(page)
+    // The image after the open one takes 2.5 s to arrive, and the one after that 15 s (also when fetched ahead).
+    const slow = { [keys[4]]: 2500, [keys[5]]: 15000 }
+    await page.route(u => /\/img\/[\w-]{22}\.jpg$/.test(u.pathname), async route => {
+      const k = Object.keys(slow).find(k => route.request().url().includes(k))
+      if (k) await new Promise(r => setTimeout(r, slow[k]))
+      await route.continue()
+    })
+    await page.locator('#grid .tile a').nth(3).tap()
+    await loaded(page, keys[3])
+    const cdp = await context.newCDPSession(page)
+    const stage = await page.locator('#full').boundingBox()
+    const y = Math.round(stage.y + stage.height / 2)
+    let clock = Date.now() / 1000
+    const touch = (type, x, ms = 16) => {
+      clock += ms / 1000
+      return cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type == 'touchEnd' ? [] : [{ x, y, id: 0 }], timestamp: clock })
+    }
+    const peek = () => page.locator('#peek').evaluate(i => ({ src: i.getAttribute('src') || '', opacity: getComputedStyle(i).opacity, shown: getComputedStyle(i).visibility == 'visible' }))
+
+    // The one before has loaded (fetched ahead): dragged right, it is beside the image at once.
+    await touch('touchStart', 100)
+    await touch('touchMove', 160)
+    await touch('touchMove', 220)
+    await expect.poll(peek).toEqual({ src: `/img/${keys[2]}.jpg`, opacity: '1', shown: true })
+    // Dragged back over to the left: the next one has not arrived, so the space is black, not the one before.
+    await touch('touchMove', 40)
+    await expect.poll(async () => (await peek()).src).toBe(`/img/${keys[4]}.jpg`)
+    expect((await peek()).opacity).toBe('0')
+    expect((await peek()).shown).toBe(true)
+    // When it arrives, it is there.
+    await expect.poll(async () => (await peek()).opacity, { timeout: 8000 }).toBe('1')
+    await touch('touchEnd', 0, 250) // held still: back
+    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(0)
+
+    // A swipe on to the next, and at once to the one after it, which has not loaded: the middle is black
+    // (the large image hidden, nothing standing in for it), then the image.
+    await page.keyboard.press('ArrowRight')
+    await loaded(page, keys[4])
+    await touch('touchStart', 300)
+    for (const x of [270, 235, 200]) { await touch('touchMove', x, 12); await page.waitForTimeout(20) }
+    await touch('touchEnd', 0, 12)
+    await expect.poll(() => page.locator('#full').getAttribute('src')).toBe(`/img/${keys[5]}.jpg`)
+    const middle = await page.evaluate(() => {
+      const f = document.getElementById('full'), p = document.getElementById('peek')
+      return { full: getComputedStyle(f).visibility, peek: getComputedStyle(p).visibility == 'hidden' || getComputedStyle(p).opacity == '0' }
+    })
+    expect(middle).toEqual({ full: 'hidden', peek: true })
+    await expect.poll(() => page.locator('#full').evaluate(i => i.complete && i.naturalWidth), { timeout: 20000 }).toBe(1024)
+    await expect(page.locator('#full')).not.toHaveClass(/wait/)
+  } finally {
+    await context.close()
+  }
+})
+
+// The mouse (or a touchpad pressed down) holds and swipes the image just as a finger does.
+test('the mouse holds and swipes the large image as a finger does', async ({ page }) => {
+  const keys = await domKeys(page)
+  await page.locator(`.tile[data-key="${keys[3]}"] a`).click()
+  await loaded(page, keys[3])
+  const cdp = await page.context().newCDPSession(page)
+  const box = await page.locator('#full').boundingBox()
+  const y = Math.round(box.y + box.height / 2), cx = Math.round(box.x + box.width / 2)
+  let clock = Date.now() / 1000
+  const mouse = (type, x, ms = 16) => {
+    clock += ms / 1000
+    return cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type == 'mouseReleased' ? 0 : 1, clickCount: 1, timestamp: clock })
+  }
+  const shift = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)
+  const bare = () => page.locator('dialog#lb').evaluate(d => d.classList.contains('bare'))
+
+  // Held and dragged: the image follows the pointer, with the next one beside it.
+  await mouse('mousePressed', cx)
+  await mouse('mouseMoved', cx - 40)
+  await mouse('mouseMoved', cx - 120)
+  await expect.poll(shift).toBe(-120)
+  await expect(page.locator('#peek')).toHaveAttribute('src', `/img/${keys[4]}.jpg`)
+  // Held still and let go: back, and the image is the same; letting go is not a click.
+  await mouse('mouseReleased', cx - 120, 250)
+  await expect.poll(shift).toBe(0)
+  expect(await fullKey(page)).toBe(keys[3])
+  await page.waitForTimeout(300)
+  expect(await bare()).toBe(false)
+
+  // A quick flick goes on to the next image.
+  await mouse('mousePressed', cx)
+  for (const dx of [30, 65, 100]) { await mouse('mouseMoved', cx - dx, 12); await page.waitForTimeout(20) }
+  await mouse('mouseReleased', cx - 100, 12)
+  await loaded(page, keys[4])
+
+  // Caught while it moves: a press stops it where it is.
+  await mouse('mousePressed', cx)
+  for (const dx of [50, 100, 150, 200]) { await mouse('mouseMoved', cx - dx, 12); await page.waitForTimeout(20) }
+  await mouse('mouseReleased', cx - 200, 12)
+  await expect.poll(shift, { intervals: [5] }).toBeLessThan(-215)
+  await mouse('mousePressed', cx)
+  const held = await shift()
+  await page.waitForTimeout(150)
+  expect(await shift()).toBe(held)
+  await mouse('mouseReleased', cx, 250)
+  await expect.poll(async () => Math.abs(await shift()) < 1 || Math.abs(await shift()) > box.width - 1).toBe(true)
+
+  // Zoomed in, a drag moves the picture instead, and does not change the image.
+  await page.waitForTimeout(500)
+  const here = await fullKey(page)
+  await page.keyboard.press('+')
+  await mouse('mousePressed', cx)
+  await mouse('mouseMoved', cx - 60)
+  await mouse('mouseReleased', cx - 60)
+  await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toMatch(/^translate\(-60px, 0px\) scale\(1\.5\)$/)
+  expect(await fullKey(page)).toBe(here)
+})

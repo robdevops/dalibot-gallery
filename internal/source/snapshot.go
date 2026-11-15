@@ -193,9 +193,11 @@ type Snapshot struct {
 // noView is the view of a style that has no tiles.
 var noView = &Snapshot{flat: true}
 
-// Style returns the part of the snapshot that holds the tiles of one style: a
-// listing in the same order, for Page, NewSince and Newest, and nothing else.
-// It has one tile per record, so a page of it is a page of tiles. A style with
+// Style returns the part of the snapshot that holds the tiles of one style group
+// (styles.In: made with one of its buttons, or a prompt or caption that names it):
+// a listing in the same order, for Page, NewSince and Newest, and nothing else.
+// It may hold several tiles of one record; it is paged by tile all the same, and
+// a cursor names a tile's place, which every view shares. A style with
 // no tiles, known or not, gives an empty view. An empty key gives s itself.
 // Views are made once and kept with the snapshot.
 func (s *Snapshot) Style(style string) *Snapshot {
@@ -209,7 +211,7 @@ func (s *Snapshot) Style(style string) *Snapshot {
 	}
 	var tiles []Tile
 	for _, t := range s.tiles {
-		if t.Style == style {
+		if styles.In(style, t.Style, t.Alt()) { // the text the viewer shows: the caption, else the prompt
 			tiles = append(tiles, t)
 		}
 	}
@@ -436,8 +438,11 @@ func (s *Snapshot) Page(cursor string, limit int) (tiles []Tile, next string, er
 		if err != nil {
 			return nil, "", err
 		}
-		// Past the whole record the cursor names, wherever in it the cursor points.
-		p.pos = math.MaxInt
+		// Past the whole record the cursor names, wherever in it the cursor points. A view of a
+		// style group may hold several tiles of one record: it goes on after the very tile.
+		if !s.flat {
+			p.pos = math.MaxInt
+		}
 		start = s.after(p)
 	}
 	if limit < 1 {
