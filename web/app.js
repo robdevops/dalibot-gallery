@@ -322,6 +322,23 @@ addEventListener('keydown', e => {
 // away or springs back.
 let sx = NaN, sy = 0, sliding = 0
 const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
+// The neighbour is kept beside the large image while it is dragged (it was fetched ahead), so
+// that it comes into view as the finger moves. One picture does for both sides.
+const peek = el('img')
+peek.id = 'peek'
+peek.alt = ''
+peek.draggable = false
+full.after(peek)
+let peeked = '', pd = 0
+// Show the image d places on, d * 100% to the side of the large one and off by x.
+function lean(d, x) {
+  const k = near(d)
+  if (!k) return peek.style.visibility = ''
+  if (peeked != k) peek.src = src(peeked = k)
+  pd = d
+  peek.style.transform = 'translateX(calc(' + d * 100 + '% + ' + x + '))'
+  peek.style.visibility = 'visible'
+}
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
   sx = t[1] || sliding || z > 1 || !full.parentNode.contains(e.target) || pinched() ? NaN : t[0].clientX
@@ -331,39 +348,55 @@ const move = e => {
   const t = e.touches[0], dx = t.clientX - sx // NaN: not a swipe
   if (dx == dx && z == 1 && (/px/.test(full.style.transform) || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
     if (e.cancelable) e.preventDefault() // or the next tap is eaten
-    full.style.transition = 'none'
+    full.style.transition = peek.style.transition = 'none'
     slide(dx + 'px')
+    lean(dx < 0 ? 1 : -1, dx + 'px')
   }
 }
-// Slide the image away and bring in the one d places on, which waits on the
-// other side until loaded. False if there is none, or a slide is under way.
+// Slide the image away and bring in the one d places on, which is already at the side (or is
+// put there), and waits at the middle, under the large one, until that has loaded. False if
+// there is none, or a slide is under way.
 function fling(d) {
   const k = near(d), c = cur
   if (sliding || !k) return false
   sliding = 1
-  full.style.transition = ''
+  if (peek.style.visibility != 'visible' || pd != d) {
+    peek.style.transition = 'none'
+    lean(d, '0px')
+  }
+  peek.offsetWidth // reflow first
+  full.style.transition = peek.style.transition = ''
   slide(-d * 100 + '%')
+  peek.style.transform = 'translateX(0)'
   setTimeout(() => {
     sliding = 0
-    if (cur != c) return z > 1 ? pan(0, 0) : slide() // something else moved on meanwhile
+    if (cur != c) { // something else moved on meanwhile
+      peek.style.visibility = ''
+      return z > 1 ? pan(0, 0) : slide()
+    }
     full.style.transition = 'none'
-    slide(d * 100 + '%')
-    go(k)
+    slide()
+    go(k) // hidden until loaded; settle() then takes the stand-in away
   }, still() ? 0 : 180)
   return true
 }
 function release(e) {
   if (z > 1) { // zoomed during a swipe: the zoom wins
     sx = NaN
+    peek.style.visibility = ''
     return pan(0, 0)
   }
   if (sliding) return
   const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
   const d = e.type == 'touchend' && !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
   sx = NaN
-  full.style.transition = ''
+  full.style.transition = peek.style.transition = ''
   if (!d || !fling(d)) {
     full.className || slide() // spring back, unless it is waiting to one side
+    if (peek.style.visibility == 'visible') { // and the neighbour goes back to its side
+      peek.style.transform = 'translateX(' + pd * 100 + '%)'
+      setTimeout(() => { if (sx != sx && !sliding) peek.style.visibility = '' }, still() ? 0 : 180)
+    }
     if (d) step(d) // past the last loaded image: load more
   }
 }
@@ -416,6 +449,7 @@ dlg.addEventListener('wheel', e => {
 }, { passive: false })
 function settle() {
   full.className = ''
+  peek.style.visibility = ''
   if (z == 1 && full.style.transform) {
     full.offsetWidth // reflow first
     full.style.transition = ''

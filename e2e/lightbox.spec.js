@@ -375,9 +375,10 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   // comes in from the right, the side it is on, never from the left.
   await page.evaluate(() => {
     window.track = []
-    const f = document.getElementById('full')
+    const f = document.getElementById('full'), p = document.getElementById('peek')
+    const x = e => Math.round(new DOMMatrix(getComputedStyle(e).transform).m41)
     const tick = () => {
-      track.push([f.dataset.key, Math.round(new DOMMatrix(getComputedStyle(f).transform).m41)])
+      track.push([f.dataset.key, x(f), x(p), getComputedStyle(p).visibility == 'visible'])
       requestAnimationFrame(tick)
     }
     tick()
@@ -389,8 +390,8 @@ test('a two-finger sideways swipe on a touchpad moves one image per swipe', asyn
   await settledAt(keys[14])
   const track = await page.evaluate(() => track)
   expect(track.filter(([k, x]) => k === keys[13] && x > 0), 'the old image leaves to the left').toEqual([])
-  expect(track.filter(([k, x]) => k === keys[14] && x < 0), 'the new image arrives from the right').toEqual([])
-  expect(track.some(([k, x]) => k === keys[14] && x > 0)).toBe(true)
+  expect(track.filter(([, , x, shown]) => shown && x < 0), 'the new image (the one beside it) arrives from the right').toEqual([])
+  expect(track.some(([, , x, shown]) => shown && x > 0), 'it was seen coming in').toBe(true)
   await swipe(-1)
   await settledAt(keys[13])
 
@@ -859,8 +860,9 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     expect(await fullKey(page)).toBe(keys[2])
     await settled()
 
-    // While the next image is still loading it waits to one side. A vertical drag then is
-    // left to the browser (it scrolls the viewer on a short screen) and does not move the image.
+    // While the next image is still loading, the stand-in beside it waits at the middle, under the large
+    // one (which is hidden). A vertical drag then is left to the browser (it scrolls the viewer on a
+    // short screen) and does not move the image.
     let slow = true
     await page.route('**/img/*.jpg', async route => {
       if (slow) await new Promise(r => setTimeout(r, 1200))
@@ -868,9 +870,12 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     })
     await swipe(300, y, 80, y)
     await page.waitForTimeout(350) // slid away; the new image is waiting
-    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('translateX(100%)')
+    await expect(page.locator('#full')).toHaveClass(/wait/)
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+    expect(await page.locator('#peek').evaluate(i => getComputedStyle(i).visibility)).toBe('visible')
     await swipe(200, y - 80, 205, y + 80)
-    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('translateX(100%)')
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+    expect(await page.locator('#peek').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(0)
     await loaded(page, keys[3])
     await settled()
     slow = false
@@ -1017,4 +1022,73 @@ test('a large image that fails to load says so and is fetched again until it wor
   expect(asked).toBe(3)
   // The browser logs the two refused requests; those are expected.
   watched.problems.splice(0, watched.problems.length, ...watched.problems.filter(p => !/status of 502/.test(p)))
+})
+
+// While the finger is down the neighbour is beside the image, coming into view as it is dragged.
+test('dragging the large image without letting go brings the next or previous one partly into view', async ({ browser, baseURL }, testInfo) => {
+  const context = await browser.newContext({
+    baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 },
+    hasTouch: true, isMobile: true,
+  })
+  const page = await context.newPage()
+  try {
+    await page.goto('/')
+    await page.waitForSelector('#grid .tile')
+    const keys = await domKeys(page)
+    await page.locator('#grid .tile a').nth(3).tap()
+    await loaded(page, keys[3])
+    const cdp = await context.newCDPSession(page)
+    const stage = await page.locator('#full').boundingBox()
+    const y = Math.round(stage.y + stage.height / 2)
+    const touch = (type, x) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type == 'touchEnd' ? [] : [{ x, y, id: 0 }] })
+    const peek = page.locator('#peek')
+    const edge = () => peek.evaluate(i => { const r = i.getBoundingClientRect(); return { left: r.left, right: r.right, shown: getComputedStyle(i).visibility == 'visible' } })
+
+    // Nothing is beside the image until it is dragged.
+    expect((await edge()).shown).toBe(false)
+
+    // Dragged to the left by 120 px: the next image shows at the right, 120 px of it in view.
+    await touch('touchStart', 300)
+    await touch('touchMove', 260)
+    await touch('touchMove', 180)
+    await expect.poll(async () => (await edge()).shown).toBe(true)
+    await expect(peek).toHaveAttribute('src', `/img/${keys[4]}.jpg`)
+    await expect.poll(async () => Math.round(stage.x + stage.width - (await edge()).left)).toBe(120)
+    expect(await fullKey(page)).toBe(keys[3]) // nothing changes until the finger lifts
+    // Dragged on, it follows the finger; dragged back past the start, the previous one is there instead.
+    await touch('touchMove', 120)
+    await expect.poll(async () => Math.round(stage.x + stage.width - (await edge()).left)).toBe(180)
+    await touch('touchMove', 340)
+    await expect(peek).toHaveAttribute('src', `/img/${keys[2]}.jpg`)
+    await expect.poll(async () => Math.round((await edge()).right - stage.x)).toBe(40)
+    // Let go with a short drag: the image springs back and the neighbour goes away.
+    await touch('touchEnd')
+    await expect.poll(async () => (await edge()).shown).toBe(false)
+    expect(await fullKey(page)).toBe(keys[3])
+
+    // A long drag: the neighbour slides in as the image slides out, and is the image shown afterwards.
+    await touch('touchStart', 300)
+    await touch('touchMove', 250)
+    await touch('touchMove', 100)
+    await expect.poll(async () => (await edge()).shown).toBe(true)
+    await touch('touchEnd')
+    await loaded(page, keys[4])
+    await expect.poll(async () => (await edge()).shown).toBe(false)
+    expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+    await expect(page.locator('#full')).not.toHaveClass(/wait/)
+
+    // At the newest image there is nothing before it: dragging to the right shows nothing beside it, and the image still follows the finger.
+    await page.keyboard.press('Escape')
+    await page.locator('#grid .tile a').nth(0).tap()
+    await loaded(page, keys[0])
+    await touch('touchStart', 100)
+    await touch('touchMove', 140)
+    await touch('touchMove', 220)
+    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(120)
+    expect((await edge()).shown).toBe(false)
+    await touch('touchEnd')
+    await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toBe('')
+  } finally {
+    await context.close()
+  }
 })

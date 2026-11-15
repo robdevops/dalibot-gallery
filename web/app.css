@@ -41,8 +41,9 @@ dialog::backdrop{background:#000d}
 .box{width:min(100vw,max(100svh - 10rem,16rem));margin:auto;background:var(--bg)}
 .stage{position:relative;overflow:hidden}
 #full{touch-action:pan-y pinch-zoom;display:block;width:100%;aspect-ratio:1/1;object-fit:contain;transition:transform .18s ease-out}
-@media (prefers-reduced-motion:reduce){#full,.nav,.meta{transition:none}.tile.lost{animation:none;background:#222}}
+@media (prefers-reduced-motion:reduce){#full,#peek,.nav,.meta{transition:none}.tile.lost{animation:none;background:#222}}
 #full.wait{visibility:hidden}
+#peek{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;visibility:hidden;pointer-events:none;transition:transform .18s ease-out}
 .nav{position:absolute;width:2.75rem;height:2.75rem;font-size:1.75rem;line-height:1;background:#111c}
 #x{top:0;right:0}
 #prev,#next{top:50%;margin-top:-1.375rem}
