@@ -53,9 +53,9 @@ dialog::backdrop{background:#000d}
 .meta p{margin:0;overflow-wrap:anywhere}
 /* Shown at once (so a key can reach them), faded out over 200 ms, then out of reach. */
 .nav,.meta{transition:opacity .2s,visibility 0s}
-.bare .nav,.bare .meta{opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s .2s}
+.bare .nav,.bare .meta,.calm .nav{opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s .2s}
 /* After the rules it overrides, which have the same weight. */
-@media (prefers-reduced-motion:reduce){#full,.nav,.meta,.bare .nav,.bare .meta{transition:none}.tile.lost{animation:none;background:#222}}
+@media (prefers-reduced-motion:reduce){#full,.nav,.meta,.bare .nav,.bare .meta,.calm .nav{transition:none}.tile.lost{animation:none;background:#222}}
 #cap{max-height:4.2em;overflow:auto}
 #cmd{margin-top:.25rem;color:#aaa;font-size:.85rem}
 #cmd a{color:inherit;text-underline-offset:.2em}

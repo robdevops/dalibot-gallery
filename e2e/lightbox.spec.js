@@ -1007,49 +1007,61 @@ test('style words in a caption link to the gallery of that style, also for image
   await expect(page.locator('#cap a')).toHaveAttribute('href', '/?style=watercolour')
 })
 
-// The buttons, caption and strip go by themselves after 2 s of quiet, and come back on a move of the mouse,
-// a tap or a key. They stay while the mouse is over one of them or one of them has the keyboard's focus.
-test('the controls go after 2 s of quiet and come back on a move of the mouse, a tap or a key', async ({ page, browser, baseURL }, testInfo) => {
+// The buttons (close, previous, next, and the admin's trash can) go by themselves 2 s after they were shown;
+// the caption and strip stay until a tap. A mouse move or a key brings the buttons back; moving to another
+// image does not, and does not start their 2 s again. A tap hides or shows everything, so with only the
+// buttons gone it takes two taps to see them again.
+test('the buttons go after 2 s; the caption and strip stay until a tap', async ({ page, browser, baseURL }, testInfo) => {
   const keys = await domKeys(page)
-  const bare = p => dialog(p).evaluate(d => d.classList.contains('bare'))
+  const seen = async p => {
+    const out = {}
+    for (const id of ['x', 'next', 'cap', 'strip']) out[id] = await p.locator('#' + id).isVisible()
+    return out
+  }
+  const calm = p => dialog(p).evaluate(d => d.classList.contains('calm'))
   await page.locator(`.tile[data-key="${keys[2]}"] a`).click()
   await loaded(page, keys[2])
   const opened = Date.now()
-  await expect.poll(() => bare(page), { timeout: 6000 }).toBe(true)
+  await expect.poll(() => calm(page), { timeout: 6000 }).toBe(true)
   expect(Date.now() - opened).toBeGreaterThan(1000)
-  // A move of the mouse brings them back, and they go again.
+  await expect.poll(() => seen(page)).toEqual({ x: false, next: false, cap: true, strip: true })
+  // A move of the mouse brings them back.
   const box = await page.locator('#full').boundingBox()
   await page.mouse.move(box.x + 40, box.y + 40)
-  expect(await bare(page)).toBe(false)
-  await expect.poll(() => bare(page), { timeout: 6000 }).toBe(true)
-  // Over a button, they stay.
+  await expect.poll(() => seen(page)).toEqual({ x: true, next: true, cap: true, strip: true })
+  // Moving to another image does not start their 2 s again: they go 2 s after the mouse moved, not after the key.
+  await page.waitForTimeout(1200)
+  await page.keyboard.press('ArrowRight')
+  await loaded(page, keys[3])
+  await expect.poll(() => calm(page), { timeout: 1500 }).toBe(true)
+  // Over a button they stay.
   await page.mouse.move(box.x + 60, box.y + 60)
   await page.locator('#next').hover()
   await page.waitForTimeout(2600)
-  expect(await bare(page)).toBe(false)
-  // Moving to another image with the keys leaves them as they are; they go once the mouse has left them.
+  expect(await calm(page)).toBe(false)
+  // Tab brings everything back, and while a button has the keyboard's focus they stay.
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  await expect.poll(() => bare(page), { timeout: 6000 }).toBe(true)
-  await page.keyboard.press('ArrowRight')
-  await loaded(page, keys[3])
-  expect(await bare(page)).toBe(true)
-  // Tab brings them back, and while one has the keyboard's focus they stay.
+  await expect.poll(() => calm(page), { timeout: 6000 }).toBe(true)
   await page.keyboard.press('Tab')
-  expect(await bare(page)).toBe(false)
+  expect(await calm(page)).toBe(false)
   await page.waitForTimeout(2600)
-  expect(await bare(page)).toBe(false)
+  expect(await calm(page)).toBe(false)
 
-  // On a touch screen a tap brings them back.
+  // On a touch screen: the buttons go, the caption and strip stay; a swipe changes nothing; one tap hides
+  // the rest too, and the next shows everything.
   const context = await browser.newContext({ baseURL, storageState: testInfo.project.use.storageState, viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true })
   const phone = await context.newPage()
   try {
     await phone.goto('/')
     await phone.waitForSelector('#grid .tile')
     await phone.locator('#grid .tile a').nth(2).tap()
-    await expect.poll(() => bare(phone), { timeout: 6000 }).toBe(true)
+    await expect.poll(() => calm(phone), { timeout: 6000 }).toBe(true)
+    expect(await seen(phone)).toEqual({ x: false, next: false, cap: true, strip: true })
     await phone.locator('#full').tap()
-    await expect.poll(() => bare(phone)).toBe(false)
-    await expect.poll(() => bare(phone), { timeout: 6000 }).toBe(true) // and they go again
+    await expect.poll(() => seen(phone)).toEqual({ x: false, next: false, cap: false, strip: false })
+    await phone.locator('#full').tap()
+    await expect.poll(() => seen(phone)).toEqual({ x: true, next: true, cap: true, strip: true })
+    await expect.poll(() => calm(phone), { timeout: 6000 }).toBe(true) // and the buttons go again
   } finally {
     await context.close()
   }

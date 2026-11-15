@@ -275,7 +275,7 @@ function show(key) {
   if (!dlg.open) {
     dlg.showModal()
     wake(1)
-  } else wake(0) // another image: the clock starts again, hidden controls stay hidden
+  }
   if (c) {
     c.setAttribute('aria-current', 'true')
     strip.scrollLeft = c.offsetLeft - strip.clientWidth / 2 + 28
@@ -326,23 +326,27 @@ dlg.onclose = () => {
 // else is a drag, not a click. With a mouse a click waits a moment, in case it is the first
 // of a double click (which zooms): otherwise the buttons would flash off and on.
 let drag = null, dragged = 0, down = [0, 0], mouse = 0, timer2 = 0, idle = 0
-// They also go after 2 s of quiet, and come back on a tap, a mouse move or a key; they stay
-// while the mouse is over them or one has the keyboard's focus.
-const bare = () => dlg.classList.toggle('bare') ? clearTimeout(idle) : wake(0)
+// The buttons (not caption and strip) also go 2 s after being shown ('calm'), back on a mouse
+// move or a key, kept while hovered or focused; a swipe changes nothing. A tap hides or shows
+// all ('bare'), buttons included: with only the buttons gone, two taps bring them back.
+const set = (c, on) => { if (dlg.classList.contains(c) != !!on) dlg.classList.toggle(c, !!on) }
+const bare = () => {
+  const on = !dlg.classList.contains('bare')
+  set('bare', on)
+  on ? clearTimeout(idle) : wake(1)
+}
 function wake(show) {
-  if (show && dlg.classList.contains('bare')) dlg.classList.remove('bare') // no write when there is no change
+  if (show) set('calm', 0)
   clearTimeout(idle)
   idle = setTimeout(rest, 2e3)
 }
 function rest() {
   if (!dlg.open) return
-  if (dlg.querySelector('.nav:focus-visible, .meta :focus-visible') || mouse && dlg.querySelector('.nav:hover, .meta:hover')) return wake(0)
-  dlg.classList.add('bare')
+  if (dlg.querySelector('.nav:focus-visible, .meta :focus-visible') || mouse && dlg.querySelector('.nav:hover')) return wake(0)
+  set('calm', 1)
 }
-dlg.addEventListener('pointermove', e => { if (mouse = e.pointerType == 'mouse') wake(!e.buttons) }) // a drag moves the image, not the controls
+dlg.addEventListener('pointermove', e => { if ((mouse = e.pointerType == 'mouse') && !e.buttons) wake(1) }) // a drag is a swipe: no change
 dlg.addEventListener('pointerdown', e => { mouse = e.pointerType == 'mouse' })
-strip.addEventListener('scroll', () => wake(0)) // being looked through
-$('cap').onscroll = () => wake(0) // a long caption being read
 full.onclick = e => {
   clearTimeout(timer2)
   if (dragged || e.detail && Math.max(Math.abs(e.clientX - down[0]), Math.abs(e.clientY - down[1])) > 6) dragged = 0
@@ -406,7 +410,7 @@ addEventListener('keydown', e => {
   else if (a && z > 1) pan(a[0] * 80, a[1] * 80, 1)
   else if (a && a[0]) step(-a[0])
   else if (f != null) zoom(z * f, null, null, 1)
-  else return wake(1) // Tab and the rest: the controls are wanted
+  else return set('bare', 0), wake(1) // Tab and the rest: the controls are wanted, all of them
   e.preventDefault()
 })
 // Swiping is direct control of a canvas: the large image sits at x, its neighbours (fetched
@@ -460,7 +464,6 @@ function follow(cx, cy, ts) {
   x = Math.max(-W(), Math.min(W(), dx * (near(dx < 0 ? 1 : -1) ? 1 : .3)))
   trail = trail.filter(p => ts - p[0] < 100).concat([[ts, x]])
   draw()
-  wake(0)
   return true
 }
 dlg.addEventListener('touchstart', e => {
