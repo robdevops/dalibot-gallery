@@ -12,14 +12,14 @@ module.exports = defineConfig({
   // one after another, in the order of "dependencies" below: access.spec.js and
   // login.spec.js use up the token guesses a client may make per minute, admin.spec.js
   // hides images, zz-new.spec.js adds records to the table, perf.spec.js measures
-  // time. The rest only read, and their tests run side by side.
+  // time, and swipe.spec.js depends on the speed of a finger. The rest only read, and their tests run side by side.
   workers: Number(process.env.E2E_WORKERS || 4),
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
   projects: [
     { name: 'read', testMatch: ['grid', 'lightbox', 'noscript', 'screenshots'].map(n => `${n}.spec.js`), fullyParallel: true },
-    ...['perf', 'login', 'access', 'admin', 'zz-new'].map((n, i, all) => ({
+    ...['perf', 'swipe', 'login', 'access', 'admin', 'zz-new'].map((n, i, all) => ({
       name: n, testMatch: `${n}.spec.js`, dependencies: [i ? all[i - 1] : 'read'],
     })),
   ],

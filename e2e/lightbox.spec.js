@@ -333,139 +333,6 @@ test('a click on the image hides the buttons, caption and strip, and the next on
   await expect.poll(shown).toEqual(overlays.map(() => true))
 })
 
-test('a two-finger sideways swipe on a touchpad moves one image per swipe', async ({ page }) => {
-  const keys = await domKeys(page)
-  await page.locator(`.tile[data-key="${keys[10]}"] a`).click()
-  await loaded(page, keys[10])
-  const box = await page.locator('#full').boundingBox()
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  // A swipe as a touchpad reports it: wheel events that build up, then momentum that dies away.
-  const swipe = async sign => {
-    for (const dx of [4, 12, 30, 45, 40, 30, 22, 16, 11, 8, 5, 3, 2, 1, 1]) {
-      await page.mouse.wheel(sign * dx, 0)
-      await page.waitForTimeout(16)
-    }
-  }
-  const settledAt = async key => {
-    await loaded(page, key)
-    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(0)
-    await page.waitForTimeout(250) // the swipe's momentum has ended
-    expect(await fullKey(page)).toBe(key)
-  }
-
-  await swipe(1) // fingers to the left: the next image, and only one
-  await settledAt(keys[11])
-  await swipe(1)
-  await settledAt(keys[12])
-  await swipe(-1) // fingers to the right: the previous image
-  await settledAt(keys[11])
-
-  // Two swipes in quick succession, the second starting before the first one's momentum has ended.
-  for (const dx of [4, 12, 30, 45, 40, 30, 22, 16, 11, 8]) {
-    await page.mouse.wheel(dx, 0)
-    await page.waitForTimeout(16)
-  }
-  await loaded(page, keys[12])
-  await page.waitForTimeout(250)
-  await page.mouse.wheel(8, 0) // momentum still trickling in
-  await swipe(1)
-  await settledAt(keys[13])
-
-  // A real touchpad's deltas are uneven. Such a swipe still moves one image, and the new image
-  // comes in from the right, the side it is on, never from the left.
-  await page.evaluate(() => {
-    window.track = []
-    const f = document.getElementById('full'), p = document.getElementById('peek')
-    const x = e => Math.round(new DOMMatrix(getComputedStyle(e).transform).m41)
-    const tick = () => {
-      track.push([f.dataset.key, x(f), x(p), getComputedStyle(p).visibility == 'visible'])
-      requestAnimationFrame(tick)
-    }
-    tick()
-  })
-  for (const dx of [3, 14, 2, 25, 6, 40, 10, 45, 30, 8, 28, 12, 20, 5, 9, 2, 6, 1, 3, 1]) {
-    await page.mouse.wheel(dx, 0)
-    await page.waitForTimeout(16)
-  }
-  await settledAt(keys[14])
-  const track = await page.evaluate(() => track)
-  expect(track.filter(([k, x]) => k === keys[13] && x > 0), 'the old image leaves to the left').toEqual([])
-  expect(track.filter(([, , x, shown]) => shown && x < 0), 'the new image (the one beside it) arrives from the right').toEqual([])
-  expect(track.some(([, , x, shown]) => shown && x > 0), 'it was seen coming in').toBe(true)
-  await swipe(-1)
-  await settledAt(keys[13])
-
-  // A second swipe made straight away, while the first one's momentum is still arriving and with no
-  // pause between them, counts too. (With the next image fetched ahead, this is how people page.)
-  const from = await fullKey(page)
-  const at = keys.indexOf(from)
-  const wheel = async list => {
-    for (const dx of list) {
-      await page.mouse.wheel(dx, 0)
-      await page.waitForTimeout(16)
-    }
-  }
-  const fingers = [4, 14, 32, 48, 44, 36] // on the pad
-  const coasting = [30, 26, 22, 19, 16, 14, 12, 11, 10, 9, 8, 7, 7, 6, 6, 5] // momentum, about a quarter of a second
-  await wheel([...fingers, ...coasting])
-  await wheel([3, 9, 22, 40, 52, 44, 36]) // fingers down again: the momentum stops and a new swipe builds
-  await wheel([30, 24, 19, 15, 12, 9, 7, 5, 4, 3, 2, 1, 1])
-  await settledAt(keys[at + 2])
-  // And one in the other direction, started during the momentum of a forward swipe.
-  await wheel([...fingers, ...coasting])
-  await wheel([-3, -9, -22, -40, -52, -44, -36, -28, -20, -14, -9, -5, -3, -1])
-  await settledAt(keys[at + 2])
-  await wheel([-4, -14, -32, -48, -44, -36, -28, -20, -14, -9, -5, -3, -1])
-  await settledAt(keys[at + 1])
-  await swipe(-1)
-  await settledAt(keys[at])
-
-  // A swipe usually carries a slight pinch with it (the fingers drift together or apart). That must
-  // not zoom the image, and must not stop the swipe.
-  const scale = () => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).a)
-  const here = keys.indexOf(await fullKey(page))
-  for (const [dx, pinch] of [[4, -1], [14, -2], [32, -1.5], [48, -1], [44, 0], [36, 1], [30, 0.5], [22, 0], [16, 0], [11, 0], [8, 0], [5, 0], [3, 0], [2, 0], [1, 0]]) {
-    await page.mouse.wheel(dx, 0)
-    if (pinch) {
-      await page.keyboard.down('Control')
-      await page.mouse.wheel(0, pinch)
-      await page.keyboard.up('Control')
-    }
-    await page.waitForTimeout(16)
-  }
-  await settledAt(keys[here + 1])
-  expect(await scale()).toBe(1)
-  await swipe(-1)
-  await settledAt(keys[here])
-  expect(await scale()).toBe(1)
-
-  // Left alone: vertical scrolling, a pinch (wheel with Ctrl), and a slow drift that never adds up to a swipe.
-  await page.mouse.wheel(0, 300)
-  await page.keyboard.down('Control')
-  await page.mouse.wheel(120, 0)
-  await page.keyboard.up('Control')
-  await page.mouse.wheel(20, 0)
-  await page.waitForTimeout(400)
-  expect(await fullKey(page)).toBe(keys[13])
-
-  // Over the strip a sideways swipe scrolls the strip and does not change the image.
-  const strip = await page.locator('#strip').boundingBox()
-  await page.mouse.move(strip.x + strip.width / 2, strip.y + strip.height / 2)
-  const before = await page.locator('#strip').evaluate(st => st.scrollLeft)
-  await swipe(1)
-  await page.waitForTimeout(400)
-  expect(await fullKey(page)).toBe(keys[13])
-  expect(await page.locator('#strip').evaluate(st => st.scrollLeft)).toBeGreaterThan(before)
-
-  // At the first image a swipe to the right does nothing and leaves the image in place.
-  await page.keyboard.press('Escape')
-  await page.locator(`.tile[data-key="${keys[0]}"] a`).click()
-  await loaded(page, keys[0])
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  await swipe(-1)
-  await settledAt(keys[0])
-})
-
 test('zoom with the keyboard and a double click; hold and drag to pan', async ({ page }) => {
   const keys = await domKeys(page)
   await page.locator(`.tile[data-key="${keys[6]}"] a`).click()
@@ -763,6 +630,7 @@ test('on a touch screen, swiping the large image moves to the next or previous o
         await cdp.send('Input.dispatchTouchEvent', {
           type: 'touchMove', touchPoints: [pt(x1 + (x2 - x1) * i / 4, y1 + (y2 - y1) * i / 4), ...extra],
         })
+        await page.waitForTimeout(20) // a finger takes time: the speed it lets go at matters
       }
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     }
@@ -777,8 +645,8 @@ test('on a touch screen, swiping the large image moves to the next or previous o
     const pt = (x, yy) => ({ x, y: Math.round(yy), id: 0 })
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pt(300, y)] })
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pt(260, y)] })
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pt(180, y)] })
-    await expect.poll(shift).toBe(-120) // touch moves are delivered with the next frame
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [pt(120, y)] })
+    await expect.poll(shift).toBe(-180) // touch moves are delivered with the next frame
     expect(await fullKey(page)).toBe(keys[3]) // nothing changes until the finger lifts
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     // It slid away to the left; the next image arrives and comes to rest in place.
@@ -1061,7 +929,8 @@ test('dragging the large image without letting go brings the next or previous on
     await touch('touchMove', 340)
     await expect(peek).toHaveAttribute('src', `/img/${keys[2]}.jpg`)
     await expect.poll(async () => Math.round((await edge()).right - stage.x)).toBe(40)
-    // Let go with a short drag: the image springs back and the neighbour goes away.
+    // Held still, then let go with a short drag: the image springs back and the neighbour goes away.
+    await page.waitForTimeout(150)
     await touch('touchEnd')
     await expect.poll(async () => (await edge()).shown).toBe(false)
     expect(await fullKey(page)).toBe(keys[3])
@@ -1077,14 +946,14 @@ test('dragging the large image without letting go brings the next or previous on
     expect(await page.locator('#full').evaluate(i => i.style.transform)).toBe('')
     await expect(page.locator('#full')).not.toHaveClass(/wait/)
 
-    // At the newest image there is nothing before it: dragging to the right shows nothing beside it, and the image still follows the finger.
+    // At the newest image there is nothing before it: dragging to the right shows nothing beside it, and the image gives a little (a third as far as the finger), then springs back.
     await page.keyboard.press('Escape')
     await page.locator('#grid .tile a').nth(0).tap()
     await loaded(page, keys[0])
     await touch('touchStart', 100)
     await touch('touchMove', 140)
     await touch('touchMove', 220)
-    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(120)
+    await expect.poll(() => page.locator('#full').evaluate(i => new DOMMatrix(getComputedStyle(i).transform).m41)).toBe(36)
     expect((await edge()).shown).toBe(false)
     await touch('touchEnd')
     await expect.poll(() => page.locator('#full').evaluate(i => i.style.transform)).toBe('')

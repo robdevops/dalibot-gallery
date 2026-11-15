@@ -53,7 +53,7 @@ function tile(t, i) { // i: place in the first row, else -1
     li.classList.toggle('lost', !ok)
     if (!ok && n < 12) setTimeout(() => { if (li.isConnected) { n++; load() } }, Math.min(2e3 * 2 ** n, 6e4))
   }
-  img.onload = () => check(img.naturalWidth > 16)
+  img.onload = () => check(img.naturalWidth > 40) // a thumbnail is 240 px, scaled by its density; the stand-in 16 px
   img.onerror = () => check(0)
   load()
   a.append(img)
@@ -201,6 +201,11 @@ function zoom(nz, x, y, smooth) {
 }
 function show(key) {
   const t = data.get(key)
+  if (anim || x) { // moved by other means (a key, the strip) while it was moving
+    stop()
+    x = 0
+    draw()
+  }
   if (cur != key) tries = 0
   cur = key
   if (full.dataset.key != key) {
@@ -317,88 +322,101 @@ addEventListener('keydown', e => {
   else return
   e.preventDefault()
 })
-// Swipe the large image: left for the next, right for the previous. One finger,
-// starting on the image, not while zoomed. It follows the finger, then slides
-// away or springs back.
-let sx = NaN, sy = 0, sliding = 0
-const slide = x => { full.style.transform = x ? 'translateX(' + x + ')' : '' }
-// The neighbour is kept beside the large image while it is dragged (it was fetched ahead), so
-// that it comes into view as the finger moves. One picture does for both sides.
-const peek = el('img')
+// Swiping is direct control of a canvas: the large image sits at x, its neighbours (fetched
+// ahead) a width to either side, and a finger sets x. On letting go, x carries on at the speed
+// of the finger, as a spring, to the nearest place of rest: here (0) or a neighbour (+-W). A
+// touch while it moves catches it where it is. One finger, starting on the image, not zoomed.
+let sx = NaN, sy = 0, x = 0, anim = 0, pend = 0, trail = []
+const W = () => full.offsetWidth
+const peek = el('img') // the neighbour on the side x points to; one picture does for both
 peek.id = 'peek'
 peek.alt = ''
 peek.draggable = false
 full.after(peek)
-let peeked = '', pd = 0
-// Show the image d places on, d * 100% to the side of the large one and off by x.
-function lean(d, x) {
-  const k = near(d)
-  if (!k) return peek.style.visibility = ''
-  if (peeked != k) peek.src = src(peeked = k)
-  pd = d
-  peek.style.transform = 'translateX(calc(' + d * 100 + '% + ' + x + '))'
-  peek.style.visibility = 'visible'
+let peeked = ''
+function draw() {
+  full.style.transition = 'none'
+  full.style.transform = x ? 'translateX(' + x + 'px)' : ''
+  const d = x < 0 ? 1 : -1, k = x && near(d)
+  peek.style.visibility = k ? 'visible' : ''
+  if (k) {
+    if (peeked != k) peek.src = src(peeked = k)
+    peek.style.transform = 'translateX(calc(' + d * 100 + '% + ' + x + 'px))'
+  }
+}
+function stop() {
+  cancelAnimationFrame(anim)
+  anim = 0
 }
 dlg.addEventListener('touchstart', e => {
   const t = e.touches
-  sx = t[1] || sliding || z > 1 || !full.parentNode.contains(e.target) || pinched() ? NaN : t[0].clientX
+  stop() // catch it
+  sx = t[1] || pend || z > 1 || !full.parentNode.contains(e.target) || pinched() ? NaN : t[0].clientX - x
   sy = t[0].clientY
+  trail = []
 }, { passive: true })
 const move = e => {
   const t = e.touches[0], dx = t.clientX - sx // NaN: not a swipe
-  if (dx == dx && z == 1 && (/px/.test(full.style.transform) || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
+  if (dx == dx && z == 1 && (x || Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(t.clientY - sy))) {
     if (e.cancelable) e.preventDefault() // or the next tap is eaten
-    full.style.transition = peek.style.transition = 'none'
-    slide(dx + 'px')
-    lean(dx < 0 ? 1 : -1, dx + 'px')
+    // Past the first or last image it gives, but only a little.
+    x = Math.max(-W(), Math.min(W(), dx * (near(dx < 0 ? 1 : -1) ? 1 : .3)))
+    trail = trail.filter(p => e.timeStamp - p[0] < 100).concat([[e.timeStamp, x]])
+    draw()
   }
 }
-// Slide the image away and bring in the one d places on, which is already at the side (or is
-// put there), and waits at the middle, under the large one, until that has loaded. False if
-// there is none, or a slide is under way.
-function fling(d) {
-  const k = near(d), c = cur
-  if (sliding || !k) return false
-  sliding = 1
-  if (peek.style.visibility != 'visible' || pd != d) {
-    peek.style.transition = 'none'
-    lean(d, '0px')
+// Carry x to rest at `to` (0 or +-W), starting at speed v (px/s): a critically damped spring,
+// which never passes `to`. On reaching a neighbour it takes the place of the large image.
+function run(to, v) {
+  const k = 800, c = 2 * Math.sqrt(k), x0 = x
+  let t0 = 0
+  const frame = t => {
+    const dt = t0 ? Math.min((t - t0) / 1e3, .032) : 0
+    t0 = t
+    v += (-k * (x - to) - c * v) * dt
+    x += v * dt
+    if (to ? Math.abs(x) > W() || Math.abs(x - to) < .5 : x * x0 <= 0 || Math.abs(x) < .5) x = to
+    if (x == to) return arrive(to)
+    draw()
+    anim = requestAnimationFrame(frame)
   }
-  peek.offsetWidth // reflow first
-  full.style.transition = peek.style.transition = ''
-  slide(-d * 100 + '%')
-  peek.style.transform = 'translateX(0)'
-  setTimeout(() => {
-    sliding = 0
-    if (cur != c) { // something else moved on meanwhile
-      peek.style.visibility = ''
-      return z > 1 ? pan(0, 0) : slide()
-    }
-    full.style.transition = 'none'
-    slide()
-    go(k) // hidden until loaded; settle() then takes the stand-in away
-  }, still() ? 0 : 180)
+  anim = still() ? 0 : requestAnimationFrame(frame)
+  if (!anim) arrive(x = to)
+}
+function arrive(to) {
+  anim = 0
+  if (!to) return draw()
+  const k = near(to < 0 ? 1 : -1)
+  x = 0
+  full.style.transform = ''
+  peek.style.transform = 'translateX(0)' // it stands in for the large image, which is hidden until loaded
+  if (k) pend = 1
+  if (k) go(k)
+  else draw()
+}
+// The wheel of a touchpad: a push to the next or previous image. False if there is none, or one is moving.
+function fling(d) {
+  if (anim || pend || !near(d)) return false
+  run(-d * W(), -d * 2200)
   return true
 }
 function release(e) {
   if (z > 1) { // zoomed during a swipe: the zoom wins
     sx = NaN
-    peek.style.visibility = ''
+    stop()
+    x = 0
+    draw()
     return pan(0, 0)
   }
-  if (sliding) return
-  const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
-  const d = e.type == 'touchend' && !e.touches.length && Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy) && (dx < 0 ? 1 : -1)
+  if (pend || e.touches.length) return
+  const live = sx == sx && e.type == 'touchend'
+  const tr = trail.filter(q => e.timeStamp - q[0] < 100) // the last moments: held still before letting go is no flick
+  const v = live && tr.length > 1 ? Math.max(-4e3, Math.min(4e3, (tr.at(-1)[1] - tr[0][1]) / (tr.at(-1)[0] - tr[0][0] || 1) * 1e3)) : 0
+  const p = x + v * .15, d = p < 0 ? 1 : -1 // where it is heading, and which way that is
+  const far = live && Math.abs(p) > W() * .35 // far enough, or fast enough, to leave the image
   sx = NaN
-  full.style.transition = peek.style.transition = ''
-  if (!d || !fling(d)) {
-    full.className || slide() // spring back, unless it is waiting to one side
-    if (peek.style.visibility == 'visible') { // and the neighbour goes back to its side
-      peek.style.transform = 'translateX(' + pd * 100 + '%)'
-      setTimeout(() => { if (sx != sx && !sliding) peek.style.visibility = '' }, still() ? 0 : 180)
-    }
-    if (d) step(d) // past the last loaded image: load more
-  }
+  if (far && !near(d)) step(d) // past the last loaded image: load more
+  if (x || v) run(far && near(d) ? -d * W() : 0, v)
 }
 dlg.ontouchend = dlg.ontouchcancel = release
 dlg.ontouchmove = move
@@ -444,17 +462,13 @@ dlg.addEventListener('wheel', e => {
     wmin = x
     wup = 0
     wdir = Math.sign(wx)
-    sliding || fling(wdir) || step(wdir)
+    anim || fling(wdir) || step(wdir)
   }
 }, { passive: false })
 function settle() {
   full.className = ''
-  peek.style.visibility = ''
-  if (z == 1 && full.style.transform) {
-    full.offsetWidth // reflow first
-    full.style.transition = ''
-    slide()
-  }
+  pend = 0
+  if (!x) peek.style.visibility = ''
 }
 // Once the large image is in, fetch the next and the previous one, so that moving on shows
 // it at once. The browser keeps them: originals never change.
