@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"math"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -232,7 +233,8 @@ var emptySnapshot = &Snapshot{byKey: map[string]int{}, fileIDs: map[string]strin
 // Build applies the listing rules to raw records and returns the snapshot:
 //
 //   - drops the "check:check" probe, ids without a ':', chats outside the
-//     allowlist, records whose ttl is before now and records with no images;
+//     allowlist, records whose ttl is before now, records with no images and
+//     the bot's colour palettes (see isTool);
 //   - orders records by (updated desc, rank desc, id desc), where rank is the
 //     key of the record's original image (see position);
 //   - removes an image whose file_id already appeared in a newer record (or
@@ -278,6 +280,9 @@ func Build(records []Record, opt Options) *Snapshot {
 			continue
 		}
 		if len(r.Images) == 0 { // created, not filled yet
+			continue
+		}
+		if isTool(r) { // a colour palette, not a picture
 			continue
 		}
 		seenID[r.ID] = true
@@ -539,4 +544,28 @@ func (s *Snapshot) Keys() []string {
 		keys[i] = s.tiles[i].Key
 	}
 	return keys
+}
+
+// The bot's colour palette (/palette or /hex at the start of a message, #palette or #hex anywhere in it)
+// draws a picture's main colours as a grid of labelled tiles: a tool, not a picture, which the gallery
+// does not show, by its command or by those words in its prompt or a caption (lib/worker.py: wants_palette).
+var (
+	toolCommand = regexp.MustCompile(`(?i)^\s*/(palette|hex)(@\w+)?(\s|$)`)
+	toolTag     = regexp.MustCompile(`(?i)(^|[^\pL\pN_])#(palette|hex)([^\pL\pN_]|$)`)
+)
+
+func isTool(r Record) bool {
+	if c := strings.ToLower(strings.TrimPrefix(r.Command, "/")); c == "palette" || c == "hex" {
+		return true
+	}
+	texts := []string{r.Prompt}
+	for _, img := range r.Images {
+		texts = append(texts, img.Caption)
+	}
+	for _, t := range texts {
+		if toolCommand.MatchString(t) || toolTag.MatchString(t) {
+			return true
+		}
+	}
+	return false
 }

@@ -774,3 +774,36 @@ func btoi(b bool) int {
 	}
 	return 0
 }
+
+// The bot's colour palettes are a tool, not pictures: not in the gallery.
+func TestPalettesAreNotShown(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	rec := func(n int, command, prompt, caption string) Record {
+		return Record{ID: fmt.Sprintf("-1001:%d", n), Command: command, Prompt: prompt, Current: "_", TTL: now.Unix() + 86400,
+			Images: map[string]RawImage{"_": {FileID: fmt.Sprintf("file-%d", n), Caption: caption}}}
+	}
+	recs := []Record{
+		rec(1, "palette", "", ""),
+		rec(2, "Hex", "", ""),
+		rec(3, "dream", "/palette", ""),
+		rec(4, "dream", "/hex@dalibot", ""),
+		rec(5, "dream", "what colours? #Palette", ""),
+		rec(6, "dream", "a cat", "#hex"),
+		rec(7, "dream", "colours (#hex)", ""),
+		// Pictures that only look like it.
+		rec(10, "dream", "a hexagon", ""),
+		rec(11, "dream", "#hexagon tiles", ""),
+		rec(12, "dream", "a painter's palette knife", ""),
+		rec(13, "dream", "my#hex", ""),
+		rec(14, "dream", "/palettes of the sea", ""),
+	}
+	s := Build(recs, Options{StoreDays: 90, Now: func() time.Time { return now }})
+	var ids []string
+	for _, tl := range s.Newest(100) {
+		ids = append(ids, tl.ID)
+	}
+	slices.Sort(ids)
+	if want := []string{"-1001:10", "-1001:11", "-1001:12", "-1001:13", "-1001:14"}; !slices.Equal(ids, want) {
+		t.Errorf("shown: %q, want %q", ids, want)
+	}
+}
