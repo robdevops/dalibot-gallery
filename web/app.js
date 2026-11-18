@@ -621,16 +621,24 @@ function settle() {
   pend = 0
   if (!x) peek.style.visibility = ''
 }
-// Once the large image is in, fetch the three after it and the three before, so that moving on shows
-// them at once. The browser keeps them: originals never change.
-const ahead = [1, -1, 2, -2, 3, -3].map(d => [d, new Image()])
+// Once the large image is in, fetch the four after it and the four before, so that moving on shows
+// them at once (the browser keeps them: originals never change): nearest first, two at a time.
+let gen = 0
+const loading = new Set() // kept until loaded
 full.onload = () => {
   caption()
   settle()
-  for (const [d, img] of ahead) {
-    const k = near(d)
-    if (k) img.src = src(k)
+  const want = [1, -1, 2, -2, 3, -3, 4, -4].map(near).filter(Boolean), g = ++gen
+  const pull = () => {
+    const k = g == gen && want.shift() // moved on: this round stops
+    if (!k) return
+    const img = new Image()
+    loading.add(img)
+    img.onload = img.onerror = () => { loading.delete(img); pull() }
+    img.src = src(k)
   }
+  pull()
+  pull()
 }
 full.onerror = () => {
   settle()

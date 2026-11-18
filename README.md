@@ -14,7 +14,7 @@ with infinite scroll and a full-size viewer.
   from Telegram.
 - The gallery has read-only access to the DB and never changes the bot. An admin can [hide](docs/admin.md) images from the
   gallery; that is the gallery's own list, kept on its own disk.
-- One Go binary with the page, script and stylesheet embedded (about 28 KB of
+- One Go binary with the page, script and stylesheet embedded (about 30 KB of
   JavaScript and CSS, no framework, no build step). It links libvips through cgo,
   so libvips must be installed wherever it runs; the container image takes care of that.
 

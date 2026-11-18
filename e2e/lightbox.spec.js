@@ -521,9 +521,13 @@ test('the next and previous large images are fetched ahead, so moving on does no
 
   await page.locator(`.tile[data-key="${keys[10]}"] a`).click()
   await loaded(page, keys[10])
-  // The open image first, then the three after it and the three before, and nothing else.
-  await expect.poll(() => fetched.slice().sort()).toEqual(keys.slice(7, 14).sort())
+  // The open image first, then the four after it and the four before, and nothing else: the nearest
+  // first, two at a time (the next and the one before together, then the next two out, and so on).
+  await expect.poll(() => fetched.slice().sort()).toEqual(keys.slice(6, 15).sort())
   expect(fetched[0]).toBe(keys[10])
+  expect(fetched.slice(1, 3).sort()).toEqual([keys[9], keys[11]].sort())
+  expect(fetched.slice(3, 5).sort()).toEqual([keys[8], keys[12]].sort())
+  expect(fetched.slice(7, 9).sort()).toEqual([keys[6], keys[14]].sort())
   await expect.poll(() => page.evaluate(k => performance.getEntriesByName(location.origin + '/img/' + k + '.jpg').some(e => e.responseEnd > 0), keys[11])).toBe(true)
 
   // Moving on: the image is there at once, and nothing is transferred for it a second time.
@@ -538,7 +542,7 @@ test('the next and previous large images are fetched ahead, so moving on does no
   const again = (await entries(keys[11])).slice(1) // none, or served from the browser's cache
   expect(again.every(size => size === 0)).toBe(true)
   // And the next one beyond is fetched in turn.
-  await expect.poll(() => fetched.includes(keys[14])).toBe(true)
+  await expect.poll(() => fetched.includes(keys[15])).toBe(true)
 })
 
 test('a click on the backdrop closes; a click on the caption does not', async ({ page }) => {
