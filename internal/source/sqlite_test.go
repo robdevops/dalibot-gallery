@@ -585,3 +585,14 @@ func TestSQLiteConcurrentWriter(t *testing.T) {
 		t.Errorf("tiles = %d, want %d", n, 2*writes)
 	}
 }
+
+// A self-hosted bot's technical pictures and palettes are told apart as from DynamoDB.
+func TestSQLiteDecodeTechnicalAndKind(t *testing.T) {
+	r, err := decodeRow("-1001", "7", `{"prompt":"p","command":"dream","kind":"palette","images":{"_":{"file_id":"f","caption":"c","base":"`+TechnicalHeader+` a schematic"},"monet":{"file_id":"g","base":"a pond"}}}`, 1_800_000_000, 86400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != "palette" || !r.Images["_"].Technical || r.Images["monet"].Technical {
+		t.Errorf("%+v", r)
+	}
+}

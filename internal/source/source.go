@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"strings"
 )
 
 // ProbeID is the id the bot reads at start-up to check its table. It is never
@@ -34,14 +35,25 @@ type Record struct {
 	// Created is when the picture was first sent, for records the bot imported from
 	// forwarded messages. 0 for ordinary records, which are dated from the ttl.
 	Created int64
+	Kind    string              // what the bot made: "" for a picture from a prompt, "variation", "palette"...
 	Images  map[string]RawImage // style key -> image
 }
 
 // RawImage is one stored image of a record. FileID is a Telegram file_id and
 // must never be sent to a browser.
 type RawImage struct {
-	FileID  string
-	Caption string // the prompt actually used for this style
+	FileID    string
+	Caption   string // the prompt actually used for this style
+	Technical bool   // drawn from a planned technical prompt: a diagram, cutaway, schematic... (see TechnicalHeader)
+}
+
+// TechnicalHeader starts the prompt the bot plans for a technical picture (a diagram, cutaway,
+// cross-section, schematic, infographic or labelled picture), which it keeps as the image's "base"
+// (lib/openrouter.py). Those are not shown in the gallery: they are for explaining, not looking at.
+const TechnicalHeader = "Accurate technical illustration:"
+
+func rawImage(fileID, caption, base string) RawImage {
+	return RawImage{FileID: fileID, Caption: caption, Technical: strings.HasPrefix(base, TechnicalHeader)}
 }
 
 // Source reads every record of the bot's store. Implementations must not

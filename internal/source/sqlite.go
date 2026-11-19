@@ -103,19 +103,21 @@ func sqliteDSN(path string) string {
 // sqliteRetry is the pause between two attempts to read a locked file.
 const sqliteRetry = 20 * time.Millisecond
 
-// sqliteData is the JSON in the data column. "base" and "kind" are
-// deliberately not decoded. created is only a hint for ordering.
+// sqliteData is the JSON in the data column. An image's "base" is read only to
+// tell a technical picture. created is only a hint for ordering.
 type sqliteData struct {
 	Prompt  string                 `json:"prompt"`
 	Command string                 `json:"command"`
 	Current string                 `json:"current"`
 	Created json.RawMessage        `json:"created"`
+	Kind    string                 `json:"kind"`
 	Images  map[string]sqliteImage `json:"images"`
 }
 
 type sqliteImage struct {
 	FileID  string `json:"file_id"`
 	Caption string `json:"caption"`
+	Base    string `json:"base"`
 }
 
 // Records reads every row. A row that does not have the bot's shape is
@@ -228,11 +230,12 @@ func decodeRow(chat, message, data string, updated, span int64) (Record, error) 
 		Current: d.Current,
 		TTL:     updated + span,
 		Created: sqliteCreated(d.Created),
+		Kind:    d.Kind,
 	}
 	if len(d.Images) > 0 {
 		r.Images = make(map[string]RawImage, len(d.Images))
 		for k, img := range d.Images {
-			r.Images[k] = RawImage(img)
+			r.Images[k] = rawImage(img.FileID, img.Caption, img.Base)
 		}
 	}
 	return r, nil

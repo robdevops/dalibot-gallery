@@ -807,3 +807,33 @@ func TestPalettesAreNotShown(t *testing.T) {
 		t.Errorf("shown: %q, want %q", ids, want)
 	}
 }
+
+// The bot's technical pictures (diagrams, cutaways, schematics) are not shown: a record of them alone is left
+// out, and a record's other images stay. A palette recorded with its kind is left out too.
+func TestTechnicalPicturesAreNotShown(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	rec := func(n int, kind string, imgs map[string]RawImage) Record {
+		return Record{ID: fmt.Sprintf("-1001:%d", n), Command: "dream", Prompt: "p", Current: "_", Kind: kind, TTL: now.Unix() + 86400, Images: imgs}
+	}
+	tech := func(n int) RawImage { return RawImage{FileID: fmt.Sprintf("t%d", n), Technical: true} }
+	pic := func(n int) RawImage { return RawImage{FileID: fmt.Sprintf("p%d", n)} }
+	recs := []Record{
+		rec(1, "", map[string]RawImage{"_": tech(1), "monet": tech(2)}), // a diagram, and its Monet: gone
+		rec(2, "", map[string]RawImage{"_": tech(3), "bw": pic(4)}),     // only the picture stays
+		rec(3, "", map[string]RawImage{"_": pic(5)}),
+		rec(4, "palette", map[string]RawImage{"_": pic(6)}), // a palette saved with its kind
+		rec(5, "variation", map[string]RawImage{"_": pic(7)}),
+	}
+	s := Build(recs, Options{StoreDays: 90, Now: func() time.Time { return now }})
+	var got []string
+	for _, tl := range s.Newest(100) {
+		got = append(got, tl.ID+"/"+tl.Style)
+	}
+	slices.Sort(got)
+	if want := []string{"-1001:2/bw", "-1001:3/_", "-1001:5/_"}; !slices.Equal(got, want) {
+		t.Errorf("shown: %q, want %q", got, want)
+	}
+	if !recs[1].Images["_"].Technical || len(recs[1].Images) != 2 {
+		t.Error("Build changed the records it was given")
+	}
+}

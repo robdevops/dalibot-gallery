@@ -14,7 +14,7 @@ import (
 )
 
 // Every attribute name goes through a placeholder: ttl and current are DynamoDB reserved words.
-const projection = "#id, #p, #c, #cur, #img, #ttl, #cr"
+const projection = "#id, #p, #c, #cur, #img, #ttl, #cr, #k"
 
 var projectionNames = map[string]string{
 	"#id":  "id",
@@ -24,6 +24,7 @@ var projectionNames = map[string]string{
 	"#img": "images",
 	"#ttl": "ttl",
 	"#cr":  "created",
+	"#k":   "kind",
 }
 
 // ScanAPI is the one DynamoDB operation the reader uses.
@@ -80,12 +81,14 @@ type item struct {
 	Command string               `dynamodbav:"command"`
 	Current string               `dynamodbav:"current"`
 	TTL     int64                `dynamodbav:"ttl"`
+	Kind    string               `dynamodbav:"kind"`
 	Images  map[string]itemImage `dynamodbav:"images"`
 }
 
 type itemImage struct {
 	FileID  string `dynamodbav:"file_id"`
 	Caption string `dynamodbav:"caption"`
+	Base    string `dynamodbav:"base"` // read only to tell a technical picture; not kept
 }
 
 // Records scans the whole table. An item that does not have the bot's shape is
@@ -140,11 +143,11 @@ func decodeItem(av map[string]types.AttributeValue) (Record, error) {
 	if it.ID == "" {
 		return Record{}, fmt.Errorf("item has no id")
 	}
-	r := Record{ID: it.ID, Prompt: it.Prompt, Command: it.Command, Current: it.Current, TTL: it.TTL, Created: createdOf(av)}
+	r := Record{ID: it.ID, Prompt: it.Prompt, Command: it.Command, Current: it.Current, TTL: it.TTL, Created: createdOf(av), Kind: it.Kind}
 	if len(it.Images) > 0 {
 		r.Images = make(map[string]RawImage, len(it.Images))
 		for k, img := range it.Images {
-			r.Images[k] = RawImage(img)
+			r.Images[k] = rawImage(img.FileID, img.Caption, img.Base)
 		}
 	}
 	return r, nil

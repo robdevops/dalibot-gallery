@@ -234,7 +234,7 @@ var emptySnapshot = &Snapshot{byKey: map[string]int{}, fileIDs: map[string]strin
 //
 //   - drops the "check:check" probe, ids without a ':', chats outside the
 //     allowlist, records whose ttl is before now, records with no images and
-//     the bot's colour palettes (see isTool);
+//     the bot's colour palettes (see isTool) and its technical pictures (diagrams; see withoutTechnical);
 //   - orders records by (updated desc, rank desc, id desc), where rank is the
 //     key of the record's original image (see position);
 //   - removes an image whose file_id already appeared in a newer record (or
@@ -283,6 +283,9 @@ func Build(records []Record, opt Options) *Snapshot {
 			continue
 		}
 		if isTool(r) { // a colour palette, not a picture
+			continue
+		}
+		if r = withoutTechnical(r); len(r.Images) == 0 { // a diagram, not a picture to look at
 			continue
 		}
 		seenID[r.ID] = true
@@ -555,7 +558,7 @@ var (
 )
 
 func isTool(r Record) bool {
-	if c := strings.ToLower(strings.TrimPrefix(r.Command, "/")); c == "palette" || c == "hex" {
+	if c := strings.ToLower(strings.TrimPrefix(r.Command, "/")); c == "palette" || c == "hex" || r.Kind == "palette" {
 		return true
 	}
 	texts := []string{r.Prompt}
@@ -568,4 +571,22 @@ func isTool(r Record) bool {
 		}
 	}
 	return false
+}
+
+// withoutTechnical is r without its technical images (RawImage.Technical): the bot plans those as
+// diagrams, cutaways and the like, for explaining, not looking at. A copy is made only if one goes.
+func withoutTechnical(r Record) Record {
+	for _, img := range r.Images {
+		if img.Technical {
+			kept := make(map[string]RawImage, len(r.Images))
+			for k, img := range r.Images {
+				if !img.Technical {
+					kept[k] = img
+				}
+			}
+			r.Images = kept
+			return r
+		}
+	}
+	return r
 }

@@ -26,12 +26,12 @@ func TestScanRequest(t *testing.T) {
 	if len(fake.inputs) != 4 { // 17 items in pages of 5
 		t.Fatalf("made %d Scan calls, want 4", len(fake.inputs))
 	}
-	wantNames := map[string]string{"#id": "id", "#p": "prompt", "#c": "command", "#cur": "current", "#img": "images", "#ttl": "ttl", "#cr": "created"}
+	wantNames := map[string]string{"#id": "id", "#p": "prompt", "#c": "command", "#cur": "current", "#img": "images", "#ttl": "ttl", "#cr": "created", "#k": "kind"}
 	for i, in := range fake.inputs {
 		if *in.TableName != "my-table" {
 			t.Errorf("call %d: table %q", i, *in.TableName)
 		}
-		if in.ProjectionExpression == nil || *in.ProjectionExpression != "#id, #p, #c, #cur, #img, #ttl, #cr" {
+		if in.ProjectionExpression == nil || *in.ProjectionExpression != "#id, #p, #c, #cur, #img, #ttl, #cr, #k" {
 			t.Errorf("call %d: projection %v", i, in.ProjectionExpression)
 		}
 		if !reflect.DeepEqual(in.ExpressionAttributeNames, wantNames) {
@@ -174,5 +174,32 @@ func TestNewDynamoValidation(t *testing.T) {
 	}
 	if _, err := NewDynamo(context.Background(), DynamoOptions{Table: "dalibot"}); err == nil {
 		t.Error("missing region should fail")
+	}
+}
+
+// A technical picture (its base the prompt the bot planned for a diagram) and a palette are told apart
+// when an item is read.
+func TestDecodeTechnicalAndKind(t *testing.T) {
+	str := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
+	img := func(base string) types.AttributeValue {
+		m := map[string]types.AttributeValue{"file_id": str("f"), "caption": str("c")}
+		if base != "" {
+			m["base"] = str(base)
+		}
+		return &types.AttributeValueMemberM{Value: m}
+	}
+	r, err := decodeItem(map[string]types.AttributeValue{
+		"id": str("1:1"), "kind": str("palette"),
+		"images": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
+			"_":     img(TechnicalHeader + " a cutaway of a jet engine, labelled ..."),
+			"monet": img("a jet engine, in the style of Claude Monet"),
+			"bw":    img(""),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != "palette" || !r.Images["_"].Technical || r.Images["monet"].Technical || r.Images["bw"].Technical {
+		t.Errorf("%+v", r)
 	}
 }
