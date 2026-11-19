@@ -44,16 +44,25 @@ type Record struct {
 type RawImage struct {
 	FileID    string
 	Caption   string // the prompt actually used for this style
-	Technical bool   // drawn from a planned technical prompt: a diagram, cutaway, schematic... (see TechnicalHeader)
+	Technical bool   // drawn from a planned technical prompt: a diagram, cutaway, schematic... (see TechnicalHeaders)
 }
 
-// TechnicalHeader starts the prompt the bot plans for a technical picture (a diagram, cutaway,
+// TechnicalHeaders start the prompt the bot plans for a technical picture (a diagram, cutaway,
 // cross-section, schematic, infographic or labelled picture), which it keeps as the image's "base"
-// (lib/openrouter.py). Those are not shown in the gallery: they are for explaining, not looking at.
-const TechnicalHeader = "Accurate technical illustration:"
+// (lib/openrouter.py TECHNICAL_HEADER: the first 40 characters of TECHNICAL_BRIEF; before that, the
+// phrase it began with). Such an image also keeps its planned shape as "aspect", which no other image
+// has. Those are not shown in the gallery: they are for explaining, not looking at.
+var TechnicalHeaders = []string{
+	"A picture that teaches, so it must be ac",
+	"Accurate technical illustration:",
+}
 
-func rawImage(fileID, caption, base string) RawImage {
-	return RawImage{FileID: fileID, Caption: caption, Technical: strings.HasPrefix(base, TechnicalHeader)}
+func rawImage(fileID, caption, base, aspect string) RawImage {
+	technical := aspect != ""
+	for _, h := range TechnicalHeaders {
+		technical = technical || strings.HasPrefix(base, h)
+	}
+	return RawImage{FileID: fileID, Caption: caption, Technical: technical}
 }
 
 // Source reads every record of the bot's store. Implementations must not

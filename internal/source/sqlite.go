@@ -118,6 +118,7 @@ type sqliteImage struct {
 	FileID  string `json:"file_id"`
 	Caption string `json:"caption"`
 	Base    string `json:"base"`
+	Aspect  string `json:"aspect"`
 }
 
 // Records reads every row. A row that does not have the bot's shape is
@@ -235,7 +236,7 @@ func decodeRow(chat, message, data string, updated, span int64) (Record, error) 
 	if len(d.Images) > 0 {
 		r.Images = make(map[string]RawImage, len(d.Images))
 		for k, img := range d.Images {
-			r.Images[k] = rawImage(img.FileID, img.Caption, img.Base)
+			r.Images[k] = rawImage(img.FileID, img.Caption, img.Base, img.Aspect)
 		}
 	}
 	return r, nil

@@ -88,7 +88,8 @@ type item struct {
 type itemImage struct {
 	FileID  string `dynamodbav:"file_id"`
 	Caption string `dynamodbav:"caption"`
-	Base    string `dynamodbav:"base"` // read only to tell a technical picture; not kept
+	Base    string `dynamodbav:"base"`   // read only to tell a technical picture; not kept
+	Aspect  string `dynamodbav:"aspect"` // the same
 }
 
 // Records scans the whole table. An item that does not have the bot's shape is
@@ -147,7 +148,7 @@ func decodeItem(av map[string]types.AttributeValue) (Record, error) {
 	if len(it.Images) > 0 {
 		r.Images = make(map[string]RawImage, len(it.Images))
 		for k, img := range it.Images {
-			r.Images[k] = rawImage(img.FileID, img.Caption, img.Base)
+			r.Images[k] = rawImage(img.FileID, img.Caption, img.Base, img.Aspect)
 		}
 	}
 	return r, nil

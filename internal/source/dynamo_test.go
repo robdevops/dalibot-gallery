@@ -181,17 +181,22 @@ func TestNewDynamoValidation(t *testing.T) {
 // when an item is read.
 func TestDecodeTechnicalAndKind(t *testing.T) {
 	str := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
-	img := func(base string) types.AttributeValue {
+	img := func(base string, aspect ...string) types.AttributeValue {
 		m := map[string]types.AttributeValue{"file_id": str("f"), "caption": str("c")}
 		if base != "" {
 			m["base"] = str(base)
+		}
+		if len(aspect) > 0 {
+			m["aspect"] = str(aspect[0])
 		}
 		return &types.AttributeValueMemberM{Value: m}
 	}
 	r, err := decodeItem(map[string]types.AttributeValue{
 		"id": str("1:1"), "kind": str("palette"),
 		"images": &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{
-			"_":     img(TechnicalHeader + " a cutaway of a jet engine, labelled ..."),
+			"_":     img("A picture that teaches, so it must be accurate: draw exactly what is described ...\n\na cutaway of a jet engine"),
+			"old":   img("Accurate technical illustration: a cutaway of a jet engine, labelled ..."),
+			"wide":  img("a jet engine, with its own words", "16:9"), // a planned shape: technical, whatever the header says
 			"monet": img("a jet engine, in the style of Claude Monet"),
 			"bw":    img(""),
 		}},
@@ -199,7 +204,7 @@ func TestDecodeTechnicalAndKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Kind != "palette" || !r.Images["_"].Technical || r.Images["monet"].Technical || r.Images["bw"].Technical {
+	if r.Kind != "palette" || !r.Images["_"].Technical || !r.Images["old"].Technical || !r.Images["wide"].Technical || r.Images["monet"].Technical || r.Images["bw"].Technical {
 		t.Errorf("%+v", r)
 	}
 }
